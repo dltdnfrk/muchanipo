@@ -242,6 +242,229 @@ def score_actionability(report: Dict[str, Any]) -> Tuple[int, str]:
     return max(0, min(10, score)), "; ".join(reasons)
 
 
+def score_completeness(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score completeness: 주제의 모든 핵심 측면을 빠짐없이 다루는가?"""
+    score = 5
+    reasons = []
+
+    consensus = report.get("consensus", "")
+    dissent = report.get("dissent", "")
+    recommendations = report.get("recommendations", [])
+
+    # Longer consensus + dissent = more comprehensive
+    combined_len = len(consensus) + len(dissent)
+    if combined_len > 1000:
+        score += 2
+        reasons.append(f"합의+이견 {combined_len}자 (>= 1000, 포괄적): +2")
+    elif combined_len > 500:
+        score += 1
+        reasons.append(f"합의+이견 {combined_len}자 (>= 500): +1")
+    elif combined_len < 100:
+        score -= 2
+        reasons.append(f"합의+이견 {combined_len}자 (< 100, 불충분): -2")
+
+    # Multiple recommendation areas
+    if len(recommendations) >= 10:
+        score += 2
+        reasons.append(f"recommendations {len(recommendations)}개 (>= 10, 광범위): +2")
+    elif len(recommendations) >= 5:
+        score += 1
+        reasons.append(f"recommendations {len(recommendations)}개 (>= 5): +1")
+
+    # Web research adds completeness
+    web_research = report.get("web_research", [])
+    if len(web_research) >= 2:
+        score += 1
+        reasons.append(f"웹리서치 {len(web_research)}건 (보완 조사): +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
+def score_evidence_quality(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score evidence quality: 인용 출처가 신뢰할 수 있고 다양한가?"""
+    score = 5
+    reasons = []
+
+    evidence = report.get("evidence", [])
+    if len(evidence) >= 10:
+        score += 3
+        reasons.append(f"evidence {len(evidence)}개 (>= 10, 매우 풍부): +3")
+    elif len(evidence) >= 5:
+        score += 2
+        reasons.append(f"evidence {len(evidence)}개 (>= 5): +2")
+    elif len(evidence) >= 3:
+        score += 1
+        reasons.append(f"evidence {len(evidence)}개 (>= 3): +1")
+    elif len(evidence) == 0:
+        score -= 3
+        reasons.append("evidence 없음: -3")
+
+    # Check for diverse source types (papers, patents, policies, etc.)
+    all_evidence = " ".join(evidence).lower()
+    source_types = ["논문", "특허", "patent", "pct", "법", "조사", "sci", "doi", "pmid"]
+    type_matches = [s for s in source_types if s in all_evidence]
+    if len(type_matches) >= 3:
+        score += 1
+        reasons.append(f"출처 유형 다양 ({len(type_matches)}종): +1")
+
+    # Web research sources count
+    web_research = report.get("web_research", [])
+    total_web_sources = sum(r.get("sources", 0) for r in web_research)
+    if total_web_sources >= 20:
+        score += 1
+        reasons.append(f"웹리서치 출처 {total_web_sources}개 (>= 20): +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
+def score_perspective_diversity(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score perspective diversity: 다양한 이해관계자 관점이 반영되었는가?"""
+    score = 5
+    reasons = []
+
+    personas = report.get("personas", [])
+    active = [p for p in personas if p.get("confidence", 0) > 0]
+
+    if len(active) >= 10:
+        score += 3
+        reasons.append(f"활성 페르소나 {len(active)}명 (>= 10): +3")
+    elif len(active) >= 5:
+        score += 2
+        reasons.append(f"활성 페르소나 {len(active)}명 (>= 5): +2")
+    elif len(active) >= 3:
+        score += 1
+        reasons.append(f"활성 페르소나 {len(active)}명 (>= 3): +1")
+
+    # Layer diversity
+    layers = set(p.get("layer", 1) for p in active)
+    if len(layers) >= 3:
+        score += 2
+        reasons.append(f"Layer {len(layers)}개 (L1+L2+L3 다층): +2")
+    elif len(layers) >= 2:
+        score += 1
+        reasons.append(f"Layer {len(layers)}개: +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
+def score_coherence(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score coherence: 합의와 권고가 논리적으로 일관되는가?"""
+    score = 5
+    reasons = []
+
+    consensus = report.get("consensus", "")
+    recommendations = report.get("recommendations", [])
+
+    # Consensus length as proxy for structured reasoning
+    if len(consensus) >= 200:
+        score += 1
+        reasons.append(f"consensus {len(consensus)}자 (>= 200, 구조적): +1")
+
+    # Recommendations that reference specific findings
+    if recommendations:
+        all_recs = " ".join(recommendations)
+        reference_markers = ["R1", "R2", "C1", "C2", "Round", "발견", "분석"]
+        refs = [m for m in reference_markers if m in all_recs]
+        if len(refs) >= 2:
+            score += 1
+            reasons.append(f"권고가 발견사항 참조 ({len(refs)}건): +1")
+
+    # Confidence level indicates internal agreement
+    confidence = report.get("confidence", 0)
+    if confidence >= 0.75:
+        score += 2
+        reasons.append(f"높은 합의 confidence {confidence:.2f}: +2")
+    elif confidence >= 0.6:
+        score += 1
+        reasons.append(f"적정 합의 confidence {confidence:.2f}: +1")
+    elif confidence < 0.4:
+        score -= 1
+        reasons.append(f"낮은 합의 confidence {confidence:.2f}: -1")
+
+    # Dissent is explicitly captured (shows honest analysis)
+    dissent = report.get("dissent", "")
+    if len(dissent) > 200:
+        score += 1
+        reasons.append("이견 명시적 기록 (솔직한 분석): +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
+def score_depth(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score depth: 피상적 분석이 아닌 근본 원인까지 파고드는 분석인가?"""
+    score = 5
+    reasons = []
+
+    # Web research indicates deeper investigation
+    web_research = report.get("web_research", [])
+    if len(web_research) >= 3:
+        score += 2
+        reasons.append(f"웹리서치 {len(web_research)}건 (깊은 조사): +2")
+    elif len(web_research) >= 1:
+        score += 1
+        reasons.append(f"웹리서치 {len(web_research)}건: +1")
+
+    # Round number indicates iterative deepening
+    round_num = report.get("round", 1)
+    if round_num >= 2:
+        score += 1
+        reasons.append(f"Round {round_num} (반복 심화): +1")
+
+    # Long dissent with structural markers
+    dissent = report.get("dissent", "")
+    structural = ["Critical", "Major", "Minor", "치명적", "핵심"]
+    struct_matches = [s for s in structural if s in dissent]
+    if len(struct_matches) >= 2:
+        score += 1
+        reasons.append(f"구조적 이견 분류 ({len(struct_matches)}단계): +1")
+
+    # Many evidence items = deeper research
+    evidence = report.get("evidence", [])
+    if len(evidence) >= 10:
+        score += 1
+        reasons.append(f"evidence {len(evidence)}개 (심층 조사): +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
+def score_impact(report: Dict[str, Any]) -> Tuple[int, str]:
+    """Score impact: 권고가 실행되면 실질적 변화를 만들 수 있는가?"""
+    score = 5
+    reasons = []
+
+    recommendations = report.get("recommendations", [])
+    if len(recommendations) >= 10:
+        score += 2
+        reasons.append(f"recommendations {len(recommendations)}개 (>= 10, 포괄적): +2")
+    elif len(recommendations) >= 5:
+        score += 1
+        reasons.append(f"recommendations {len(recommendations)}개 (>= 5): +1")
+
+    # Priority/urgency markers in recommendations
+    if recommendations:
+        all_recs = " ".join(recommendations)
+        urgency = ["긴급", "즉시", "필수", "critical", "urgent", "must"]
+        urg_matches = [u for u in urgency if u in all_recs.lower()]
+        if len(urg_matches) >= 1:
+            score += 1
+            reasons.append(f"우선순위 표시 ({len(urg_matches)}건): +1")
+
+        # Specific numbers/metrics in recommendations
+        import re
+        numbers = re.findall(r'\d+[%점건개명]', all_recs)
+        if len(numbers) >= 3:
+            score += 1
+            reasons.append(f"정량적 권고 ({len(numbers)}건): +1")
+
+    # High confidence = higher expected impact
+    confidence = report.get("confidence", 0)
+    if confidence >= 0.75:
+        score += 1
+        reasons.append(f"높은 confidence {confidence:.2f} → 실행 가치 높음: +1")
+
+    return max(0, min(10, score)), "; ".join(reasons)
+
+
 def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full evaluation on a council report."""
     scorers = {
@@ -249,6 +472,12 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
         "reliability": score_reliability,
         "novelty": score_novelty,
         "actionability": score_actionability,
+        "completeness": score_completeness,
+        "evidence_quality": score_evidence_quality,
+        "perspective_diversity": score_perspective_diversity,
+        "coherence": score_coherence,
+        "depth": score_depth,
+        "impact": score_impact,
     }
 
     scores = {}
@@ -483,7 +712,8 @@ def main() -> int:
         for axis, val in eval_result["scores"].items():
             print(f"  {axis:15s}: {val:2d}/10")
         print("-" * 60)
-        print(f"  {'TOTAL':15s}: {eval_result['total']:2d}/40")
+        max_score = sum(a.get("max", 10) for a in rubric.get("axes", {}).values()) if isinstance(rubric.get("axes"), dict) else len(rubric.get("axes", [])) * 10
+        print(f"  {'TOTAL':15s}: {eval_result['total']:2d}/{max_score}")
         print(f"  {'VERDICT':15s}: {eval_result['verdict']}")
         print("-" * 60)
         print("  Reasoning:")

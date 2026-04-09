@@ -47,14 +47,14 @@
     }
   ],
   "eval_rubric": {
-    "version": "v1",
-    "axes": ["usefulness", "reliability", "novelty", "actionability"],
+    "version": "v2",
+    "axes": ["usefulness", "reliability", "novelty", "actionability", "completeness", "evidence_quality", "perspective_diversity", "coherence", "depth", "impact"],
     "thresholds": {
-      "pass": 28,
-      "uncertain": 20,
-      "fail_below": 20
+      "pass": 70,
+      "uncertain": 50,
+      "fail_below": 50
     },
-    "max_score": 40,
+    "max_score": 100,
     "evolution_trigger": 20
   },
   "council": {

@@ -1,21 +1,35 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "created": "2026-04-09",
+  "updated": "2026-04-09",
+  "changelog": "v1→v2: 4축 40점 → 10축 100점. 더 세밀한 채점 + 직관적 100점 만점.",
   "thresholds": {
-    "pass": 28,
-    "uncertain": 20
+    "pass": 70,
+    "uncertain": 50
   },
   "axes": {
-    "usefulness": {"weight": 1.0, "max": 10},
-    "reliability": {"weight": 1.0, "max": 10},
-    "novelty": {"weight": 1.0, "max": 10},
-    "actionability": {"weight": 1.0, "max": 10}
+    "usefulness": {"weight": 1.0, "max": 10, "description": "이 지식이 의사결정이나 제품 개선에 도움이 되는가?"},
+    "reliability": {"weight": 1.0, "max": 10, "description": "주장이 잘 뒷받침되고 검증에 견딜 수 있는가?"},
+    "novelty": {"weight": 1.0, "max": 10, "description": "기존 vault에 없는 진짜 새로운 정보인가?"},
+    "actionability": {"weight": 1.0, "max": 10, "description": "구체적으로 실행 가능한 다음 단계를 제시하는가?"},
+    "completeness": {"weight": 1.0, "max": 10, "description": "주제의 모든 핵심 측면을 빠짐없이 다루는가?"},
+    "evidence_quality": {"weight": 1.0, "max": 10, "description": "인용 출처가 신뢰할 수 있고 다양한가?"},
+    "perspective_diversity": {"weight": 1.0, "max": 10, "description": "다양한 이해관계자 관점이 반영되었는가?"},
+    "coherence": {"weight": 1.0, "max": 10, "description": "합의·권고가 논리적으로 일관되고 모순이 없는가?"},
+    "depth": {"weight": 1.0, "max": 10, "description": "피상적 분석이 아닌 근본 원인까지 파고드는 분석인가?"},
+    "impact": {"weight": 1.0, "max": 10, "description": "권고가 실행되면 실질적 변화를 만들 수 있는가?"}
   },
   "bonus_rules": [
     {"condition": "confidence >= 0.7", "axis": "reliability", "bonus": 2},
-    {"condition": "evidence_count >= 5", "axis": "reliability", "bonus": 1},
+    {"condition": "evidence_count >= 5", "axis": "evidence_quality", "bonus": 2},
+    {"condition": "evidence_count >= 10", "axis": "evidence_quality", "bonus": 1},
     {"condition": "recommendations_count >= 3", "axis": "actionability", "bonus": 2},
-    {"condition": "dissent_empty", "axis": "novelty", "bonus": -1}
+    {"condition": "recommendations_count >= 10", "axis": "impact", "bonus": 2},
+    {"condition": "dissent_empty", "axis": "novelty", "bonus": -1},
+    {"condition": "personas_count >= 5", "axis": "perspective_diversity", "bonus": 2},
+    {"condition": "personas_count >= 10", "axis": "perspective_diversity", "bonus": 1},
+    {"condition": "web_research_count >= 1", "axis": "depth", "bonus": 2},
+    {"condition": "consensus_length >= 200", "axis": "coherence", "bonus": 1}
   ],
   "min_feedback_for_evolution": 20
 }

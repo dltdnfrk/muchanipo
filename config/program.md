@@ -52,16 +52,22 @@
 
 ## Eval Rubric (v1 — Initial)
 
-### Scoring Axes (0-10 each)
+### Scoring Axes (0-10 each, 10 axes, total 100)
 1. **Usefulness**: Does this knowledge help Hyunjun make better decisions or build better products?
 2. **Reliability**: Are claims well-sourced? Would they hold up under scrutiny?
 3. **Novelty**: Is this genuinely new information not already in the vault?
 4. **Actionability**: Can this be acted upon? Does it suggest concrete next steps?
+5. **Completeness**: Does the analysis cover all key aspects without blind spots?
+6. **Evidence Quality**: Are cited sources credible and diverse?
+7. **Perspective Diversity**: Are multiple stakeholder viewpoints represented?
+8. **Coherence**: Are consensus and recommendations logically consistent?
+9. **Depth**: Does the analysis dig into root causes, not just surface observations?
+10. **Impact**: Would implementing the recommendations create real change?
 
 ### Thresholds
-- PASS: total >= 28 (out of 40)
-- UNCERTAIN: total 20-27 → queue for human sign-off
-- FAIL: total < 20 → discard, log reason
+- PASS: total >= 70 (out of 100)
+- UNCERTAIN: total 50-69 → queue for human sign-off
+- FAIL: total < 50 → discard, log reason
 
 ### Rubric Evolution
 - Track human sign-off decisions (approve/reject/modify)
