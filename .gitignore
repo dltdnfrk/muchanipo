@@ -1,0 +1,29 @@
+# Runtime data
+logs/
+signoff-queue/*.json
+rubric-history/
+reports/*.html
+raw/*.pdf
+raw/*.txt
+wiki/*.md
+!wiki/README.md
+!wiki/index.md
+!wiki/log.md
+!raw/README.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+mp-env/
+
+# OS
+.DS_Store
+*.swp
+
+# Secrets
+.env
+.env.*
+
+# OMC state
+.omc/state/
