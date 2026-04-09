@@ -169,19 +169,36 @@ Example for 사업계획서 분석:
   ... 등등, 엔티티가 있는 만큼 소환
 ```
 
-**Round 1 -- Independent Analysis (PARALLEL dispatch, ALL sonnet):**
-- Launch ALL personas simultaneously using Agent tool with `run_in_background=true`.
-- **No limit on concurrent agents.** If 100 personas were generated, launch 100 agents. Sonnet is cheap — go wide.
-- All use `model="sonnet"` for cost efficiency:
-  ```
-  Agent(
-    description="Council: {name} ({role})",
-    prompt="{persona system prompt}\n\nTopic: {topic}\n\nResearch brief: {summary}\n\nAnalyze from YOUR specific perspective. Include specific claims with source references. Score your confidence 0.0-1.0.",
-    model="sonnet",
-    run_in_background=true
-  )
-  ```
-- Collect all responses when complete. This IS the multi-agent council — real LLM calls, not role-play.
+**Round 1 -- Independent Analysis (WAVE-based parallel dispatch, ALL sonnet):**
+
+Dispatch personas in waves to prevent hangs. No cap on total personas — ontology drives the count.
+
+- **Wave size**: 12 agents per wave (prevents concurrency saturation + rate limits)
+- **Per-agent timeout**: 120 seconds. If an agent doesn't return, mark as TIMED_OUT and skip.
+- **Quorum**: 80% of a wave must return before proceeding. If <80%, wait up to 180 seconds total, then proceed with what you have.
+- **All use `model="sonnet"`** for cost efficiency.
+
+```
+WAVE_SIZE = 12
+AGENT_TIMEOUT = 120  # seconds
+QUORUM_RATIO = 0.8
+
+for wave in chunks(personas, WAVE_SIZE):
+  # Launch wave
+  for persona in wave:
+    Agent(
+      description="Council: {name} ({role})",
+      prompt="{persona system prompt}\n\nTopic: {topic}\n\n...",
+      model="sonnet",
+      run_in_background=true
+    )
+  # Collect wave results (wait for quorum or deadline)
+  # Timed-out agents → logged, excluded from consensus
+```
+
+- After ALL waves complete, aggregate results. This IS the multi-agent council — real LLM calls, not role-play.
+- **If >50% of ALL personas timed out**: CRASH-log the experiment, skip to next topic.
+- **File-based collection**: All agent results go to JSON files, NOT directly into parent context. Run a compression pass (AAAK format) before Round 2 to prevent context window overflow.
 
 **Round 2 -- Cross-Evaluation:**
 - Each persona (sequentially this time, for context) responds to the others' claims.
@@ -301,7 +318,15 @@ LOOP FOREVER:
 9. Brief cooldown: take stock of what you learned, note any follow-up questions for next cycle.
 10. GOTO 1.
 
-**Crashes**: If a step fails (web search timeout, MemPalace offline, file write error), log the error in results.tsv with score=0 and description="CRASH: {reason}", then skip to the next topic. Do NOT stop the loop.
+**Crashes**: If a step fails (web search timeout, MemPalace offline, file write error, agent timeout), log the error in results.tsv with score=0 and description="CRASH: {reason}", then skip to the next topic. Do NOT stop the loop.
+
+**Circuit Breaker**: If 5 consecutive experiments result in FAIL or CRASH, PAUSE the loop. Log "CIRCUIT BREAKER: 5 consecutive failures. Switching to a different interest axis or waiting for human input." Try a completely different axis. If all axes have been tried and still fail, pause for 10 minutes then retry.
+
+**Web Search Retry Limit**: If 3 consecutive web searches fail in Step 2 (timeout or empty), skip to Step 4 with whatever sources you have. Do not keep retrying.
+
+**results.tsv Write Failure**: If results.tsv cannot be written, log to `.omc/autoresearch/logs/emergency-log.txt` as fallback. If that also fails, print to stderr and continue.
+
+**results.tsv Rotation**: When results.tsv exceeds 500 rows, archive as `results-{date}.tsv` and keep only the last 100 rows in active file.
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you, period.
 

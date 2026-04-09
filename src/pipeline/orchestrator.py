@@ -442,6 +442,9 @@ def main() -> None:
     parser.add_argument("--cooldown", type=int, default=COOLDOWN_SECONDS, help="라운드 간 쿨다운(초)")
     args = parser.parse_args()
 
+    # Enforce minimum cooldown to prevent CPU spin
+    args.cooldown = max(5, args.cooldown)
+
     # 디렉토리 초기화
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     WIKI_LOG.parent.mkdir(parents=True, exist_ok=True)

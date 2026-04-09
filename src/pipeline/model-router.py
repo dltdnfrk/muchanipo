@@ -198,8 +198,17 @@ class ModelRouter:
             # Ollama 불가 → fallback
             fallback = entry.get("fallback")
             if fallback:
+                # Cycle detection: prevent infinite recursion on circular fallbacks
+                if not hasattr(self, '_resolve_seen'):
+                    self._resolve_seen = set()
+                if fallback in self._resolve_seen:
+                    _log(f"[ROUTE] 순환 fallback 감지: {fallback}. 중단.")
+                    return {"model": fallback, "provider": "unknown", "available": False, "error": "circular fallback chain"}
+                self._resolve_seen.add(model)
                 _log(f"[ROUTE] Ollama 불가. fallback → {fallback}")
-                return self._resolve_model(fallback, entry)
+                result = self._resolve_model(fallback, entry)
+                self._resolve_seen.discard(model)
+                return result
             return {
                 "model": model,
                 "provider": "ollama",
