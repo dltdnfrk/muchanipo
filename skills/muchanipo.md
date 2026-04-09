@@ -264,6 +264,11 @@ for wave in chunks(personas, WAVE_SIZE):
 
 - After ALL waves complete, aggregate results. This IS the multi-agent council — real LLM calls, not role-play.
 
+**Document-scope constraint (prevent knowledge leakage):**
+- When analyzing a document (Mode 2), persona prompts MUST include:
+  "IMPORTANT: Analyze ONLY the information present in this document. Do NOT bring in external knowledge about the company, product, or technology that is not explicitly stated in the provided text. If something is not mentioned in the document, note it as 'not addressed in the plan' rather than filling in from outside knowledge."
+- This prevents agents from mixing in training data or prior session context with document analysis.
+
 **Prompt safety guidelines (avoid AUP rejections):**
 - NEVER use "attack", "exploit", "impersonate" in persona prompts
 - Competitor personas: "분석가로서 객관적으로 평가하라" (NOT "약점을 공격하라")
