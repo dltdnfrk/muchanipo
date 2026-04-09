@@ -76,7 +76,11 @@ To set up a new research session, do the following:
 
 4. **Check pending sign-offs**: Run `Bash: python3 src/hitl/session-check.py` to see if there are UNCERTAIN items awaiting human review. List them briefly, do NOT stop.
 
-5. **Load results.tsv** (last 50 lines only, NOT the full file): Check recent topics to avoid repetition.
+5. **Read progress.md (accumulated learnings from all past loops)**:
+   - Read `.omc/autoresearch/progress.md` — this is the **lesson log**. Past mistakes, insights, follow-up questions.
+   - This prevents context rot: you won't repeat Exp#5's mistake if you read "한국 AgTech은 한국어로 검색해야 함."
+   
+6. **Load results.tsv** (last 50 lines only, NOT the full file): Check recent topics to avoid repetition.
    ```bash
    tail -50 .omc/autoresearch/results.tsv
    ```
@@ -397,8 +401,26 @@ LOOP FOREVER:
 6. Evaluate per Step 5.
 7. Route the result per Step 6 (PASS -> vault, UNCERTAIN -> queue, FAIL -> discard).
 8. Log to results.tsv per Step 7.
-9. Brief cooldown: take stock of what you learned, note any follow-up questions for next cycle.
-10. GOTO 1.
+9. **Update progress.md (CRITICAL — prevents context rot):**
+   Append to `.omc/autoresearch/progress.md`:
+   ```
+   ## Exp#{N}: {topic}
+   - Verdict: {PASS/UNCERTAIN/FAIL} ({score}/40)
+   - Learned: {one sentence — what did this experiment teach that wasn't obvious?}
+   - Next time: {one sentence — what would you do differently?}
+   - Follow-up: {questions opened by this experiment}
+   ```
+   This file is the **accumulated intelligence** of the loop. It survives context resets.
+   Each new session reads progress.md to avoid repeating past mistakes.
+   
+10. **Rubric evolution check (every 20 experiments):**
+    If results.tsv has 20+ new rows since last evolution:
+    ```bash
+    python3 src/hitl/rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/
+    ```
+    Review suggestions. Apply if they improve quality.
+    
+11. GOTO 1.
 
 **Crashes**: If a step fails (web search timeout, MemPalace offline, file write error, agent timeout), log the error in results.tsv with score=0 and description="CRASH: {reason}", then skip to the next topic. Do NOT stop the loop.
 
