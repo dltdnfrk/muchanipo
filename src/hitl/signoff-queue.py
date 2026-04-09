@@ -175,12 +175,102 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+REVIEW_DIR = SCRIPT_DIR / "review"
+
+
+def _write_plannotator_review(entry: Dict[str, Any]) -> Path:
+    """Council 결과를 리뷰용 마크다운으로 변환하여 review/ 디렉토리에 저장."""
+    REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+
+    entry_id = entry.get("id", "unknown")
+    topic = entry.get("topic", "unknown")
+    report = entry.get("council_report", {})
+    eval_result = entry.get("eval_result", {})
+
+    scores = eval_result.get("scores", {})
+    total = eval_result.get("total", "?")
+    verdict = eval_result.get("verdict", "?")
+    reasoning = eval_result.get("reasoning", "")
+    consensus = report.get("consensus", "")
+    dissent = report.get("dissent", "")
+    recommendations = report.get("recommendations", [])
+    evidence = report.get("evidence", [])
+    timestamp = entry.get("timestamp", "")[:19]
+
+    lines = [
+        f"# 리뷰: {topic}",
+        "",
+        f"**ID**: {entry_id}  ",
+        f"**Timestamp**: {timestamp}  ",
+        f"**Verdict**: {verdict} ({total}/40)  ",
+        "",
+        "## 평가 점수",
+        "",
+    ]
+    for axis, val in scores.items():
+        lines.append(f"- {axis}: {val}/10")
+    lines.append("")
+
+    if reasoning:
+        lines.append("## 평가 근거")
+        lines.append("")
+        for line in reasoning.split("\n"):
+            lines.append(line)
+        lines.append("")
+
+    if consensus:
+        lines.append("## Council 합의")
+        lines.append("")
+        lines.append(consensus)
+        lines.append("")
+
+    if dissent:
+        lines.append("## 반론")
+        lines.append("")
+        lines.append(dissent)
+        lines.append("")
+
+    if evidence:
+        lines.append(f"## 근거 ({len(evidence)}개)")
+        lines.append("")
+        for i, src in enumerate(evidence, 1):
+            lines.append(f"{i}. {src}")
+        lines.append("")
+
+    if recommendations:
+        lines.append(f"## 권고사항 ({len(recommendations)}개)")
+        lines.append("")
+        for i, rec in enumerate(recommendations, 1):
+            lines.append(f"{i}. {rec}")
+        lines.append("")
+
+    lines += [
+        "## 결정",
+        "",
+        "- [ ] 승인 (Approve)",
+        "- [ ] 거절 (Reject) — 사유:",
+        "- [ ] 수정 (Modify) — 내용:",
+        "",
+    ]
+
+    dest = REVIEW_DIR / f"{entry_id}.md"
+    dest.write_text("\n".join(lines), encoding="utf-8")
+    return dest
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Show detailed information about a specific entry."""
     entry = find_entry(args.id)
     if not entry:
         print(f"ERROR: Entry not found: {args.id}", file=sys.stderr)
         return 1
+
+    # --plannotator: 리뷰 마크다운 생성
+    if getattr(args, "plannotator", False):
+        dest = _write_plannotator_review(entry)
+        print(f"Review file created: {dest}")
+        print(f"\nRun: plannotator annotate review/{dest.name}")
+        return 0
 
     # --open implies --html
     if getattr(args, "open", False) or getattr(args, "html", False):
@@ -488,6 +578,7 @@ Examples:
     show_parser.add_argument("id", help="Sign-off queue entry ID (e.g., sq-20260409-123456)")
     show_parser.add_argument("--html", action="store_true", help="Generate HTML report instead of terminal output")
     show_parser.add_argument("--open", action="store_true", help="Open HTML report in browser (implies --html)")
+    show_parser.add_argument("--plannotator", action="store_true", help="리뷰용 마크다운 생성 후 plannotator 명령 출력")
 
     # approve
     approve_parser = subparsers.add_parser("approve", help="Approve entry and save to vault")
