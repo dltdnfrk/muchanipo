@@ -442,12 +442,42 @@ User: "오토리서치 시작" or "세컨드 브레인 돌려"
 -> Setup -> Loop forever through interest axes
 ```
 
-### Mode 2: Targeted Research
+### Mode 2: Targeted Research (iterative deepening, default 10 rounds)
 ```
 User: "이 논문 분석해줘" [attachment] or "MIRIVA 경쟁사 분석해줘"
--> Setup -> Ingest document -> One research cycle on specified topic -> Report to user -> STOP
+-> Setup -> Ingest document -> 10-round improvement loop -> Final report -> STOP
 ```
-In targeted mode, you run exactly ONE cycle and report back. No infinite loop.
+
+In targeted mode, you run **multiple improvement iterations** on the same document:
+
+```
+Round 1: Initial council analysis → identify gaps and weak points
+Round 2: Web research on top 3 gaps → re-council with new evidence
+Round 3: Deeper dive on remaining gaps → re-council
+...
+Round N: Quality plateaus or target reached → final synthesis
+```
+
+**Iteration rules:**
+- Default: 10 rounds (configurable via "N번 돌려" or "--rounds N")
+- Each round reads previous round's gaps/recommendations from progress.md
+- Each round does TARGETED web research on the specific gaps identified
+- Council personas may change between rounds (fresh perspectives)
+- eval-agent.py scores each round independently
+- **Stop early if:** score reaches 36+/40 OR score hasn't improved for 3 consecutive rounds
+- **Final output:** synthesized report combining all rounds' best insights
+
+**Progress tracking per round:**
+```
+## Round {N} of {target}
+- Previous score: {N-1 score}/40
+- Gaps addressed: {list from previous round's recommendations}
+- New research: {what was searched to fill gaps}
+- This score: {N score}/40
+- Remaining gaps: {what's still weak}
+```
+
+After all rounds complete, generate the HTML report and open in browser.
 
 ## Helper Scripts Reference
 
