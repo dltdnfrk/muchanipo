@@ -145,7 +145,7 @@ The number of personas is NOT a fixed number. It is determined by the topic's on
    - Individual entities (people, specific orgs) → concrete person personas
    - Group entities (industries, markets, communities) → representative spokesperson personas
    - A 사업계획서 with 30 stakeholders → 30 personas. A simple topic → 5-8 personas.
-   - **There is no upper cap.** The document drives the count.
+   - **There is no upper cap.** The document drives the count. 100-200 personas is perfectly fine — sonnet tokens are abundant.
 
 2. **When no document is provided (web research only)**: Generate personas from the topic itself.
    - Identify all relevant stakeholder categories (investors, regulators, users, competitors, scientists, policymakers, farmers, etc.)
@@ -171,7 +171,7 @@ Example for 사업계획서 분석:
 
 **Round 1 -- Independent Analysis (PARALLEL dispatch, ALL sonnet):**
 - Launch ALL personas simultaneously using Agent tool with `run_in_background=true`.
-- **No limit on concurrent agents.** If 25 personas were generated, launch 25 agents.
+- **No limit on concurrent agents.** If 100 personas were generated, launch 100 agents. Sonnet is cheap — go wide.
 - All use `model="sonnet"` for cost efficiency:
   ```
   Agent(
