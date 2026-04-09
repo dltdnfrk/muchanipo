@@ -61,18 +61,59 @@ When the user says "silent", "조용히", or "SILENT MODE", minimize terminal ou
 
 To set up a new research session, do the following:
 
-1. **Read the configuration**: Read these files for full context:
-   - `.omc/autoresearch/program.md` -- interest axes, eval rubric, vault structure, council config.
-   - `.omc/autoresearch/config.json` -- structured config (thresholds, persona range, frequency).
-   - `.omc/autoresearch/rubric.json` -- scoring rules for eval.
-2. **Check MemPalace status**: Run `mcp__mempalace__mempalace_status` to verify the palace is online.
-3. **Check pending sign-offs**: Run `Bash: python3 .omc/autoresearch/session-check.py` to see if there are UNCERTAIN items awaiting human review. If there are pending items, list them briefly and note them, but do NOT stop -- continue to the loop.
-4. **Initialize results.tsv**: If `.omc/autoresearch/results.tsv` does not exist, create it with just the header row:
+1. **Read the wiki FIRST (token-efficient bootstrap — Karpathy LLM Wiki pattern)**:
+   - Read `wiki/index.md` — this is the **compiled knowledge catalog**. One line per topic, all past research summarized. This replaces reading individual vault files.
+   - Read `wiki/log.md` (last 30 lines only) — recent operations.
+   - **Do NOT read individual vault .md files during setup.** The wiki IS the compressed summary. Reading raw vault files wastes tokens.
+   
+2. **Read configuration** (only if wiki/index.md doesn't exist yet):
+   - `config/program.md` -- interest axes, eval rubric, vault structure, council config.
+   - `config/config.json` -- structured config (thresholds, persona range, frequency).
+   - `config/rubric.json` -- scoring rules for eval.
+
+3. **Check MemPalace status**: Run `mcp__mempalace__mempalace_status` to verify the palace is online. If offline, note it and continue — MemPalace is optional.
+
+4. **Check pending sign-offs**: Run `Bash: python3 src/hitl/session-check.py` to see if there are UNCERTAIN items awaiting human review. List them briefly, do NOT stop.
+
+5. **Load results.tsv** (last 50 lines only, NOT the full file): Check recent topics to avoid repetition.
+   ```bash
+   tail -50 .omc/autoresearch/results.tsv
    ```
-   timestamp	topic	axis	verdict	score	description
-   ```
-5. **Load recent results**: Read `.omc/autoresearch/results.tsv` to see what topics have already been researched. Avoid repeating recent topics.
+
 6. **Confirm and go**: Confirm setup looks good, then kick off the experimentation loop.
+
+**Token budget for setup: target < 8K tokens total.** The wiki is the compiled truth — trust it over raw files.
+
+## Wiki Maintenance (Karpathy LLM Wiki Pattern)
+
+The wiki/ directory is the **LLM-owned knowledge layer**. It is YOUR responsibility to keep it updated.
+
+```
+raw/     → 인간 소유. 원본 문서, 첨부파일. 읽기만, 수정 금지.
+wiki/    → LLM 소유. 압축된 합성물. 자유롭게 생성/수정/삭제.
+vault/   → 출력. Obsidian vault에 저장된 최종 산출물.
+```
+
+**After each experiment (Step 7 이후):**
+- Update `wiki/index.md` — add one line for the new topic: `- [{topic}]({vault-filename}) — {one-line summary} ({score}/40)`
+- If a topic **contradicts or supersedes** an existing wiki entry, UPDATE the old entry (don't just append).
+- If related topics have accumulated (3+ on same theme), **synthesize** them into a single wiki page: `wiki/{theme-slug}.md`
+
+**Wiki page format:**
+```markdown
+---
+title: {theme}
+updated: {date}
+sources: [{exp#1}, {exp#2}, ...]
+---
+
+{Compressed synthesis — key facts, numbers, decisions only. No filler.}
+```
+
+**Token savings math:**
+- 20 vault files × 3K tokens each = 60K tokens to read raw
+- 1 wiki/index.md = ~2K tokens (covers everything)
+- **30x token reduction per session startup**
 
 ## Experimentation
 
