@@ -136,28 +136,52 @@ Skip this step if no document was provided (web research only).
 
 You conduct the council debate by dispatching personas as **parallel Agent subagents with different models**. This ensures genuine multi-perspective analysis (different models produce different reasoning patterns).
 
-**Persona generation:**
-- Generate 5-10 personas relevant to the topic. Each gets: name, role, expertise, perspective bias, assigned model.
-- For deep/important topics: 10-20 personas across all available models.
-- Example for "형광 프로브 시장": 시장분석가(opus), 규제전문가(sonnet), NeoBio CTO(opus), 경쟁사 전략가(haiku), 농업현장 전문가(sonnet).
+**Persona generation — ontology-driven, no fixed cap (MiroFish pattern):**
 
-**Model assignment (from config/model-router.json):**
-- **Critical/analytical personas** (투자자, 학술연구자, 아키텍트): model="opus"
-- **Practical/domain personas** (사용자대표, 현장전문가, 마케팅): model="sonnet"  
-- **Fast/supplementary personas** (데이터정리, 요약, 체크리스트): model="haiku"
-- Distribute roughly: 30% opus, 50% sonnet, 20% haiku
+The number of personas is NOT a fixed number. It is determined by the topic's ontology:
 
-**Round 1 -- Independent Analysis (PARALLEL dispatch):**
-- Launch ALL personas simultaneously using Agent tool with `run_in_background=true`:
+1. **When a document was ingested (Step 3)**: Extract entities from the document's ontology.
+   Each entity becomes a persona via the MiroFish `generate_persona_from_entity()` pattern:
+   - Individual entities (people, specific orgs) → concrete person personas
+   - Group entities (industries, markets, communities) → representative spokesperson personas
+   - A 사업계획서 with 30 stakeholders → 30 personas. A simple topic → 5-8 personas.
+   - **There is no upper cap.** The document drives the count.
+
+2. **When no document is provided (web research only)**: Generate personas from the topic itself.
+   - Identify all relevant stakeholder categories (investors, regulators, users, competitors, scientists, policymakers, farmers, etc.)
+   - Create one persona per category. Typically 5-15 depending on topic complexity.
+
+3. **Model assignment**: Use **sonnet for ALL personas** by default. Sonnet is cost-effective and produces quality reasoning. Do NOT use opus for individual personas — save opus for the final synthesis step only.
+   - Exception: If a persona requires extremely deep analytical reasoning (e.g., a financial modeler running complex scenarios), use opus for that specific persona.
+
+Example for 사업계획서 분석:
+```
+온톨로지 추출 → 엔티티 25개 발견:
+  - 경희대 (기관) → 주관기관 대변인 (sonnet)
+  - 서울대 (기관) → 공동연구 과학자 (sonnet)
+  - 농진청 (정부) → 정책 담당관 (sonnet)
+  - Erwinia amylovora (병원체) → 식물병리학자 (sonnet)
+  - MIRIVA (제품) → 제품 매니저 (sonnet)
+  - 사과 농가 (그룹) → 농민 대표 (sonnet)
+  - 배 농가 (그룹) → 배 농가 대표 (sonnet)
+  - Agdia (경쟁사) → 경쟁사 전략가 (sonnet)
+  - 투자자 (그룹) → VC 파트너 (sonnet)
+  ... 등등, 엔티티가 있는 만큼 소환
+```
+
+**Round 1 -- Independent Analysis (PARALLEL dispatch, ALL sonnet):**
+- Launch ALL personas simultaneously using Agent tool with `run_in_background=true`.
+- **No limit on concurrent agents.** If 25 personas were generated, launch 25 agents.
+- All use `model="sonnet"` for cost efficiency:
   ```
   Agent(
-    description="Council persona: {name}",
-    prompt="{persona system prompt}\n\nTopic: {topic}\n\nResearch brief: {summary}\n\nAnalyze from your perspective. Include specific claims with source references. Score your confidence 0.0-1.0.",
-    model="{assigned_model}",  // opus, sonnet, or haiku
+    description="Council: {name} ({role})",
+    prompt="{persona system prompt}\n\nTopic: {topic}\n\nResearch brief: {summary}\n\nAnalyze from YOUR specific perspective. Include specific claims with source references. Score your confidence 0.0-1.0.",
+    model="sonnet",
     run_in_background=true
   )
   ```
-- Collect all responses when complete.
+- Collect all responses when complete. This IS the multi-agent council — real LLM calls, not role-play.
 
 **Round 2 -- Cross-Evaluation:**
 - Each persona (sequentially this time, for context) responds to the others' claims.
