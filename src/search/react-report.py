@@ -14,7 +14,7 @@ import os
 import re
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any, List
 
 
 # ---------------------------------------------------------------------------

@@ -10,15 +10,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import sys
 from collections import defaultdict
-from typing import Any, Dict, List
+from functools import lru_cache
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
 # MemPalace 검색 stub
 # ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _load_stub_fixture() -> dict[str, Any] | None:
+    """테스트용 stub fixture 로드."""
+    fixture_path = os.getenv("INSIGHT_FORGE_STUB_DATA")
+    if not fixture_path:
+        return None
+
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        fixture = json.load(f)
+
+    if isinstance(fixture, list):
+        return {"__default__": fixture}
+    if isinstance(fixture, dict):
+        return fixture
+    raise ValueError("INSIGHT_FORGE_STUB_DATA must point to a JSON object or list")
+
 
 def search_mempalace(query: str, wing: str = None, room: str = None, limit: int = 5) -> list[dict]:
     """
@@ -29,6 +47,15 @@ def search_mempalace(query: str, wing: str = None, room: str = None, limit: int 
     Returns:
         list[dict]: 각 항목은 {"text": str, "source": str, "score": float}
     """
+    fixture = _load_stub_fixture()
+    if fixture is not None:
+        if query in fixture:
+            data = fixture[query]
+        else:
+            data = fixture.get("__default__", [])
+        if isinstance(data, list):
+            return data[:limit]
+
     # TODO: 실제 MemPalace MCP 연동 시 이 함수를 교체
     return []
 
@@ -71,6 +98,15 @@ _QUESTION_TEMPLATES: dict[str, str] = {
     "HOW": "구현 방법/프로세스는?",
     "WHY": "동기/배경/문제점은?",
     "WHEN": "시간적 맥락/일정은?",
+}
+
+_DIMENSION_QUERY_HINTS: dict[str, list[str]] = {
+    "WHO": ["인물", "조직"],
+    "WHAT": ["기술", "제품"],
+    "HOW": ["구현", "프로세스"],
+    "WHY": ["동기", "배경", "문제점"],
+    "WHEN": ["일정", "시기"],
+    "EXPAND": ["확장"],
 }
 
 # 5W1H 차원 우선순위 (기본)
@@ -154,16 +190,28 @@ def extract_keywords(text: str) -> list[str]:
     return keywords
 
 
+def _dedupe_keywords(keywords: list[str]) -> list[str]:
+    """순서를 보존하며 키워드 중복 제거."""
+    unique_keywords: list[str] = []
+    for keyword in keywords:
+        if keyword not in unique_keywords:
+            unique_keywords.append(keyword)
+    return unique_keywords
+
+
 def build_search_queries(sub_questions: list[dict[str, str]]) -> list[dict[str, Any]]:
     """하위 질문들을 MemPalace 검색 쿼리로 변환."""
     queries = []
     for sq in sub_questions:
         keywords = extract_keywords(sq["question"])
-        query_str = " ".join(keywords[:6])  # 최대 6개 키워드
+        dimension_hints = _DIMENSION_QUERY_HINTS.get(sq["dimension"], [])
+        topic_keywords = [kw for kw in keywords if kw not in dimension_hints]
+        prioritized = _dedupe_keywords(topic_keywords[:4] + dimension_hints + keywords)
+        query_str = " ".join(prioritized[:6])  # 최대 6개 키워드
         queries.append({
             "dimension": sq["dimension"],
             "query": query_str,
-            "keywords": keywords[:6],
+            "keywords": prioritized[:6],
         })
     return queries
 
@@ -197,7 +245,9 @@ def reciprocal_rank_fusion(
 
     for dim, ranked in zip(dimensions, ranked_lists):
         for rank, item in enumerate(ranked, start=1):
-            key = item.get("text", "")[:100]  # 텍스트 앞 100자를 키로 사용
+            key = re.sub(r"\s+", " ", item.get("text", "").strip())
+            if not key:
+                key = json.dumps(item, ensure_ascii=False, sort_keys=True)
             scores[key] += 1.0 / (_RRF_K + rank)
             items[key] = item
             if dim not in matched[key]:
@@ -263,7 +313,8 @@ def expand_queries(
     """
     # 초기 결과 텍스트에서 빈출 키워드 추출
     all_keywords: dict[str, int] = defaultdict(int)
-    original_kw = set(extract_keywords(original_query))
+    original_keywords = extract_keywords(original_query)
+    original_kw = set(original_keywords)
 
     for item in initial_results:
         for kw in extract_keywords(item.get("text", "")):
@@ -279,7 +330,7 @@ def expand_queries(
         expansion_queries.append({
             "dimension": "EXPAND",
             "query": f"{original_query} {kw}",
-            "keywords": list(original_kw) + [kw],
+            "keywords": _dedupe_keywords(original_keywords + [kw]),
         })
 
     return expansion_queries
