@@ -321,14 +321,17 @@ Thresholds: as defined in `config.json` / `rubric.json` (current defaults: PASS 
 
 Based on the verdict:
 
+**ALL VERDICTS — always generate HTML report first:**
+```bash
+python3 src/hitl/signoff-report.py {council-id} \
+  --queue-dir .omc/autoresearch/signoff-queue \
+  --reports-dir .omc/autoresearch/reports --open
+```
+This opens the council report in the browser so the human can review every result — PASS, UNCERTAIN, or FAIL. The human's review is how the system improves.
+
 **PASS (keep)**:
-1. Write a markdown file to the Obsidian vault using vault-router.py:
-   ```bash
-   python3 src/hitl/vault-router.py \
-     .omc/autoresearch/logs/eval-result-{ts}.json \
-     .omc/autoresearch/logs/council-report-{ts}.json
-   ```
-   OR write directly to the vault path defined in `config.json` for the matching interest axis.
+1. Generate HTML report (above) + open in browser.
+2. Write a markdown file to the Obsidian vault:
    Read `config.json` → `interest_axes[]` → match by keywords → use that axis's `vault_path`.
    If no axis matches, default to the Feed directory under `identity.vault_path`.
 2. Store key facts to MemPalace KG.
@@ -351,8 +354,9 @@ Based on the verdict:
 4. Note it in results.tsv. Continue to next topic.
 
 **FAIL (discard)**:
-1. Log to `.omc/autoresearch/logs/failed/`.
-2. Note it in results.tsv. Continue to next topic.
+1. Generate HTML report (above) + open in browser. Even failures deserve review.
+2. Log to `.omc/autoresearch/logs/failed/`.
+3. Note it in results.tsv. Continue to next topic.
 
 ### Step 7: Log Results
 
