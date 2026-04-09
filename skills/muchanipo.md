@@ -61,10 +61,11 @@ When the user says "silent", "조용히", or "SILENT MODE", minimize terminal ou
 
 To set up a new research session, do the following:
 
-1. **Read the wiki FIRST (token-efficient bootstrap — Karpathy LLM Wiki pattern)**:
-   - Read `wiki/index.md` — this is the **compiled knowledge catalog**. One line per topic, all past research summarized. This replaces reading individual vault files.
-   - Read `wiki/log.md` (last 30 lines only) — recent operations.
-   - **Do NOT read individual vault .md files during setup.** The wiki IS the compressed summary. Reading raw vault files wastes tokens.
+1. **Read the wiki index FIRST (Karpathy LLM Wiki bootstrap)**:
+   - Use obsidian-sb MCP: `search_notes("_muchanipo index")` or `get_note("_muchanipo/index")`
+   - This is the **compiled knowledge catalog**. One line per topic. Replaces reading individual vault files.
+   - Also read `_muchanipo/log.md` (last 30 lines) for recent operations.
+   - **Do NOT read individual vault .md files during setup.** The index IS the compressed summary.
    
 2. **Read configuration** (only if wiki/index.md doesn't exist yet):
    - `config/program.md` -- interest axes, eval rubric, vault structure, council config.
@@ -84,36 +85,60 @@ To set up a new research session, do the following:
 
 **Token budget for setup: target < 8K tokens total.** The wiki is the compiled truth — trust it over raw files.
 
-## Wiki Maintenance (Karpathy LLM Wiki Pattern)
+## LLM Wiki = Obsidian Vault (Karpathy Pattern)
 
-The wiki/ directory is the **LLM-owned knowledge layer**. It is YOUR responsibility to keep it updated.
+**Obsidian vault IS the LLM Wiki.** There is no separate wiki/ directory. The vault is the single source of truth that persists across all sessions.
 
 ```
-raw/     → 인간 소유. 원본 문서, 첨부파일. 읽기만, 수정 금지.
-wiki/    → LLM 소유. 압축된 합성물. 자유롭게 생성/수정/삭제.
-vault/   → 출력. Obsidian vault에 저장된 최종 산출물.
+raw/                        → 인간 소유. 원본 문서. 읽기만, 수정 금지.
+~/Documents/Hyunjun/        → LLM Wiki (= Obsidian vault). LLM이 쓰고 관리.
+  ├── Neobio/               → wing_neobio 지식
+  ├── Idea Note/            → wing_ai_ml, wing_tech 지식
+  ├── Feed/                 → 피드, 기술 트렌드
+  └── _muchanipo/           → 위키 메타 (index.md, log.md)
 ```
+
+### 세 가지 핵심 원칙 (Karpathy)
+
+1. **컴파일 → 축적**: 한번 리서치한 결과는 vault에 쌓인다. 다음 세션에서 다시 검색할 필요 없다.
+2. **에이전트가 쓴다**: 사람은 vault를 직접 편집하지 않는다. MuchaNipo가 쓰고, 업데이트하고, 모순을 해소한다.
+3. **출력이 귀환한다**: Q&A 결과, council 합의, 새로운 발견 → 전부 vault로 돌아온다. 탐색할수록 위키가 강해진다.
+
+### 세션 간 컨텍스트 전달
+
+**어느 디렉토리에서 어느 세션을 열든**, obsidian-sb MCP로 vault를 읽으면 즉시 전체 지식 베이스에 접근:
+
+```
+새 세션 → obsidian-sb: search_notes("muchanipo") → index 확인
+        → obsidian-sb: get_note("_muchanipo/index") → 전체 지식 카탈로그
+        → 즉시 컨텍스트 확보, 세션 이동 문제 해결
+```
+
+### Wiki Index 관리 (`_muchanipo/index.md`)
+
+Obsidian vault 안에 `_muchanipo/` 폴더를 만들어 위키 메타를 관리한다:
+- `_muchanipo/index.md` — 전체 지식 카탈로그 (한 줄/토픽, 2K tokens 이내)
+- `_muchanipo/log.md` — 실험 로그 (append-only)
 
 **After each experiment (Step 7 이후):**
-- Update `wiki/index.md` — add one line for the new topic: `- [{topic}]({vault-filename}) — {one-line summary} ({score}/40)`
-- If a topic **contradicts or supersedes** an existing wiki entry, UPDATE the old entry (don't just append).
-- If related topics have accumulated (3+ on same theme), **synthesize** them into a single wiki page: `wiki/{theme-slug}.md`
+- Update `_muchanipo/index.md` — add one line: `- [[{vault-filename}]] — {one-line summary} ({score}/40)`
+- If a topic **contradicts or supersedes** an existing vault entry, UPDATE the old entry (don't just append).
+- If related topics have accumulated (3+ on same theme), **synthesize** them into a single page with [[wikilinks]] to sources.
 
-**Wiki page format:**
-```markdown
----
-title: {theme}
-updated: {date}
-sources: [{exp#1}, {exp#2}, ...]
----
+### 복리 효과
 
-{Compressed synthesis — key facts, numbers, decisions only. No filler.}
+```
+세션 1: 5개 리서치 → vault에 5개 페이지
+세션 2: index.md 읽기(2K tok) → 기존 지식 위에 5개 추가 → 10개 페이지
+세션 3: index.md 읽기(3K tok) → 기존 지식 위에 5개 추가 → 15개 페이지
+...
+세션 N: 위키가 점점 똑똑해짐. 질문할수록 지식 베이스 강화.
 ```
 
-**Token savings math:**
-- 20 vault files × 3K tokens each = 60K tokens to read raw
-- 1 wiki/index.md = ~2K tokens (covers everything)
-- **30x token reduction per session startup**
+**Token savings:**
+- Raw vault 읽기: 20 files × 3K = 60K tokens
+- _muchanipo/index.md: ~2K tokens
+- **30x 절감, 그리고 세션 간 컨텍스트 전달 문제 해결**
 
 ## Experimentation
 
