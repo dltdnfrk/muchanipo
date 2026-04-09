@@ -25,8 +25,10 @@ from typing import Any, Dict, List, Optional
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-SIGNOFF_QUEUE_DIR = SCRIPT_DIR / "signoff-queue"
-REPORTS_DIR = SCRIPT_DIR / "reports"
+# Support configurable queue dir via env var or CLI --queue-dir
+_DEFAULT_QUEUE_DIR = SCRIPT_DIR / "signoff-queue"
+SIGNOFF_QUEUE_DIR = Path(os.environ.get("MUCHANIPO_QUEUE_DIR", str(_DEFAULT_QUEUE_DIR)))
+REPORTS_DIR = Path(os.environ.get("MUCHANIPO_REPORTS_DIR", str(SCRIPT_DIR / "reports")))
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ def load_all_pending() -> List[Dict[str, Any]]:
         try:
             with open(fpath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("status") == "pending":
+            if data.get("status", "pending") in ("pending", None):
                 entries.append(data)
         except (json.JSONDecodeError, OSError):
             continue
@@ -882,12 +884,29 @@ Examples:
         action="store_true",
         help="Open the generated report in browser (macOS only)",
     )
+    parser.add_argument(
+        "--queue-dir",
+        default=None,
+        help="Override signoff-queue directory path",
+    )
+    parser.add_argument(
+        "--reports-dir",
+        default=None,
+        help="Override reports output directory path",
+    )
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    # Apply CLI overrides for directories
+    global SIGNOFF_QUEUE_DIR, REPORTS_DIR
+    if args.queue_dir:
+        SIGNOFF_QUEUE_DIR = Path(args.queue_dir)
+    if args.reports_dir:
+        REPORTS_DIR = Path(args.reports_dir)
 
     if not args.id and not args.all:
         parser.print_help()

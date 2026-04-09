@@ -41,6 +41,22 @@ but for knowledge instead of model weights. You are the researcher. You directly
 use your tools (Bash, WebSearch, Read, Write, MemPalace MCP) to execute every
 step. There is no external orchestrator.py to call. You ARE the orchestrator.
 
+## Execution Independence
+
+MuchaNipo runs **completely independent** of OMC autopilot/ralph/ultrawork modes.
+- State files: ONLY `.omc/autoresearch/` — never read or write `.omc/state/autopilot-state.json` or any other OMC mode state.
+- If OMC autopilot is running concurrently, ignore it. MuchaNipo has its own loop.
+- Do NOT check for or respect `cancel` signals from OMC modes. MuchaNipo stops only when the human interrupts.
+
+## Silent Mode
+
+When the user says "silent", "조용히", or "SILENT MODE", minimize terminal output:
+- Each experiment: output ONLY one line: `[EXP#{N}] {topic} → {verdict} {score}/40`
+- Do NOT print: council debate text, web search results, persona analyses, eval breakdowns.
+- All detailed output goes to files only (council reports, eval results, vault entries).
+- Errors and CRASH events are always printed regardless of silent mode.
+- To exit silent mode: user says "verbose" or "상세 모드".
+
 ## Setup
 
 To set up a new research session, do the following:
@@ -118,23 +134,36 @@ Skip this step if no document was provided (web research only).
 
 ### Step 4: Council Deliberation
 
-You conduct the council debate yourself by adopting multiple persona perspectives sequentially. Do NOT call an external council-runner script. You ARE the council.
+You conduct the council debate by dispatching personas as **parallel Agent subagents with different models**. This ensures genuine multi-perspective analysis (different models produce different reasoning patterns).
 
 **Persona generation:**
-- Generate 3-5 personas relevant to the topic. Each gets: name, role, expertise, perspective bias.
-- Example for "형광 프로브 시장": 시장분석가, 규제전문가, NeoBio CTO, 경쟁사 전략가, 농업현장 전문가.
+- Generate 5-10 personas relevant to the topic. Each gets: name, role, expertise, perspective bias, assigned model.
+- For deep/important topics: 10-20 personas across all available models.
+- Example for "형광 프로브 시장": 시장분석가(opus), 규제전문가(sonnet), NeoBio CTO(opus), 경쟁사 전략가(haiku), 농업현장 전문가(sonnet).
 
-**Debate format (2-3 rounds):**
+**Model assignment (from config/model-router.json):**
+- **Critical/analytical personas** (투자자, 학술연구자, 아키텍트): model="opus"
+- **Practical/domain personas** (사용자대표, 현장전문가, 마케팅): model="sonnet"  
+- **Fast/supplementary personas** (데이터정리, 요약, 체크리스트): model="haiku"
+- Distribute roughly: 30% opus, 50% sonnet, 20% haiku
 
-Round 1 -- Independent Analysis:
-- For each persona, write a 3-5 sentence analysis from their perspective.
-- Include specific claims with source references.
+**Round 1 -- Independent Analysis (PARALLEL dispatch):**
+- Launch ALL personas simultaneously using Agent tool with `run_in_background=true`:
+  ```
+  Agent(
+    description="Council persona: {name}",
+    prompt="{persona system prompt}\n\nTopic: {topic}\n\nResearch brief: {summary}\n\nAnalyze from your perspective. Include specific claims with source references. Score your confidence 0.0-1.0.",
+    model="{assigned_model}",  // opus, sonnet, or haiku
+    run_in_background=true
+  )
+  ```
+- Collect all responses when complete.
 
-Round 2 -- Cross-Evaluation:
-- Each persona responds to the others' claims.
+**Round 2 -- Cross-Evaluation:**
+- Each persona (sequentially this time, for context) responds to the others' claims.
 - Identify agreements, disagreements, and gaps.
 
-Round 3 (if needed) -- Convergence:
+**Round 3 (if needed) -- Convergence:**
 - Synthesize into consensus + dissent + recommendations.
 - Only run if Round 2 has unresolved contradictions.
 
@@ -154,29 +183,25 @@ Round 3 (if needed) -- Convergence:
 
 ### Step 5: Evaluation
 
-Score the council output using the rubric. You can either:
+Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.** You MUST call the external eval script for objective scoring.
 
-**Option A -- Use eval-agent.py** (preferred for consistency):
-1. Write the council report to a temp file:
+1. Write the council report JSON to a file:
    ```bash
    # Write to .omc/autoresearch/logs/council-report-{timestamp}.json
    ```
-2. Run eval:
+2. Run eval-agent.py (MANDATORY):
    ```bash
-   python3 .omc/autoresearch/eval-agent.py \
+   python3 src/hitl/eval-agent.py \
      .omc/autoresearch/logs/council-report-{timestamp}.json \
-     --rubric .omc/autoresearch/rubric.json --verbose
+     --rubric config/rubric.json --verbose
    ```
 3. Read the output to get verdict + scores.
 
-**Option B -- Self-evaluate** (when eval-agent.py is unavailable):
-Score each axis 0-10 yourself:
-- **Usefulness**: Does this help Hyunjun make better decisions?
-- **Reliability**: Are claims well-sourced?
-- **Novelty**: Is this new to the vault?
-- **Actionability**: Are there concrete next steps?
+**If eval-agent.py fails** (file not found, Python error, etc.):
+- Log the error in results.tsv with score=0 and description="CRASH: eval-agent.py failed: {error}"
+- Do NOT fall back to self-evaluation. Skip this experiment and move to the next topic.
 
-Total >= 28 = PASS, 20-27 = UNCERTAIN, < 20 = FAIL.
+Thresholds: Total >= 28 = PASS, 20-27 = UNCERTAIN, < 20 = FAIL.
 
 ### Step 6: Routing
 
@@ -199,7 +224,19 @@ Based on the verdict:
 
 **UNCERTAIN (queue for sign-off)**:
 1. Save to `.omc/autoresearch/signoff-queue/sq-{timestamp}.json`.
-2. Note it in results.tsv. Continue to next topic.
+2. Generate HTML report and open in browser:
+   ```bash
+   python3 src/hitl/signoff-report.py sq-{timestamp} \
+     --queue-dir .omc/autoresearch/signoff-queue \
+     --reports-dir .omc/autoresearch/reports --open
+   ```
+3. Auto-trigger Plannotator review for human annotation:
+   ```bash
+   # If plannotator is available, open annotation UI on the signoff report
+   Skill("plannotator:plannotator-annotate", args=".omc/autoresearch/reports/sq-{timestamp}.html")
+   ```
+   If Plannotator is not available, skip this step silently.
+4. Note it in results.tsv. Continue to next topic.
 
 **FAIL (discard)**:
 1. Log to `.omc/autoresearch/logs/failed/`.
