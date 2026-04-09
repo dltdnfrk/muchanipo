@@ -123,7 +123,7 @@ Gather sources using your search tools:
 
 If the user attached a document (PDF, text, URL), ingest it BEFORE the council sees it:
 ```bash
-python3 .omc/autoresearch/muchanipo-ingest.py "{file_path}" \
+python3 src/pipeline/muchanipo-ingest.py "{file_path}" \
   --wing {interest_axis} --room {topic_slug} --strategy semantic
 ```
 Then extract ontology (entities + relationships) and store to MemPalace KG:
@@ -225,7 +225,7 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
 - Log the error in results.tsv with score=0 and description="CRASH: eval-agent.py failed: {error}"
 - Do NOT fall back to self-evaluation. Skip this experiment and move to the next topic.
 
-Thresholds: Total >= 28 = PASS, 20-27 = UNCERTAIN, < 20 = FAIL.
+Thresholds: as defined in `config.json` / `rubric.json` (current defaults: PASS >= 28, UNCERTAIN 20-27, FAIL < 20).
 
 ### Step 6: Routing
 
@@ -234,15 +234,13 @@ Based on the verdict:
 **PASS (keep)**:
 1. Write a markdown file to the Obsidian vault using vault-router.py:
    ```bash
-   python3 .omc/autoresearch/vault-router.py \
+   python3 src/hitl/vault-router.py \
      .omc/autoresearch/logs/eval-result-{ts}.json \
      .omc/autoresearch/logs/council-report-{ts}.json
    ```
-   OR write directly to the vault path from config.json:
-   - wing_neobio -> `~/Documents/Hyunjun/Neobio/`
-   - wing_tech -> `~/Documents/Hyunjun/Idea Note/`
-   - wing_business -> `~/Documents/Hyunjun/Neobio/memo/` (or `funding/` for investment topics)
-   - wing_research -> `~/Documents/Hyunjun/Feed/`
+   OR write directly to the vault path defined in `config.json` for the matching interest axis.
+   Read `config.json` → `interest_axes[]` → match by keywords → use that axis's `vault_path`.
+   If no axis matches, default to the Feed directory under `identity.vault_path`.
 2. Store key facts to MemPalace KG.
 3. File format: `YYYY-MM-DD-{topic-slug}.md` with frontmatter (source, date, confidence, council-id) and [[wikilinks]].
 
@@ -324,7 +322,7 @@ In targeted mode, you run exactly ONE cycle and report back. No infinite loop.
 
 ## Helper Scripts Reference
 
-All scripts live in `.omc/autoresearch/` and are called via `Bash: python3 .omc/autoresearch/{script}`:
+Scripts live in `src/hitl/` and `src/pipeline/`. Call via `Bash: python3 src/hitl/{script}` or `src/pipeline/{script}`:
 
 | Script | Purpose | When to use |
 |--------|---------|-------------|

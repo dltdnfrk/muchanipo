@@ -3,8 +3,7 @@
   "created": "2026-04-09",
   "thresholds": {
     "pass": 28,
-    "uncertain_min": 20,
-    "fail_max": 19
+    "uncertain": 20
   },
   "axes": {
     "usefulness": {"weight": 1.0, "max": 10},

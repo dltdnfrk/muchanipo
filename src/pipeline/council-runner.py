@@ -870,7 +870,8 @@ def run_council(
     # 설정값 오버라이드
     convergence_threshold = council_config.get("convergence_threshold", 0.7)
     persona_range = council_config.get("persona_range", [3, 7])
-    persona_count = max(persona_range[0], min(persona_range[1], persona_count))
+    # Only enforce minimum, NO upper cap — ontology drives persona count (MiroFish pattern)
+    persona_count = max(persona_range[0], persona_count)
     max_rounds = max_rounds or council_config.get("max_rounds", 5)
 
     # --finalize 모드
