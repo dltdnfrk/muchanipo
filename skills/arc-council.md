@@ -31,6 +31,12 @@ tools:
 A council deliberation system where dynamically generated personas debate on
 a shared MemPalace knowledge graph until emergent consensus is reached.
 
+**MiroFish Patterns Adopted:**
+- `oasis_profile_generator.py`: Entity-to-persona conversion with individual/group distinction
+- `zep_tools.py` InsightForge: LLM-based sub-query decomposition + semantic search + entity insights + relationship chains
+- `report_agent.py` ReACT loop: Think-Act-Observe-Write with tool call parsing, observation injection, min/max enforcement
+- Zep dependencies replaced with MemPalace MCP, search patterns (query decomposition, RRF) preserved
+
 ## Trigger Keywords
 - "arc-council", "council debate", "토론 시작", "council 돌려"
 
@@ -40,6 +46,11 @@ a shared MemPalace knowledge graph until emergent consensus is reached.
 [Input: topic + research brief]
          ↓
 [Persona Generator → 3-7 personas]
+  ├─ Ontology entities → generate_persona_from_entity() (MiroFish pattern)
+  │   ├─ Individual entities: concrete person settings
+  │   └─ Group entities: representative spokesperson settings
+  ├─ Context enrichment via _build_entity_context() + MemPalace search
+  └─ Fallback: static persona pool with role-based selection
          ↓
 [Round 1: Independent Analysis — ALL PARALLEL]
   ├─ Persona 1 (via Claude): analyzes topic from their perspective
@@ -51,7 +62,17 @@ a shared MemPalace knowledge graph until emergent consensus is reached.
          ↓
 [Round 2-N: Cross-Evaluation + ReACT Debate]
   ├─ Each persona reads others' positions from MemPalace
-  ├─ ReACT: search/verify claims during debate if needed
+  ├─ ReACT loop (MiroFish pattern):
+  │   ├─ Tool call parsing: XML <tool_call> + bare JSON fallback
+  │   ├─ Observation injection: REACT_OBSERVATION_TEMPLATE
+  │   ├─ Min 3 tool calls enforced, max 5 per section
+  │   └─ Conflict handling: tool_call + Final Answer in same response
+  ├─ InsightForge search (MiroFish pattern):
+  │   ├─ LLM-based sub-query generation (or 5W1H fallback)
+  │   ├─ Multi-dimensional search via MemPalace
+  │   ├─ RRF (Reciprocal Rank Fusion) integration
+  │   ├─ Entity insight extraction
+  │   └─ Relationship chain tracking
   ├─ Rebut, agree, or refine positions
   └─ Update MemPalace KG with new arguments
          ↓
@@ -133,11 +154,24 @@ You MUST use mempalace_search to find specific facts, numbers, and evidence.
 5. Note what you're uncertain about
 6. Score your confidence (0.0-1.0)
 
-## ReACT: Search and verify during analysis
-You MUST use search tools during your analysis:
+## ReACT: Search and verify during analysis (MiroFish pattern)
+You MUST use search tools during your analysis.
+
+Available tools (adopted from MiroFish report_agent.py):
+- insight_forge: Deep multi-dimensional search with sub-query decomposition + RRF
 - mempalace_search: Search ingested documents for specific facts
-- WebSearch/exa: Verify claims against external sources
-Format: [SEARCH: query] → [FOUND: result from chunk X] → [CONCLUSION: ...]
+- web_search: Verify claims against external sources
+
+Tool call format (adopted from MiroFish report_agent.py:1067-1112):
+<tool_call>
+{"name": "insight_forge", "parameters": {"query": "search query"}}
+</tool_call>
+
+ReACT loop rules (adopted from MiroFish report_agent.py:1285-1500):
+- Min 3 tool calls per section, max 5
+- Each response: EITHER tool call OR "Final Answer:" (never both)
+- Observation results injected as user messages
+- Unused tool hints provided after each call
 ```
 
 ### Phase 3: Rounds 2-N — Cross-Evaluation + Debate
