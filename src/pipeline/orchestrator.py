@@ -249,37 +249,57 @@ def step_insight(topic: str, dry_run: bool) -> tuple[bool, str]:
 
 
 def step_council(topic: str, insight_output: str, dry_run: bool) -> tuple[bool, str]:
-    """Council 토론 실행."""
-    args = [f"--topic={topic}"]
-    return run_script(
+    """Council 토론 실행. 성공 시 council-report JSON 경로를 stdout으로 반환."""
+    council_output = SCRIPT_DIR / "logs" / f"council-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    args = [f"--topic={topic}", f"--output={council_output}"]
+    ok, out = run_script(
         COUNCIL_SCRIPT,
         args,
         "COUNCIL",
         dry_run=dry_run,
     )
+    if ok and council_output.exists():
+        return True, str(council_output)
+    # fallback: council-logs에서 최신 리포트 찾기
+    reports = sorted(SCRIPT_DIR.glob("council-logs/*/council-report.json"), reverse=True)
+    if reports:
+        return ok, str(reports[0])
+    return ok, out
 
 
-def step_eval(council_output_path: Optional[str], dry_run: bool) -> tuple[bool, str]:
-    """Eval-agent로 자동 채점."""
-    if council_output_path and Path(council_output_path).exists():
-        args = [council_output_path]
-    else:
-        # council 출력 파일을 추정
-        reports = sorted(SCRIPT_DIR.glob("council-report-*.json"), reverse=True)
+def step_eval(council_report_path: str, dry_run: bool) -> tuple[bool, str]:
+    """Eval-agent로 자동 채점. 성공 시 eval-result JSON 경로를 반환."""
+    if not council_report_path or not Path(council_report_path).exists():
+        # fallback: 최신 council report 검색
+        reports = sorted(SCRIPT_DIR.glob("logs/council-report-*.json"), reverse=True)
+        if not reports:
+            reports = sorted(SCRIPT_DIR.glob("council-logs/*/council-report.json"), reverse=True)
         if reports:
-            args = [str(reports[0])]
+            council_report_path = str(reports[0])
         else:
             return False, "council report 없음"
-    return run_script(EVAL_SCRIPT, args, "EVAL", dry_run=dry_run)
+    eval_output = SCRIPT_DIR / "logs" / f"eval-result-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    args = [council_report_path, f"--output={eval_output}"]
+    ok, out = run_script(EVAL_SCRIPT, args, "EVAL", dry_run=dry_run)
+    if ok and eval_output.exists():
+        return True, str(eval_output)
+    return ok, out
 
 
-def step_vault(topic: str, dry_run: bool) -> tuple[bool, str]:
-    """Vault-router로 라우팅."""
+def step_vault(eval_result_path: str, council_report_path: str, dry_run: bool) -> tuple[bool, str]:
+    """Vault-router로 라우팅. eval_result와 council_report 경로를 전달."""
+    if not eval_result_path or not Path(eval_result_path).exists():
+        return False, "eval result 파일 없음"
+    if not council_report_path or not Path(council_report_path).exists():
+        return False, "council report 파일 없음"
+    args = [eval_result_path, council_report_path]
+    if dry_run:
+        args.append("--dry-run")
     return run_script(
         VAULT_SCRIPT,
-        [f"--topic={topic}"],
+        args,
         "VAULT",
-        dry_run=dry_run,
+        dry_run=False,  # dry_run은 args로 전달
     )
 
 
@@ -330,24 +350,24 @@ def run_topic_pipeline(
     else:
         log_wiki("INSIGHT_OK", f"topic={topic_name}")
 
-    # 3. COUNCIL
-    ok, council_out = step_council(topic_name, insight_out, dry_run)
+    # 3. COUNCIL → council_report_path 반환
+    ok, council_report_path = step_council(topic_name, insight_out, dry_run)
     if not ok:
-        log_wiki("COUNCIL_FAIL", f"topic={topic_name} err={council_out[:200]}")
+        log_wiki("COUNCIL_FAIL", f"topic={topic_name} err={council_report_path[:200]}")
         log_print(f"[SKIP] COUNCIL 실패. 다음 토픽으로.")
         return False
-    log_wiki("COUNCIL_OK", f"topic={topic_name}")
+    log_wiki("COUNCIL_OK", f"topic={topic_name} report={council_report_path}")
 
-    # 4. EVAL
-    ok, eval_out = step_eval(None, dry_run)
+    # 4. EVAL → eval_result_path 반환
+    ok, eval_result_path = step_eval(council_report_path, dry_run)
     if not ok:
-        log_wiki("EVAL_FAIL", f"topic={topic_name} err={eval_out[:200]}")
+        log_wiki("EVAL_FAIL", f"topic={topic_name} err={eval_result_path[:200]}")
         log_print(f"[WARN] EVAL 실패.")
     else:
-        log_wiki("EVAL_OK", f"topic={topic_name} result={eval_out[:100]}")
+        log_wiki("EVAL_OK", f"topic={topic_name} result={eval_result_path}")
 
-    # 5. VAULT ROUTER
-    ok, vault_out = step_vault(topic_name, dry_run)
+    # 5. VAULT ROUTER — eval_result + council_report 전달
+    ok, vault_out = step_vault(eval_result_path, council_report_path, dry_run)
     if not ok:
         log_wiki("VAULT_FAIL", f"topic={topic_name} err={vault_out[:200]}")
     else:
