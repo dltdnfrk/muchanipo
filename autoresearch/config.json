@@ -1,0 +1,75 @@
+{
+  "version": "1.0.0",
+  "parsed_from": "program.md",
+  "identity": {
+    "owner": "Hyunjun",
+    "vault_path": "~/Documents/Hyunjun/",
+    "purpose": "autonomous_second_brain"
+  },
+  "interest_axes": [
+    {
+      "id": "neobio",
+      "name": "NeoBio & AgTech",
+      "keywords": ["과수 진단", "형광 프로브", "정밀농업", "MIRIVA", "식물 병해충", "스마트팜"],
+      "depth": "deep",
+      "frequency": "daily",
+      "vault_wing": "wing_neobio",
+      "vault_path": "~/Documents/Hyunjun/Neobio/"
+    },
+    {
+      "id": "ai_ml",
+      "name": "AI/ML & Agent Systems",
+      "keywords": ["LLM agent", "multi-agent", "prompt engineering", "RAG", "MCP", "tool use", "agentic workflow"],
+      "depth": "deep",
+      "frequency": "daily",
+      "vault_wing": "wing_tech",
+      "vault_path": "~/Documents/Hyunjun/Idea Note/"
+    },
+    {
+      "id": "business",
+      "name": "Business & Strategy",
+      "keywords": ["SaaS pricing", "go-to-market", "B2B 농업", "스타트업", "투자", "PMF"],
+      "depth": "moderate",
+      "frequency": "weekly",
+      "vault_wing": "wing_business",
+      "vault_path": "~/Documents/Hyunjun/Neobio/memo/",
+      "vault_path_alt": "~/Documents/Hyunjun/Neobio/funding/",
+      "routing_rule": "투자/자금 관련 → funding/, 나머지 → memo/"
+    },
+    {
+      "id": "tech_stack",
+      "name": "Technology Stack",
+      "keywords": ["React Native", "Expo", "BLE", "edge AI", "Supabase", "TypeScript"],
+      "depth": "moderate",
+      "frequency": "weekly",
+      "vault_wing": "wing_tech",
+      "vault_path": "~/Documents/Hyunjun/Idea Note/"
+    }
+  ],
+  "eval_rubric": {
+    "version": "v1",
+    "axes": ["usefulness", "reliability", "novelty", "actionability"],
+    "thresholds": {
+      "pass": 28,
+      "uncertain": 20,
+      "fail_below": 20
+    },
+    "max_score": 40,
+    "evolution_trigger": 20
+  },
+  "council": {
+    "participants": ["claude", "codex", "opencode"],
+    "max_rounds": 5,
+    "convergence_threshold": 0.7,
+    "react_enabled": true,
+    "persona_range": [3, 7]
+  },
+  "loop": {
+    "cooldown_seconds": 30,
+    "max_retries": 3,
+    "depth_rotation": {
+      "deep": 3,
+      "moderate": 1
+    }
+  }
+}

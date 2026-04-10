@@ -1,0 +1,186 @@
+{
+  "_comment": "MuchaNipo Model Router — 파이프라인 단계별 최적 모델 라우팅",
+  "_version": "0.2.0",
+  "_principle": "프론티어 모델은 깊은 추론에만. 나머지는 가볍게.",
+
+  "providers": {
+    "claude": {
+      "type": "oauth",
+      "models": ["opus-4-6", "sonnet-4-6", "haiku-4-5"],
+      "access": "claude-code-agent-tool",
+      "note": "Claude Code 내에서 Agent tool의 model 파라미터로 선택"
+    },
+    "codex": {
+      "type": "oauth",
+      "models": ["gpt-5.4-codex"],
+      "default": "gpt-5.4-codex",
+      "access": "no_proxy='*' codex exec --full-auto -m gpt-5.4-codex",
+      "env": "no_proxy=* + dangerouslyDisableSandbox",
+      "note": "GPT-5.4 사용 (high 모드). o3 불필요."
+    },
+    "ollama": {
+      "type": "local",
+      "models": ["gemma4:26b", "gemma4:latest", "nomic-embed-text"],
+      "access": "ollama run {model} 또는 REST API localhost:11434",
+      "cost": "$0",
+      "note": "로컬 실행. GPU 17GB(26B) / 9.6GB(12B)"
+    },
+    "kimi": {
+      "type": "api",
+      "models": ["kimi-k2"],
+      "access": "REST API (구독 예정)",
+      "strength": "128K+ 컨텍스트, 장문 문서 분석 특화",
+      "note": "사업계획서 전체를 한번에 읽고 분석 가능"
+    },
+    "minimax": {
+      "type": "api",
+      "models": ["minimax-text-01"],
+      "access": "REST API (구독 예정)",
+      "strength": "긴 출력, 구조화된 생성",
+      "note": "보고서/위키 페이지 생성에 적합"
+    }
+  },
+
+  "routing": {
+    "ingest_chunking": {
+      "step": "Step 1: 문서 인제스트 + 청킹",
+      "reasoning": "없음",
+      "model": "code",
+      "cost": "$0",
+      "note": "muchanipo-ingest.py — 순수 Python, LLM 불필요"
+    },
+    "ontology_extraction": {
+      "step": "Step 1.5: 온톨로지 추출",
+      "reasoning": "중간 (엔티티/관계 인식)",
+      "model": "gemma4:26b",
+      "fallback": "haiku-4-5",
+      "cost": "$0 (로컬) / $ (fallback)",
+      "note": "구조 분석. 로컬 Gemma4로 충분. 실패 시 Haiku"
+    },
+    "topic_selection": {
+      "step": "Step 0: 토픽 선택",
+      "reasoning": "낮음",
+      "model": "code",
+      "cost": "$0",
+      "note": "program.md 파싱 + 가중치 랜덤 — LLM 불필요"
+    },
+    "insight_forge_subquery": {
+      "step": "Step 2: InsightForge 쿼리 분해",
+      "reasoning": "중간 (질문 분해)",
+      "model": "gemma4:26b",
+      "fallback": "sonnet-4-6",
+      "cost": "$0 (로컬) / $$ (fallback)",
+      "note": "5W1H 분해는 규칙 기반 + LLM 보강. 로컬 우선"
+    },
+    "persona_generation": {
+      "step": "Step 3a: 페르소나 생성",
+      "reasoning": "중-상 (창의적 + 구조적)",
+      "model": "sonnet-4-6",
+      "fallback": "gemma4:26b",
+      "cost": "$$",
+      "note": "MiroFish entity→persona. 품질 중요하므로 Sonnet 권장"
+    },
+    "council_debate_deep": {
+      "step": "Step 3b: Council 토론 (심층)",
+      "reasoning": "높음 (다관점 분석, 근거 기반 논증)",
+      "model": "opus-4-6",
+      "alt": "gpt-5.4-codex",
+      "cost": "$$$",
+      "note": "프론티어 모델 필수. Opus + GPT-5.4 교차 사용으로 관점 다양성 확보"
+    },
+    "council_debate_fast": {
+      "step": "Step 3b: Council 토론 (속도 우선)",
+      "reasoning": "중간",
+      "model": "sonnet-4-6",
+      "alt": "kimi-k2",
+      "cost": "$$",
+      "note": "일상 리서치용. Kimi는 장문맥 문서 분석 시 유리"
+    },
+    "consensus_measurement": {
+      "step": "Step 3c: 합의 측정",
+      "reasoning": "낮음 (점수 집계)",
+      "model": "haiku-4-5",
+      "fallback": "gemma4:latest",
+      "cost": "$ / $0",
+      "note": "단순 점수 비교. 가장 가벼운 모델"
+    },
+    "eval_scoring": {
+      "step": "Step 4: Eval 자동 채점",
+      "reasoning": "없음",
+      "model": "code",
+      "cost": "$0",
+      "note": "eval-agent.py — 규칙 기반 Python, LLM 불필요"
+    },
+    "react_report": {
+      "step": "Step 5: ReACT 보고서 생성",
+      "reasoning": "중간 (구조화된 작문)",
+      "model": "sonnet-4-6",
+      "alt": "minimax-text-01",
+      "cost": "$$",
+      "note": "Think→Act→Observe→Write 루프. MiniMax는 긴 출력에 강점"
+    },
+    "vault_storage": {
+      "step": "Step 6: Vault 저장 (Compiled Truth + Timeline)",
+      "reasoning": "낮음 (템플릿 기반)",
+      "model": "haiku-4-5",
+      "fallback": "gemma4:latest",
+      "cost": "$ / $0",
+      "note": "GBrain 패턴 마크다운 생성. 템플릿 작업이라 가벼운 모델"
+    },
+    "rubric_learning": {
+      "step": "Step 7: Rubric 학습",
+      "reasoning": "없음",
+      "model": "code",
+      "cost": "$0",
+      "note": "rubric-learner.py — 규칙 기반 통계, LLM 불필요"
+    },
+    "long_document_analysis": {
+      "step": "특수: 장문 문서 전체 분석 (50K+ chars)",
+      "reasoning": "높음 + 장문맥",
+      "model": "kimi-k2",
+      "fallback": "opus-4-6",
+      "cost": "$$",
+      "note": "128K+ 컨텍스트. 사업계획서 전체를 한번에 읽고 분석"
+    },
+    "embedding": {
+      "step": "벡터 임베딩",
+      "reasoning": "없음",
+      "model": "nomic-embed-text",
+      "cost": "$0",
+      "note": "Ollama 로컬. 768 dims. MemPalace 시맨틱 검색용"
+    }
+  },
+
+  "cost_estimate_per_round": {
+    "deep_mode": {
+      "council_5_personas_opus": "$2-5",
+      "persona_gen_sonnet": "$0.10",
+      "report_sonnet": "$0.30",
+      "vault_haiku": "$0.02",
+      "local_models": "$0",
+      "total": "$2.50-5.50/round"
+    },
+    "fast_mode": {
+      "council_3_personas_sonnet": "$0.50-1.00",
+      "persona_gen_gemma": "$0",
+      "report_sonnet": "$0.30",
+      "vault_haiku": "$0.02",
+      "local_models": "$0",
+      "total": "$0.80-1.30/round"
+    },
+    "note": "OAuth 사용 시 실제 API 비용 없음 (세션 내 토큰 소비)"
+  },
+
+  "multi_model_council": {
+    "description": "Council 토론에서 모델 다양성으로 관점 다양성 확보",
+    "pattern": "MiroFish의 multi-platform 패턴 채용",
+    "example_5_personas": {
+      "persona_1_investor": "opus-4-6 (비판적 분석)",
+      "persona_2_scientist": "gpt-5.4-codex (논리적 추론)",
+      "persona_3_farmer": "sonnet-4-6 (실용적 관점)",
+      "persona_4_regulator": "kimi-k2 (장문맥 규제 분석)",
+      "persona_5_competitor": "gemma4:26b (로컬, 비용 절감)"
+    },
+    "benefit": "같은 프롬프트라도 다른 모델이 다른 답을 내놓아 진짜 다관점 토론이 됨"
+  }
+}

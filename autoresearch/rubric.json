@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "created": "2026-04-09",
+  "thresholds": {
+    "pass": 28,
+    "uncertain_min": 20,
+    "fail_max": 19
+  },
+  "axes": {
+    "usefulness": {"weight": 1.0, "max": 10},
+    "reliability": {"weight": 1.0, "max": 10},
+    "novelty": {"weight": 1.0, "max": 10},
+    "actionability": {"weight": 1.0, "max": 10}
+  },
+  "bonus_rules": [
+    {"condition": "confidence >= 0.7", "axis": "reliability", "bonus": 2},
+    {"condition": "evidence_count >= 5", "axis": "reliability", "bonus": 1},
+    {"condition": "recommendations_count >= 3", "axis": "actionability", "bonus": 2},
+    {"condition": "dissent_empty", "axis": "novelty", "bonus": -1}
+  ],
+  "min_feedback_for_evolution": 20
+}
