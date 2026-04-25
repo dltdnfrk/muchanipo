@@ -43,9 +43,6 @@ class ReportComposer:
                 out.setdefault(round_num, []).append(json.load(f))
         return out
 
-    def _layer_for_round(self, round_num: int) -> Optional[Any]:
-        return None
-
     def _position_counter(self, results: List[dict]) -> Counter:
         return Counter(r.get("position", "중립") for r in results)
 

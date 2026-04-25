@@ -104,7 +104,7 @@ class VisualWire:
         keys = set(data)
         if any(key in keys for key, _ in VisualWire.PORTER_FORCES):
             return "porter"
-        if VisualWire.JTBD_DIMS[0] in keys or "dimensions" in keys:
+        if set(VisualWire.JTBD_DIMS) & keys or "dimensions" in keys:
             return "jtbd"
         if "north_star" in keys or "north_star_metric" in keys or "drivers" in keys:
             return "north_star"
