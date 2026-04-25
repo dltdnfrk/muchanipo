@@ -679,10 +679,17 @@ def _generate_round1_prompts(
 ) -> list[Path]:
     """Round 1 프롬프트 파일들 생성. C24: layer-aware."""
     from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from frameworks.registry import framework_prompt_block  # type: ignore
+    except ImportError:  # pragma: no cover
+        framework_prompt_block = lambda lid: ""  # type: ignore
 
     layer = select_layer_for_round(1, total_rounds=total_rounds,
                                     research_type=research_type)
     layer_block = layer_prompt_block(layer)
+    fw_block = framework_prompt_block(layer.layer_id)
+    combined_block = layer_block + ("\n\n" + fw_block if fw_block else "")
 
     prompt_files: list[Path] = []
     for persona in personas:
@@ -701,7 +708,7 @@ def _generate_round1_prompts(
             output_path=str(output_path),
         )
         # C24: layer 가이드 prompt 끝에 append (MBB-급 chapter 구조)
-        prompt = base_prompt.rstrip() + "\n\n---\n\n" + layer_block + "\n"
+        prompt = base_prompt.rstrip() + "\n\n---\n\n" + combined_block + "\n"
 
         with open(prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
@@ -722,12 +729,19 @@ def _generate_roundN_prompts(
     total_rounds: int = 10,
     research_type: str = "exploratory",
 ) -> list[Path]:
-    """Round N (2+) 교차 평가 프롬프트 파일들 생성. C24: layer-aware."""
+    """Round N (2+) 교차 평가 프롬프트 파일들 생성. C24+C25: layer + framework aware."""
     from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from frameworks.registry import framework_prompt_block  # type: ignore
+    except ImportError:  # pragma: no cover
+        framework_prompt_block = lambda lid: ""  # type: ignore
 
     layer = select_layer_for_round(round_num, total_rounds=total_rounds,
                                     research_type=research_type)
     layer_block = layer_prompt_block(layer)
+    fw_block = framework_prompt_block(layer.layer_id)
+    combined_block = layer_block + ("\n\n" + fw_block if fw_block else "")
 
     prompt_files: list[Path] = []
 
@@ -770,7 +784,7 @@ def _generate_roundN_prompts(
             previous_results_summary=previous_results_summary,
             output_path=str(output_path),
         )
-        prompt = base_prompt.rstrip() + "\n\n---\n\n" + layer_block + "\n"
+        prompt = base_prompt.rstrip() + "\n\n---\n\n" + combined_block + "\n"
 
         with open(prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
