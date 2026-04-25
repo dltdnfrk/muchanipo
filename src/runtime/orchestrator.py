@@ -29,17 +29,18 @@ from typing import Any, Optional
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROGRAM_MD = SCRIPT_DIR / "program.md"
-WIKI_LOG = SCRIPT_DIR / "wiki" / "log.md"
-LOCK_FILE = SCRIPT_DIR / ".orchestrator.lock"
-RAW_DIR = SCRIPT_DIR / "raw"
-LOGS_DIR = SCRIPT_DIR / "logs"
+PROJECT_ROOT = SCRIPT_DIR.parents[1]
+PROGRAM_MD = PROJECT_ROOT / "config" / "program.md"
+WIKI_LOG = PROJECT_ROOT / "wiki" / "log.md"
+LOCK_FILE = PROJECT_ROOT / ".orchestrator.lock"
+RAW_DIR = PROJECT_ROOT / "raw"
+LOGS_DIR = PROJECT_ROOT / "logs"
 
-INGEST_SCRIPT = SCRIPT_DIR / "muchanipo-ingest.py"
-INSIGHT_SCRIPT = SCRIPT_DIR / "insight-forge.py"
-COUNCIL_SCRIPT = SCRIPT_DIR / "council-runner.py"
-EVAL_SCRIPT = SCRIPT_DIR / "eval-agent.py"
-VAULT_SCRIPT = SCRIPT_DIR / "vault-router.py"
+INGEST_SCRIPT = PROJECT_ROOT / "src" / "ingest" / "muchanipo-ingest.py"
+INSIGHT_SCRIPT = PROJECT_ROOT / "src" / "search" / "insight-forge.py"
+COUNCIL_SCRIPT = PROJECT_ROOT / "src" / "council" / "council-runner.py"
+EVAL_SCRIPT = PROJECT_ROOT / "src" / "eval" / "eval-agent.py"
+VAULT_SCRIPT = PROJECT_ROOT / "src" / "hitl" / "vault-router.py"
 
 COOLDOWN_SECONDS = 30
 
@@ -114,25 +115,41 @@ def build_topic_pool(axes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def acquire_lock() -> bool:
-    """PID 기반 lock 파일 생성. 중복 실행 방지."""
-    if LOCK_FILE.exists():
+    """Atomically create a PID lock file. Returns False when another process owns it."""
+    while True:
         try:
-            pid = int(LOCK_FILE.read_text().strip())
-            # stale lock 감지: PID가 살아있는지 확인
-            os.kill(pid, 0)
-            print(f"[LOCK] 이미 실행 중입니다 (PID {pid}). 종료합니다.")
-            return False
-        except (ValueError, ProcessLookupError, PermissionError):
-            # stale lock: 제거하고 계속
-            print("[LOCK] Stale lock 감지. 제거 후 진행합니다.")
-            LOCK_FILE.unlink(missing_ok=True)
-
-    LOCK_FILE.write_text(str(os.getpid()))
-    return True
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            try:
+                pid = int(LOCK_FILE.read_text().strip())
+                # stale lock 감지: PID가 살아있는지 확인
+                os.kill(pid, 0)
+                print(f"[LOCK] 이미 실행 중입니다 (PID {pid}). 종료합니다.")
+                return False
+            except (ValueError, ProcessLookupError):
+                # stale lock: 제거하고 원자적 생성 재시도
+                print("[LOCK] Stale lock 감지. 제거 후 진행합니다.")
+                try:
+                    LOCK_FILE.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            except PermissionError:
+                print("[LOCK] Lock 소유 프로세스 상태를 확인할 수 없습니다. 종료합니다.")
+                return False
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+            return True
 
 
 def release_lock() -> None:
-    LOCK_FILE.unlink(missing_ok=True)
+    try:
+        pid = int(LOCK_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return
+    if pid == os.getpid():
+        LOCK_FILE.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +203,7 @@ def run_script(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=str(SCRIPT_DIR),
+            cwd=str(PROJECT_ROOT),
         )
         output = result.stdout.strip()
         err = result.stderr.strip()
@@ -250,7 +267,7 @@ def step_insight(topic: str, dry_run: bool) -> tuple[bool, str]:
 
 def step_council(topic: str, insight_output: str, dry_run: bool) -> tuple[bool, str]:
     """Council 토론 실행. 성공 시 council-report JSON 경로를 stdout으로 반환."""
-    council_output = SCRIPT_DIR / "logs" / f"council-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    council_output = LOGS_DIR / f"council-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     args = [f"--topic={topic}", f"--output={council_output}"]
     ok, out = run_script(
         COUNCIL_SCRIPT,
@@ -261,7 +278,7 @@ def step_council(topic: str, insight_output: str, dry_run: bool) -> tuple[bool, 
     if ok and council_output.exists():
         return True, str(council_output)
     # fallback: council-logs에서 최신 리포트 찾기
-    reports = sorted(SCRIPT_DIR.glob("council-logs/*/council-report.json"), reverse=True)
+    reports = sorted(PROJECT_ROOT.glob("council-logs/*/council-report.json"), reverse=True)
     if reports:
         return ok, str(reports[0])
     return ok, out
@@ -271,14 +288,14 @@ def step_eval(council_report_path: str, dry_run: bool) -> tuple[bool, str]:
     """Eval-agent로 자동 채점. 성공 시 eval-result JSON 경로를 반환."""
     if not council_report_path or not Path(council_report_path).exists():
         # fallback: 최신 council report 검색
-        reports = sorted(SCRIPT_DIR.glob("logs/council-report-*.json"), reverse=True)
+        reports = sorted(PROJECT_ROOT.glob("logs/council-report-*.json"), reverse=True)
         if not reports:
-            reports = sorted(SCRIPT_DIR.glob("council-logs/*/council-report.json"), reverse=True)
+            reports = sorted(PROJECT_ROOT.glob("council-logs/*/council-report.json"), reverse=True)
         if reports:
             council_report_path = str(reports[0])
         else:
             return False, "council report 없음"
-    eval_output = SCRIPT_DIR / "logs" / f"eval-result-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    eval_output = LOGS_DIR / f"eval-result-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     args = [council_report_path, f"--output={eval_output}"]
     ok, out = run_script(EVAL_SCRIPT, args, "EVAL", dry_run=dry_run)
     if ok and eval_output.exists():
