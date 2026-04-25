@@ -29,3 +29,5 @@ mp-env/
 .omc/state/
 .omx/
 autoresearch/
+.claude/
+.omc/

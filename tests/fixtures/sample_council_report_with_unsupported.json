@@ -1,0 +1,21 @@
+{
+  "schema_version": "v2.0",
+  "council_id": "council-sample-unsupported",
+  "topic": "Unsupported citation laundering",
+  "consensus": "The workflow guarantees 99% accuracy for every biomedical market forecast in 2026.",
+  "recommendations": [
+    "Publish the forecast as a verified claim without additional review."
+  ],
+  "dissent": "",
+  "confidence": 0.9,
+  "evidence": [
+    {
+      "id": "E1",
+      "source": "unrelated-note",
+      "quote": "The workflow stores council reports and signoff queue entries."
+    }
+  ],
+  "personas": [
+    {"name": "Promoter", "role": "Growth", "confidence": 0.9, "layer": 1}
+  ]
+}

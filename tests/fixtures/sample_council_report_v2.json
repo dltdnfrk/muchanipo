@@ -1,0 +1,34 @@
+{
+  "schema_version": "v2.0",
+  "council_id": "council-sample-pass",
+  "topic": "MuchaNipo replay harness",
+  "consensus": "MuchaNipo replay harness reduces manual regression review by 25% in 2026. 한국어 토큰 중첩 검증은 근거 문장과 핵심 주장을 비교한다.",
+  "recommendations": [
+    "Adopt the replay harness for every eval-agent regression run.",
+    "Keep recent council reports in JSONL so failures can be reproduced."
+  ],
+  "dissent": "The replay set must stay small enough for local pytest runs.",
+  "confidence": 0.82,
+  "evidence": [
+    {
+      "id": "E1",
+      "source": "market-brief",
+      "quote": "MuchaNipo replay harness reduces manual regression review by 25% in 2026."
+    },
+    {
+      "id": "E2",
+      "source": "ops-note",
+      "quote": "한국어 토큰 중첩 검증은 근거 문장과 핵심 주장을 비교한다."
+    },
+    {
+      "id": "E3",
+      "source": "dev-note",
+      "quote": "Replay JSONL keeps recent council reports reproducible for eval-agent checks."
+    }
+  ],
+  "personas": [
+    {"name": "Evaluator", "role": "QA", "confidence": 0.8, "layer": 1},
+    {"name": "Researcher", "role": "Evidence", "confidence": 0.7, "layer": 2},
+    {"name": "Operator", "role": "Runtime", "confidence": 0.6, "layer": 3}
+  ]
+}

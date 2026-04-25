@@ -625,6 +625,63 @@ def route(report: Dict[str, Any], eval_result: Dict[str, Any], dry_run: bool = F
 
 
 # ---------------------------------------------------------------------------
+# Replay
+# ---------------------------------------------------------------------------
+def _extract_replay_report(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept plain council reports or wrapper JSONL rows from build-replay-set."""
+    if isinstance(item.get("council_report"), dict):
+        return item["council_report"]
+    if isinstance(item.get("report"), dict):
+        return item["report"]
+    return item
+
+
+def run_replay(
+    replay_path: Path,
+    rubric: Dict[str, Any],
+    output_path: Path,
+) -> Tuple[int, int]:
+    """Re-evaluate council reports from JSONL and write a TSV summary."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    total = 0
+    failed = 0
+
+    with open(replay_path, "r", encoding="utf-8") as replay, open(
+        output_path, "w", encoding="utf-8"
+    ) as out:
+        out.write("line\tcouncil_id\ttopic\ttotal\tverdict\terror\n")
+        for line_no, line in enumerate(replay, 1):
+            line = line.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                item = json.loads(line)
+                report = _extract_replay_report(item)
+                result = evaluate(report, rubric)
+                out.write(
+                    "\t".join(
+                        [
+                            str(line_no),
+                            str(result.get("council_id", "unknown")),
+                            str(result.get("topic", "unknown")).replace("\t", " "),
+                            str(result.get("total", 0)),
+                            str(result.get("verdict", "FAIL")),
+                            "",
+                        ]
+                    )
+                    + "\n"
+                )
+            except Exception as exc:
+                failed += 1
+                out.write(
+                    f"{line_no}\tunknown\tunknown\t0\tERROR\t{type(exc).__name__}: {exc}\n"
+                )
+
+    return total, failed
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -637,10 +694,12 @@ Examples:
   python eval-agent.py council-report.json --rubric custom-rubric.json
   python eval-agent.py council-report.json --dry-run --verbose
   python eval-agent.py council-report.json --output-only
+  python eval-agent.py --replay recent-N.jsonl
         """,
     )
     parser.add_argument(
         "report",
+        nargs="?",
         help="Council report JSON file path",
     )
     parser.add_argument(
@@ -668,6 +727,16 @@ Examples:
         default=None,
         help="Write eval result to this file path",
     )
+    parser.add_argument(
+        "--replay",
+        default=None,
+        help="Replay a JSONL file of council reports and write replay-summary.tsv",
+    )
+    parser.add_argument(
+        "--replay-output",
+        default="replay-summary.tsv",
+        help="Replay summary TSV path (default: replay-summary.tsv)",
+    )
     return parser
 
 
@@ -675,7 +744,24 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    rubric = load_rubric(args.rubric)
+
+    if args.replay:
+        replay_path = Path(args.replay)
+        if not replay_path.exists():
+            print(f"ERROR: Replay file not found: {replay_path}", file=sys.stderr)
+            return 1
+        total, failed = run_replay(replay_path, rubric, Path(args.replay_output))
+        print(
+            f"Replay complete: {total} item(s), {failed} error(s) -> {args.replay_output}"
+        )
+        return 0 if failed == 0 else 2
+
     # Load council report
+    if not args.report:
+        parser.print_help()
+        return 1
+
     report_path = Path(args.report)
     if not report_path.exists():
         print(f"ERROR: Council report not found: {report_path}", file=sys.stderr)
@@ -694,9 +780,6 @@ def main() -> int:
     if missing:
         print(f"ERROR: Missing required fields in report: {missing}", file=sys.stderr)
         return 1
-
-    # Load rubric
-    rubric = load_rubric(args.rubric)
 
     # Evaluate
     eval_result = evaluate(report, rubric)
