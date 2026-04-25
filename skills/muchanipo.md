@@ -171,14 +171,47 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 
 ## The Research Cycle (one experiment)
 
-### Step 0: Intent Capture (Mode 2 only — gstack THINK+PLAN 차용, C21)
+### Step 0: Interactive Intent Interview (사용자 리서치 요청 시 — gstack /office-hours 차용, C21)
 
-**Mode 2 (사용자가 명시 토픽/문서 던진 경우)** 진입 시:
-1. `src/intent/office_hours.py` `OfficeHours().reframe(user_input)` 호출 — 6 forcing questions로 DesignDoc 자동 생성 (pain_root / contrary_framing / implicit_capabilities / challenged_premises / alternatives / effort_map). lockdown.aup_risk + redact 자동 통과.
-2. `src/intent/plan_review.py` `PlanReview().autoplan(design_doc)` 호출 — 4-perspective review (CEO mode + Eng feasibility + Design journey + Devex friction) → ConsensusPlan + gate 결정. consensus < 0.6 또는 aup_risk > 0.7 또는 feasibility=blocked 시 사용자에게 추가 질문하고 Step 1 차단.
-3. `ConsensusPlan.to_ontology()` → Step 4 council ontology 직접 입력 (roles + intents + value_axes(C16) + design_doc_brief). Korean domain 자동 감지 → `agtech_farmer` role + Step 4에서 `KoreaPersonaSampler.agtech_farmer_seed(n)` seed 자동 호출.
+**사용자가 리서치 요청을 던진 모든 경우** 적용 (Mode 1 trigger 키워드 "오토리서치 시작"/"세컨드 브레인 돌려" 제외 — 이 trigger는 곧장 자율 무한 루프). 이 phase에서 **Claude이 직접 사용자와 대화**하며 의도를 정밀화하고, 끝에서 **Mode 1/Mode 2를 자동 라우팅**한다.
 
-Mode 1 (autonomous loop)은 Step 0 skip — Step 1로 직접.
+**Phase 0a — Quick Triage**
+- `src/intent/interview_prompts.py` `assess(user_input)` → InterviewPlan
+- 입력이 짧고 모호하거나 핵심 차원(timeframe/domain/evaluation)이 부족하면 `mode="deep"`
+- 입력이 풍부하면(차원 3+) `mode="quick"`
+
+**Phase 0b — Interactive Interview** (Claude이 사용자에게 직접 질문)
+- **Deep mode**: `forcing_questions_korean()` 6개 질문을 **한 번에 하나씩** 차례로 사용자에게 출력. 각 답변 받은 뒤 다음 질문.
+- **Quick mode**: `quick_clarification_questions(missing_dims)` 부족한 차원만 1-2개 짧게 확인.
+- 답변들을 `merge_answers_to_text(user_input, qa_pairs)`로 통합 텍스트로 합침.
+
+**Phase 0c — DesignDoc 생성 + 사용자 review**
+- `OfficeHours().reframe(merged_text)` → DesignDoc
+- `format_designdoc_review(design_doc)` 출력 (한 페이지 markdown)
+- 사용자 ✅ 승인 / ✏️ 수정(해당 섹션 재질문) / ❌ Interview부터 다시
+- lockdown.aup_risk + redact 자동 통과
+
+**Phase 0d — ConsensusPlan 생성 + 사용자 review**
+- `PlanReview().autoplan(design_doc)` → ConsensusPlan (CEO mode / Eng feasibility / Design journey / Devex friction)
+- `format_consensusplan_review(plan)` 출력
+- gate 실패(consensus < 0.6 / aup_risk > 0.7 / feasibility=blocked) 시 자동 차단 + 추가 질문
+- 사용자 ✅ 시작 / ✏️ 수정 / ❌ DesignDoc부터 다시
+
+**Phase 0e — Mode Routing (자동 결정)** ⭐
+- `route_mode(design_doc, consensus_plan, user_input, qa_text)` → ModeDecision
+- 휴리스틱:
+  - "지속/장기/매일/쌓아" 키워드 + ceo.mode="expansion" + alternatives 다수 → `autonomous_loop` (Mode 1)
+  - "이번 한 번/지금/결과 받기" 키워드 + ceo.mode="hold"/"reduction" → `targeted_iterative` (Mode 2)
+  - 신호 균형 또는 약함 → default `targeted_iterative` (저비용 안전 진입)
+- `format_mode_routing_decision(decision)` 한 줄 보고 + 사용자 ✅ / ✏️ 다른 모드로
+- 결정된 mode에 따라 Step 1 또는 Mode 1 loop 진입
+
+**Phase 0 종료 시**:
+- `ConsensusPlan.to_ontology()` → Step 4 council ontology 직접 입력 (roles + intents + value_axes(C16) + design_doc_brief)
+- Korean domain 자동 감지 → `agtech_farmer` role + `KoreaPersonaSampler.agtech_farmer_seed(n)` 자동 호출
+- decision.mode == "autonomous_loop" → Mode 1 무한 loop / "targeted_iterative" → Mode 2 10라운드
+
+**Mode 1 직접 trigger 키워드** ("오토리서치 시작" / "세컨드 브레인 돌려")는 Phase 0 전체 skip — 사용자가 명시적으로 자율 누적을 원하는 의도.
 
 ### Step 1: Topic Selection
 
@@ -544,20 +577,36 @@ LOOP FOREVER:
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you, period.
 
-## Two Modes
+## Two Modes (자동 라우팅됨 — 사용자가 mode 용어 알 필요 없음)
 
-### Mode 1: Autonomous Loop
+사용자는 그냥 리서치 요청을 던지고, **Step 0 Interview Phase 0e Mode Routing**이 의도를 분석해 자동 결정. 사용자에게 한 줄로 보고하고 ✅ 또는 ✏️ 변경 받음.
+
+### Mode 1: Autonomous Loop (무한 누적, 백그라운드)
+**언제**: 지속/장기 모니터링 / vault에 누적 / 트렌드 추적
+**Trigger**:
+- 명시: "오토리서치 시작" / "세컨드 브레인 돌려" → Phase 0 skip
+- 자동 라우팅: Phase 0e가 키워드("지속/장기/매일/쌓아") + ceo.mode="expansion" 감지
+
 ```
-User: "오토리서치 시작" or "세컨드 브레인 돌려"
--> Setup -> Loop forever through interest axes
+User: "오토리서치 시작" 또는 "AgTech 트렌드 매일 모니터링 vault에 쌓아"
+-> [명시 trigger면] Setup → Loop forever
+-> [자동 라우팅면] Setup → Step 0 Interactive Interview → Phase 0e routes to autonomous_loop → Loop forever
 ```
 
-### Mode 2: Targeted Research (iterative deepening, default 10 rounds)
+### Mode 2: Targeted Iterative Research (10 라운드 단발)
+**언제**: 단일 질문 / 이번 한 번 결과 / 명확한 시점
+**Trigger**:
+- 자동 라우팅: 사용자가 구체 토픽 던지면 default 진입 (저비용 안전 첫 진입)
+
 ```
-User: "이 논문 분석해줘" [attachment] or "MIRIVA 경쟁사 분석해줘"
--> Setup -> Step 0 Intent Capture (office_hours+autoplan, C21) -> Ingest document
--> 10-round improvement loop (with iteration_hooks C20) -> Retro summarize (C21 retro)
--> learnings.jsonl 누적 -> Final report -> STOP
+User: "이 논문 분석해줘" [attachment] / "MIRIVA 경쟁사 한 번 정리해줘"
+-> Setup
+-> Step 0 Interactive Interview (Phase 0a triage → 0b interview → 0c DesignDoc review → 0d ConsensusPlan review → 0e Mode Routing)
+-> Phase 0e routes to targeted_iterative
+-> Ingest document
+-> 10-round improvement loop (iteration_hooks C20)
+-> Retro summarize (C21) → learnings.jsonl 누적
+-> Final report → STOP
 ```
 
 In targeted mode, you run **multiple improvement iterations** on the same document:
