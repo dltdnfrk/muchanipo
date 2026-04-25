@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 try:  # 안전 모듈이 없는 독립 실행 환경에서도 fail-closed 검증 결과를 제공한다.
     from src.safety.lockdown import aup_risk, validate_persona_manifest
@@ -101,7 +101,18 @@ class PersonaGenerator:
     def __init__(self, risk_threshold: float = 0.45) -> None:
         self.risk_threshold = float(risk_threshold)
 
-    def propose(self, ontology: Mapping[str, Any], target_count: int) -> List[Draft]:
+    def propose(
+        self,
+        ontology: Mapping[str, Any],
+        target_count: int,
+        seed_personas: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> List[Draft]:
+        """Draft를 target_count만큼 생성.
+
+        seed_personas가 제공되면 (예: KoreaPersonaSampler.agtech_farmer_seed 결과)
+        각 Draft의 name·manifest에 grounded 인구통계 정보를 주입한다. propose 단계
+        자체는 stdlib only — 검증/수정은 후속 validate/revise에서.
+        """
         if target_count < 1:
             return []
 
@@ -112,21 +123,49 @@ class PersonaGenerator:
         allowed_tools = _string_list(ontology.get("allowed_tools")) or ["read_file"]
         required_outputs = _string_list(ontology.get("required_outputs")) or ["report"]
         base_axes = _value_axes(ontology.get("value_axes"))
+        seeds = list(seed_personas) if seed_personas else []
 
         drafts: List[Draft] = []
         for index in range(target_count):
             role = roles[index % len(roles)]
             intent = intents[index % len(intents)]
             persona_id = f"persona-{index + 1:03d}"
+            seed = seeds[index] if index < len(seeds) else None
+
+            if seed:
+                # grounded 이름: "농업 종사자 1" 대신 "{province} {city} {occupation}"
+                province = str(seed.get("province") or "").strip()
+                city = str(seed.get("city") or seed.get("sigungu") or "").strip()
+                occupation = str(seed.get("occupation") or role).strip()
+                grounded_name = " ".join(
+                    p for p in (province, city, occupation) if p
+                ) or f"{role.replace('_', ' ').title()} {index + 1}"
+                manifest_extra: Dict[str, Any] = {
+                    "grounded_seed": {
+                        "persona_id": seed.get("persona_id", ""),
+                        "province": province,
+                        "city": city,
+                        "age": seed.get("age", ""),
+                        "gender": seed.get("gender", ""),
+                        "occupation": occupation,
+                        "persona_text": seed.get("persona", ""),
+                        "source": seed.get("source", "Nemotron-Personas-Korea"),
+                    }
+                }
+            else:
+                grounded_name = f"{role.replace('_', ' ').title()} {index + 1}"
+                manifest_extra = {}
+
             drafts.append(
                 Draft(
                     persona_id=persona_id,
-                    name=f"{role.replace('_', ' ').title()} {index + 1}",
+                    name=grounded_name,
                     role=role,
                     intent=intent,
                     allowed_tools=allowed_tools,
                     required_outputs=required_outputs,
                     value_axes=dict(base_axes),
+                    manifest=manifest_extra,
                 )
             )
         return drafts

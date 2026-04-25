@@ -88,3 +88,58 @@ def test_persona_generator_requires_value_axes_when_requested():
 
     assert report.ok is False
     assert any(issue.code == "value_axes" for issue in report.issues)
+
+
+def test_propose_with_korean_seed_grounds_drafts(tmp_path):
+    """KoreaPersonaSampler seed가 propose에 들어오면 Draft에 grounded 정보가 박힌다."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path("src/council")))
+    from persona_sampler import KoreaPersonaSampler  # type: ignore
+    from persona_generator import PersonaGenerator  # type: ignore
+
+    seed_jsonl = Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl")
+    if not seed_jsonl.exists():
+        import pytest
+        pytest.skip("agtech-farmers-sample500.jsonl 부재 — 사용자 다운로드 필요")
+
+    sampler = KoreaPersonaSampler(data_path=str(seed_jsonl), seed=11)
+    seeds = sampler.agtech_farmer_seed(n=3)
+    assert len(seeds) == 3
+    assert all(s.get("source") == "Nemotron-Personas-Korea" for s in seeds)
+
+    gen = PersonaGenerator()
+    ontology = {
+        "roles": ["agtech_farmer"],
+        "intents": ["MIRIVA 진단키트 가격 책정 시 농가 부담 측면 평가"],
+        "allowed_tools": ["read_file"],
+        "required_outputs": ["report"],
+    }
+    drafts = gen.propose(ontology, target_count=3, seed_personas=seeds)
+    assert len(drafts) == 3
+    for draft, seed in zip(drafts, seeds):
+        # grounded 이름이 province/city/occupation을 포함
+        assert seed["province"] in draft.name or seed["city"] in draft.name or seed["occupation"] in draft.name
+        # manifest에 grounded_seed 키 존재
+        assert "grounded_seed" in draft.manifest
+        gs = draft.manifest["grounded_seed"]
+        assert gs["province"] == seed["province"]
+        assert gs["occupation"] == seed["occupation"]
+        assert gs["source"] == "Nemotron-Personas-Korea"
+
+
+def test_propose_without_seed_falls_back_to_role_naming():
+    """seed 없으면 기존 동작(역할 기반 이름) 유지."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path("src/council")))
+    from persona_generator import PersonaGenerator  # type: ignore
+
+    gen = PersonaGenerator()
+    drafts = gen.propose(
+        ontology={"roles": ["evidence_reviewer"], "intents": ["test"]},
+        target_count=2,
+    )
+    assert len(drafts) == 2
+    assert drafts[0].name == "Evidence Reviewer 1"
+    assert "grounded_seed" not in drafts[0].manifest
