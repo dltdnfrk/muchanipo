@@ -26,6 +26,23 @@ def _slug(value: Any, prefix: str = "node") -> str:
     return (raw[:48] or prefix).strip("_")
 
 
+def _mermaid_label(value: Any) -> str:
+    """Mermaid 노드 label safe escape — `["..."]` 안에 들어갈 문자열.
+    quote 문자 깨짐 방지(C28 codex critic 지적).
+    """
+    text = _text(value)
+    # mermaid에서 ", #, [, ] 가 깨짐 — &quot; 등 HTML entity로 대체
+    # 순서 중요: & 먼저 (다른 entity 보호) → " → # → [ → ]
+    # # 변환을 [ ] 이전에 — [ → &#91; 결과의 #이 다시 escape되지 않게
+    return (
+        text.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("#", "&#35;")
+            .replace("[", "&#91;")
+            .replace("]", "&#93;")
+    )
+
+
 def _first(data: Dict[str, Any], *keys: str, default: Any = "") -> Any:
     for key in keys:
         if key in data and data[key] not in (None, ""):
@@ -160,11 +177,11 @@ class VisualWire:
     @staticmethod
     def _north_star_graph(data: Dict[str, Any]) -> str:
         metric = _first(data, "north_star", "north_star_metric", "metric", default="North Star")
-        lines = ["```mermaid", "graph TD", f"  north_star[\"{_text(metric)}\"]"]
+        lines = ["```mermaid", "graph TD", f"  north_star[\"{_mermaid_label(metric)}\"]"]
         for index, driver in enumerate(VisualWire._drivers(data), start=1):
             name = _first(driver, "name", "driver", "metric", default=f"Driver {index}")
             node_id = f"driver_{index}_{_slug(name, 'driver')}"
-            lines.append(f"  {node_id}[\"{_text(name)}\"]")
+            lines.append(f"  {node_id}[\"{_mermaid_label(name)}\"]")
             lines.append(f"  north_star --> {node_id}")
         lines.append("```")
         return "\n".join(lines)
@@ -188,7 +205,7 @@ class VisualWire:
             root_label = _first(data, "root", "root_question", "question", default="Root")
             children = _first(data, "branches", "children", default=[])
 
-        lines = ["```mermaid", "graph TD", f"  root[\"{_text(root_label)}\"]"]
+        lines = ["```mermaid", "graph TD", f"  root[\"{_mermaid_label(root_label)}\"]"]
         VisualWire._append_tree(lines, "root", children)
         lines.append("```")
         return "\n".join(lines)
@@ -198,7 +215,7 @@ class VisualWire:
         for index, child in enumerate(VisualWire._iter_nodes(children), start=1):
             label = _first(child, "label", "name", "question", "title", default=f"Node {index}")
             node_id = f"{parent_id}_{depth}_{index}_{_slug(label)}"
-            lines.append(f"  {node_id}[\"{_text(label)}\"]")
+            lines.append(f"  {node_id}[\"{_mermaid_label(label)}\"]")
             lines.append(f"  {parent_id} --> {node_id}")
             next_children = _first(child, "children", "branches", "leaves", default=[])
             VisualWire._append_tree(lines, node_id, next_children, depth + 1)

@@ -159,3 +159,28 @@ def test_composer_uses_visual_block_instead_of_raw_json(tmp_path):
 )
 def test_visual_wire_handles_framework_aliases_and_shapes(framework_output, expected):
     assert expected in VisualWire.build_chart_block(framework_output)
+
+
+# ---------------------------------------------------------------------------
+# Codex critic Major #2 fix — Mermaid label escaping
+# ---------------------------------------------------------------------------
+def test_mermaid_north_star_escapes_quotes():
+    out = VisualWire.build_chart_block({
+        "framework": "north_star",
+        "north_star": 'A"B',
+        "drivers": [{"name": 'Driver"X'}],
+    })
+    # quote가 raw로 들어가면 mermaid 깨짐. &quot; entity로 escape돼야.
+    assert '"A"B"' not in out
+    assert "&quot;" in out
+
+
+def test_mermaid_mece_escapes_brackets_and_hash():
+    out = VisualWire.build_chart_block({
+        "framework": "mece",
+        "root": "[Q] #1",
+        "branches": [{"label": 'Child"with quote'}],
+    })
+    assert "&quot;" in out
+    assert "&#91;" in out or "&#93;" in out
+    assert "&#35;" in out
