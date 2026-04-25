@@ -1,9 +1,6 @@
 """Office Hours (THINK 단계) 테스트."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/intent")))
-from office_hours import (  # type: ignore
+from src.intent.office_hours import (
     Alternative,
     DesignDoc,
     OfficeHours,

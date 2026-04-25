@@ -1,11 +1,9 @@
 """Report Composer (C26) 테스트 — fake council_dir → MBB markdown 검증."""
 import json
-import sys
 from pathlib import Path
 import tempfile
 
-sys.path.insert(0, str(Path("src")))
-from report import ReportComposer, compose_report  # type: ignore
+from src.report import ReportComposer, compose_report
 
 
 def _make_fake_council(tmp: Path) -> Path:

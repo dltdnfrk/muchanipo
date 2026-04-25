@@ -3,14 +3,11 @@
 Phase 0d (ConsensusPlan.to_ontology) → council Step 4 (페르소나 선택) 진입을 확인.
 """
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-# council-runner는 같은 디렉토리의 persona_sampler를 lazy import 함
-sys.path.insert(0, str(ROOT / "src/council"))
 
 from conftest import load_script_module
 

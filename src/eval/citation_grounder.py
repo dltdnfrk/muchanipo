@@ -40,18 +40,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Optional lockdown integration (safety 모듈 부재 환경 대응)
 # ---------------------------------------------------------------------------
 try:  # pragma: no cover - import path varies between contexts
-    from safety import lockdown as _lockdown  # type: ignore
+    from src.safety import lockdown as _lockdown
 except Exception:  # noqa: BLE001
-    try:
-        import sys as _sys
-        from pathlib import Path as _Path
-
-        _SRC = _Path(__file__).resolve().parent.parent
-        if str(_SRC) not in _sys.path:
-            _sys.path.insert(0, str(_SRC))
-        from safety import lockdown as _lockdown  # type: ignore
-    except Exception:  # noqa: BLE001
-        _lockdown = None  # graceful fallback — provenance/redact가 no-op
+    _lockdown = None  # graceful fallback — provenance/redact가 no-op
 
 
 def _lockdown_validate_provenance(evidence: List[Dict[str, Any]]) -> Dict[str, bool]:

@@ -1,0 +1,1 @@
+"""MuchaNipo source package."""

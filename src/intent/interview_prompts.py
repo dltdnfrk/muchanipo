@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 try:  # pragma: no cover — optional import for tests that path-inject src/intent
     from .interview_rubric import InterviewRubric, RubricItem
 except ImportError:  # noqa: F401
-    from interview_rubric import InterviewRubric, RubricItem  # type: ignore
+    from src.intent.interview_rubric import InterviewRubric, RubricItem  # type: ignore
 
 
 # ---------------------------------------------------------------------------

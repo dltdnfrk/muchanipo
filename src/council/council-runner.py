@@ -461,13 +461,9 @@ def _sample_korean_farmer_personas(count: int) -> list[dict[str, Any]]:
     if count < 1:
         return []
     try:
-        from persona_sampler import KoreaPersonaSampler  # type: ignore
+        from src.council.persona_sampler import KoreaPersonaSampler
     except Exception:
-        try:
-            sys.path.insert(0, str(_BASE_DIR))
-            from persona_sampler import KoreaPersonaSampler  # type: ignore
-        except Exception:
-            return []
+        return []
     try:
         seeds = KoreaPersonaSampler().agtech_farmer_seed(n=count)
     except Exception:
@@ -678,10 +674,9 @@ def _generate_round1_prompts(
     research_type: str = "exploratory",
 ) -> list[Path]:
     """Round 1 프롬프트 파일들 생성. C24: layer-aware."""
-    from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
+    from src.council.round_layers import select_layer_for_round, layer_prompt_block
     try:
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from frameworks.registry import framework_prompt_block  # type: ignore
+        from src.frameworks.registry import framework_prompt_block
     except ImportError:  # pragma: no cover
         framework_prompt_block = lambda lid: ""  # type: ignore
 
@@ -730,10 +725,9 @@ def _generate_roundN_prompts(
     research_type: str = "exploratory",
 ) -> list[Path]:
     """Round N (2+) 교차 평가 프롬프트 파일들 생성. C24+C25: layer + framework aware."""
-    from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
+    from src.council.round_layers import select_layer_for_round, layer_prompt_block
     try:
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from frameworks.registry import framework_prompt_block  # type: ignore
+        from src.frameworks.registry import framework_prompt_block
     except ImportError:  # pragma: no cover
         framework_prompt_block = lambda lid: ""  # type: ignore
 
@@ -1292,8 +1286,7 @@ def _finalize_council(
 
     # C26: MBB-급 markdown REPORT.md 자동 합성
     try:
-        sys.path.insert(0, str(_BASE_DIR.parent))
-        from report import compose_report  # type: ignore
+        from src.report import compose_report
         md_path = compose_report(council_dir)
         print(f"[CouncilRunner] MBB Report (markdown): {md_path}")
     except Exception as exc:  # pragma: no cover

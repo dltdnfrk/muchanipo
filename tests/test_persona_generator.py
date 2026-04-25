@@ -92,11 +92,9 @@ def test_persona_generator_requires_value_axes_when_requested():
 
 def test_propose_with_korean_seed_grounds_drafts(tmp_path):
     """KoreaPersonaSampler seed가 propose에 들어오면 Draft에 grounded 정보가 박힌다."""
-    import sys
     from pathlib import Path
-    sys.path.insert(0, str(Path("src/council")))
-    from persona_sampler import KoreaPersonaSampler  # type: ignore
-    from persona_generator import PersonaGenerator  # type: ignore
+    from src.council.persona_generator import PersonaGenerator
+    from src.council.persona_sampler import KoreaPersonaSampler
 
     seed_jsonl = Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl")
     if not seed_jsonl.exists():
@@ -130,10 +128,7 @@ def test_propose_with_korean_seed_grounds_drafts(tmp_path):
 
 def test_propose_without_seed_falls_back_to_role_naming():
     """seed 없으면 기존 동작(역할 기반 이름) 유지."""
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path("src/council")))
-    from persona_generator import PersonaGenerator  # type: ignore
+    from src.council.persona_generator import PersonaGenerator
 
     gen = PersonaGenerator()
     drafts = gen.propose(
