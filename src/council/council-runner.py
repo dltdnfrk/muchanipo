@@ -1287,8 +1287,17 @@ def _finalize_council(
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
-    print(f"\n[CouncilRunner] Council Report 생성 완료!")
+    print(f"\n[CouncilRunner] Council Report (JSON) 생성 완료!")
     print(f"  경로: {report_path}")
+
+    # C26: MBB-급 markdown REPORT.md 자동 합성
+    try:
+        sys.path.insert(0, str(_BASE_DIR.parent))
+        from report import compose_report  # type: ignore
+        md_path = compose_report(council_dir)
+        print(f"[CouncilRunner] MBB Report (markdown): {md_path}")
+    except Exception as exc:  # pragma: no cover
+        print(f"[CouncilRunner] 경고: REPORT.md 합성 실패 ({exc})", file=sys.stderr)
     print(f"\n[CouncilRunner] 리포트 요약:")
     print(f"  주제: {report['topic']}")
     print(f"  합의: {report['consensus']}")
