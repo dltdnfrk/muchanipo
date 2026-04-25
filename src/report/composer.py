@@ -198,9 +198,18 @@ class ReportComposer:
                         lines.append(f"- {ev}")
                 lines.append("")
             if framework:
-                lines += ["**Framework Output:**", "```json",
-                          json.dumps(framework, ensure_ascii=False, indent=2),
-                          "```", ""]
+                # C27: visual_wire 우선, fallback JSON
+                try:
+                    from .visual_wire import VisualWire  # type: ignore
+                    visual = VisualWire.build_chart_block(framework)
+                except Exception:
+                    visual = ""
+                if visual:
+                    lines += ["**Framework Output:**", "", visual, ""]
+                else:
+                    lines += ["**Framework Output:**", "```json",
+                              json.dumps(framework, ensure_ascii=False, indent=2),
+                              "```", ""]
             lines.append("---")
             lines.append("")
 
