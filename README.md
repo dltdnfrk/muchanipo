@@ -96,6 +96,32 @@ muchanipo/
 └── logs/                          # Ingest & ontology logs
 ```
 
+## Dream Cycle (nightly vault digest)
+
+`tools/dream_cycle.sh` runs the dream-cycle digest over `vault/personas/` and
+`vault/insights/`, deduplicates repeated observations, and writes a cluster
+summary markdown into `logs/dream-cycle/` (or wherever `--output-dir` points).
+
+```bash
+# manual trigger (writes summary to logs/dream-cycle/dream-summary-<ts>.md)
+tools/dream_cycle.sh
+
+# preview without writing
+tools/dream_cycle.sh --no-write
+
+# alternate vault root or threshold
+tools/dream_cycle.sh --vault /path/to/vault --threshold 5
+```
+
+Recommended cron schedule (KST 03:00 daily — operator-installed; the script
+intentionally does **not** modify your crontab):
+
+```cron
+0 3 * * *  cd /path/to/muchanipo && tools/dream_cycle.sh >> logs/dream-cycle.log 2>&1
+```
+
+Stdlib-only — no external LLM calls.
+
 ## Quick Start
 
 ```bash
