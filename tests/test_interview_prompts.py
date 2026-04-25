@@ -280,7 +280,8 @@ def test_format_mode_routing_decision_markdown():
         reason="지속/장기 신호 강함",
         confidence=0.75,
         signals={"monitoring_keywords": 3, "specificity_keywords": 0,
-                 "ceo_mode_bonus_auto": 2, "ceo_mode_bonus_targeted": 0},
+                 "ceo_mode_bonus_auto": 2, "ceo_mode_bonus_targeted": 0,
+                 "research_type_bonus_auto": 0, "research_type_bonus_targeted": 0},
     )
     md = format_mode_routing_decision(decision)
     assert "Mode Routing" in md
@@ -288,3 +289,83 @@ def test_format_mode_routing_decision_markdown():
     assert "Autonomous Loop" in md
     assert "0.75" in md
     assert "✅" in md and "✏️" in md
+
+
+# ---------------------------------------------------------------------------
+# C23-B — Type-aware Phase 0e routing
+# ---------------------------------------------------------------------------
+def _baseline_decision(user: str, **kwargs):
+    """test helper — OfficeHours/PlanReview 통과해 route_mode 호출."""
+    doc = OfficeHours().reframe(user)
+    plan = PlanReview().autoplan(doc)
+    return route_mode(doc, plan, user, **kwargs)
+
+
+def test_route_mode_analytical_biases_targeted():
+    """analytical → targeted_iterative 보너스, signals에 research_type_bonus_targeted=1."""
+    user = "MIRIVA churn 원인 정량 분석"  # analytical 키워드 포함
+    decision = _baseline_decision(user)
+    assert decision.research_type == "analytical"
+    assert decision.signals.get("research_type_bonus_targeted") == 1
+    assert decision.signals.get("research_type_bonus_auto") == 0
+    assert decision.mode == "targeted_iterative"
+
+
+def test_route_mode_comparative_biases_targeted():
+    """comparative → targeted_iterative 보너스."""
+    user = "LangGraph vs CrewAI 어느 게 더 적합"  # comparative
+    decision = _baseline_decision(user)
+    assert decision.research_type == "comparative"
+    assert decision.signals.get("research_type_bonus_targeted") == 1
+    assert decision.mode == "targeted_iterative"
+
+
+def test_route_mode_predictive_biases_autonomous():
+    """predictive → autonomous_loop 보너스, monitoring 신호와 합쳐 auto 우세."""
+    # 동일 monitoring 텍스트로 baseline vs predictive override 비교 — type bonus 효과 검증
+    user = "작물 병원체 프로브 매일 지속 모니터링하면서 꾸준히 trend feed"
+    base = _baseline_decision(user, research_type="exploratory")
+    pred = _baseline_decision(user, research_type="predictive")
+    assert pred.research_type == "predictive"
+    assert pred.signals.get("research_type_bonus_auto") == 1
+    assert pred.signals.get("research_type_bonus_targeted") == 0
+    # predictive 보너스 1 더해진 만큼 auto 쪽이 baseline 대비 약하지 않음
+    assert (
+        pred.signals["research_type_bonus_auto"] - pred.signals["research_type_bonus_targeted"]
+    ) > (
+        base.signals["research_type_bonus_auto"] - base.signals["research_type_bonus_targeted"]
+    )
+    assert pred.mode == "autonomous_loop"
+
+
+def test_route_mode_exploratory_neutral():
+    """exploratory → 보너스 0, 기존 휴리스틱만 작동."""
+    user = "AI 에이전트 알려줘"  # exploratory default
+    decision = _baseline_decision(user)
+    assert decision.research_type == "exploratory"
+    assert decision.signals.get("research_type_bonus_auto") == 0
+    assert decision.signals.get("research_type_bonus_targeted") == 0
+
+
+def test_route_mode_explicit_research_type_overrides():
+    """research_type 인자 명시 시 자동 분류 무시."""
+    user = "그냥 알려줘"
+    decision = _baseline_decision(user, research_type="predictive")
+    assert decision.research_type == "predictive"
+    assert decision.signals.get("research_type_bonus_auto") == 1
+
+
+def test_format_mode_routing_decision_shows_type():
+    """format에 research_type 한 줄 표시."""
+    decision = ModeDecision(
+        mode="targeted_iterative",
+        reason="analytical 단발",
+        confidence=0.7,
+        signals={"monitoring_keywords": 0, "specificity_keywords": 1,
+                 "ceo_mode_bonus_auto": 0, "ceo_mode_bonus_targeted": 1,
+                 "research_type_bonus_auto": 0, "research_type_bonus_targeted": 1},
+        research_type="analytical",
+    )
+    md = format_mode_routing_decision(decision)
+    assert "research_type" in md
+    assert "Analytical" in md or "analytical" in md

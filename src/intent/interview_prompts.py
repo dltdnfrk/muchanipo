@@ -351,6 +351,7 @@ class ModeDecision:
     reason: str
     confidence: float  # 0.0~1.0
     signals: Dict[str, int]  # 키워드 매칭 카운트
+    research_type: str = "exploratory"  # exploratory | comparative | analytical | predictive
 
 
 def _count_keywords(text: str, keywords: Sequence[str]) -> int:
@@ -365,6 +366,7 @@ def route_mode(
     consensus_plan: Any,
     user_input: str,
     qa_text: str = "",
+    research_type: Optional[str] = None,
 ) -> ModeDecision:
     """Phase 0e — Mode 자동 라우팅.
 
@@ -376,6 +378,9 @@ def route_mode(
     - 단일/구체적 시점 키워드 hit → targeted_iterative
     - ceo.mode == "expansion" + alternatives 다수 → autonomous_loop 가산점
     - ceo.mode == "hold" / "reduction" → targeted_iterative 가산점
+    - research_type=analytical/comparative → targeted_iterative +1 (단발 결과 적합)
+    - research_type=predictive → autonomous_loop +1 (구축은 지속 학습)
+    - research_type=exploratory → 중립 (default 흐름)
     - 둘 다 약하면 default targeted_iterative (저렴함, 한 번이라도 결과 보고)
     """
     full_text = " ".join([
@@ -404,11 +409,25 @@ def route_mode(
         # 중간 — 약간 targeted 쪽으로
         targeted_score += 1
 
+    # C23-B: research_type 시그널 — 명시 안 되면 user_input + qa_text에서 자동 분류
+    rtype = (research_type or classify_research_type(full_text) or "exploratory").lower()
+    rtype_auto_bonus = 0
+    rtype_targeted_bonus = 0
+    if rtype in {"analytical", "comparative"}:
+        rtype_targeted_bonus = 1
+        targeted_score += 1
+    elif rtype == "predictive":
+        rtype_auto_bonus = 1
+        auto_score += 1
+    # exploratory: 중립
+
     signals = {
         "monitoring_keywords": monitoring_hits,
         "specificity_keywords": specificity_hits,
-        "ceo_mode_bonus_auto": auto_score - monitoring_hits * 2,
-        "ceo_mode_bonus_targeted": targeted_score - specificity_hits * 2,
+        "ceo_mode_bonus_auto": auto_score - monitoring_hits * 2 - rtype_auto_bonus,
+        "ceo_mode_bonus_targeted": targeted_score - specificity_hits * 2 - rtype_targeted_bonus,
+        "research_type_bonus_auto": rtype_auto_bonus,
+        "research_type_bonus_targeted": rtype_targeted_bonus,
     }
 
     diff = auto_score - targeted_score
@@ -441,7 +460,13 @@ def route_mode(
             )
             confidence = 0.55
 
-    return ModeDecision(mode=mode, reason=reason, confidence=confidence, signals=signals)
+    return ModeDecision(
+        mode=mode,
+        reason=reason,
+        confidence=confidence,
+        signals=signals,
+        research_type=rtype,
+    )
 
 
 def format_mode_routing_decision(decision: ModeDecision) -> str:
@@ -451,12 +476,20 @@ def format_mode_routing_decision(decision: ModeDecision) -> str:
         "targeted_iterative": "🎯 Targeted Iterative (10라운드 단발)",
     }.get(decision.mode, decision.mode)
 
+    type_label = {
+        "exploratory": "🔎 Exploratory (탐색)",
+        "comparative": "⚖️ Comparative (비교)",
+        "analytical": "📊 Analytical (분석)",
+        "predictive": "🛠️ Predictive (구축/예측)",
+    }.get(decision.research_type, decision.research_type)
+
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"🧭 **Mode Routing 자동 결정** (Phase 0e)",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
         f"→ **{label}**",
+        f"  research_type: {type_label}",
         f"  confidence: {decision.confidence:.2f}",
         f"  근거: {decision.reason}",
         "",
