@@ -1,8 +1,8 @@
 {
-  "version": "2.1.0",
+  "version": "2.2.0",
   "created": "2026-04-09",
   "updated": "2026-04-25",
-  "changelog": "v2.0→v2.1: citation_fidelity 11번째 축 추가하되 weight 0 (측정만, 점수 영향 없음). thresholds 70/50 유지 (devil-advocate 권고 — 30회 누적 후 weight 결정).",
+  "changelog": "v2.1→v2.2: density와 coverage_breadth 측정 축 추가. 기존 11축 점수 영향은 유지하고 신규 2축은 weight 0 측정만으로 누적한다.",
   "thresholds": {
     "pass": 70,
     "uncertain": 50
@@ -23,6 +23,20 @@
       "max": 10,
       "description": "각 핵심 주장이 evidence 풀의 직접 인용으로 1:1 지지되는가? (v2.1: 측정만, 30회 누적 후 weight 결정)",
       "active_for_score": false
+    },
+    "density": {
+      "weight": 0.0,
+      "max": 10,
+      "description": "페이지/단락당 정량 수치와 출처 인용 밀도가 충분한가? (v2.2: 측정만, 후속 sprint에서 weight 결정)",
+      "active_for_score": false,
+      "measurement_weight_candidate": 0.05
+    },
+    "coverage_breadth": {
+      "weight": 0.0,
+      "max": 10,
+      "description": "10개 분석 layer 중 보고서가 충실히 다룬 chapter_title 비율은 어느 정도인가? (v2.2: 측정만, 후속 sprint에서 weight 결정)",
+      "active_for_score": false,
+      "measurement_weight_candidate": 0.05
     }
   },
   "bonus_rules": [
