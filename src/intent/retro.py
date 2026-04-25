@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from .learnings_log import LearningsLog, Learning
+try:
+    from .learnings_log import LearningsLog, Learning
+except ImportError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from learnings_log import LearningsLog, Learning  # type: ignore
 
 
 @dataclass(frozen=True)
