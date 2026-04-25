@@ -171,6 +171,15 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 
 ## The Research Cycle (one experiment)
 
+### Step 0: Intent Capture (Mode 2 only — gstack THINK+PLAN 차용, C21)
+
+**Mode 2 (사용자가 명시 토픽/문서 던진 경우)** 진입 시:
+1. `src/intent/office_hours.py` `OfficeHours().reframe(user_input)` 호출 — 6 forcing questions로 DesignDoc 자동 생성 (pain_root / contrary_framing / implicit_capabilities / challenged_premises / alternatives / effort_map). lockdown.aup_risk + redact 자동 통과.
+2. `src/intent/plan_review.py` `PlanReview().autoplan(design_doc)` 호출 — 4-perspective review (CEO mode + Eng feasibility + Design journey + Devex friction) → ConsensusPlan + gate 결정. consensus < 0.6 또는 aup_risk > 0.7 또는 feasibility=blocked 시 사용자에게 추가 질문하고 Step 1 차단.
+3. `ConsensusPlan.to_ontology()` → Step 4 council ontology 직접 입력 (roles + intents + value_axes(C16) + design_doc_brief). Korean domain 자동 감지 → `agtech_farmer` role + Step 4에서 `KoreaPersonaSampler.agtech_farmer_seed(n)` seed 자동 호출.
+
+Mode 1 (autonomous loop)은 Step 0 skip — Step 1로 직접.
+
 ### Step 1: Topic Selection
 
 Select the next topic based on program.md interest axes:
@@ -178,6 +187,7 @@ Select the next topic based on program.md interest axes:
 - Check results.tsv to avoid recently researched topics.
 - Prefer topics that cross 2+ interest axes (higher novelty).
 - If previous research opened new questions, pursue them first.
+- **Mode 2면**: Step 0의 ConsensusPlan.intents가 이 단계를 대체. Topic = `design_doc.raw_input`.
 
 Output a one-line topic statement, e.g.: "형광 프로브 키트 글로벌 시장 규모 2026"
 
@@ -545,7 +555,9 @@ User: "오토리서치 시작" or "세컨드 브레인 돌려"
 ### Mode 2: Targeted Research (iterative deepening, default 10 rounds)
 ```
 User: "이 논문 분석해줘" [attachment] or "MIRIVA 경쟁사 분석해줘"
--> Setup -> Ingest document -> 10-round improvement loop -> Final report -> STOP
+-> Setup -> Step 0 Intent Capture (office_hours+autoplan, C21) -> Ingest document
+-> 10-round improvement loop (with iteration_hooks C20) -> Retro summarize (C21 retro)
+-> learnings.jsonl 누적 -> Final report -> STOP
 ```
 
 In targeted mode, you run **multiple improvement iterations** on the same document:
