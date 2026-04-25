@@ -7,6 +7,8 @@ from interview_prompts import (  # type: ignore
     InterviewPlan,
     ModeDecision,
     assess,
+    build_question_options,
+    classify_research_type,
     forcing_questions_korean,
     quick_clarification_questions,
     merge_answers_to_text,
@@ -14,7 +16,9 @@ from interview_prompts import (  # type: ignore
     format_consensusplan_review,
     route_mode,
     format_mode_routing_decision,
+    select_next_question,
 )
+from interview_rubric import InterviewRubric  # type: ignore
 from office_hours import OfficeHours  # type: ignore
 from plan_review import PlanReview  # type: ignore
 
@@ -189,6 +193,85 @@ def test_route_mode_signals_present():
     decision = route_mode(doc, plan, user)
     assert "monitoring_keywords" in decision.signals
     assert "specificity_keywords" in decision.signals
+
+
+# ---------------------------------------------------------------------------
+# C22-B — Type classification + entropy ordering + dynamic options
+# ---------------------------------------------------------------------------
+def test_classify_type_comparative():
+    assert classify_research_type("LangGraph vs CrewAI 비교") == "comparative"
+    assert classify_research_type("A 또는 B 선택") == "comparative"
+
+
+def test_classify_type_predictive():
+    assert classify_research_type("작물 병원체 프로브 파운드리 구축하고 싶어") == "predictive"
+    assert classify_research_type("PoC 만들고 feasibility 확인") == "predictive"
+
+
+def test_classify_type_analytical():
+    assert classify_research_type("MIRIVA ROI 정량 분석") == "analytical"
+    assert classify_research_type("왜 churn이 높은지 원인") == "analytical"
+
+
+def test_classify_type_exploratory_default():
+    assert classify_research_type("AI 알려줘") == "exploratory"
+    assert classify_research_type("") == "exploratory"
+
+
+def test_assess_includes_research_type():
+    plan = assess("MIRIVA 가격 정량 ROI 분석")
+    assert plan.research_type == "analytical"
+
+
+def test_select_next_question_picks_first_uncovered():
+    r = InterviewRubric(topic="x")
+    nxt = select_next_question(r)
+    assert nxt is not None
+    assert nxt.dimension_id == "Q1_research_question"
+    r.update("Q1_research_question", "답변", quality=0.9)
+    nxt2 = select_next_question(r)
+    assert nxt2 is not None
+    assert nxt2.dimension_id == "Q2_purpose"
+
+
+def test_select_next_question_returns_none_when_all_covered():
+    r = InterviewRubric(topic="x")
+    for item in r.items:
+        r.update(item.dimension_id, "답변", quality=0.9)
+    assert select_next_question(r) is None
+
+
+def test_q6_options_always_source_quality_a_to_d():
+    opts = build_question_options("Q6_quality", "MIRIVA 가격")
+    labels = [o["label"] for o in opts]
+    assert any("A급" in l for l in labels)
+    assert any("B급" in l for l in labels)
+    assert any("C급" in l for l in labels)
+    assert any("D급" in l for l in labels)
+    assert opts[-1]["label"] == "Other"
+
+
+def test_q3_options_agtech_domain():
+    opts = build_question_options("Q3_context", "MIRIVA 진단키트 한국 농가")
+    labels = " ".join(o["label"] for o in opts)
+    assert "농" in labels or "작물" in labels
+    assert opts[-1]["label"] == "Other"
+
+
+def test_q3_options_biotech_domain():
+    opts = build_question_options(
+        "Q3_context", "형광 프로브 lab-in-the-loop 자율과학"
+    )
+    labels = " ".join(o["label"] for o in opts)
+    assert "분자" in labels or "프로브" in labels or "자율과학" in labels
+    assert opts[-1]["label"] == "Other"
+
+
+def test_q5_options_includes_obsidian_vault():
+    opts = build_question_options("Q5_deliverable", "any topic")
+    labels = " ".join(o["label"] for o in opts)
+    assert "Obsidian" in labels or "vault" in labels.lower()
+    assert opts[-1]["label"] == "Other"
 
 
 def test_format_mode_routing_decision_markdown():

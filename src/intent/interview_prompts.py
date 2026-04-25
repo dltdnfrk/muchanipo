@@ -17,16 +17,22 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+try:  # pragma: no cover — optional import for tests that path-inject src/intent
+    from .interview_rubric import InterviewRubric, RubricItem
+except ImportError:  # noqa: F401
+    from interview_rubric import InterviewRubric, RubricItem  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # Triage (Phase 0a)
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class InterviewPlan:
-    """Quick triage 결과 — Deep vs Quick interview 결정 + 보강할 차원."""
+    """Quick triage 결과 — Deep vs Quick interview 결정 + 보강할 차원 + Type."""
     mode: str  # "deep" | "quick"
     missing_dimensions: List[str]  # ex: ["timeframe", "domain", "evaluation"]
     rationale: str
+    research_type: str = "exploratory"  # exploratory | comparative | analytical | predictive
 
 
 # 핵심 차원 감지 키워드 (한국어 + 영문)
@@ -40,6 +46,35 @@ _DIM_KEYWORDS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+# Research Type 분류 키워드 (deep-research-query Phase 1 차용)
+_TYPE_KEYWORDS: Dict[str, Tuple[str, ...]] = {
+    "comparative": ("비교", "vs", " or ", "또는", "대신", "차이", "어느", "어떤 게 더", "compare"),
+    "predictive": (
+        "구축", "만들고", "만들기", "예측", "전망", "미래", "가능한지", "feasibility",
+        "build", "design", "설계", "develop", "PoC",
+    ),
+    "analytical": (
+        "ROI", "정량", "원인", "왜", "why", "분석", "지표", "수치", "metric", "근본",
+        "cost", "비용 구조",
+    ),
+}
+
+
+def classify_research_type(text: str) -> str:
+    """deep-research-query Phase 1 — 4 type 분류.
+
+    Returns: 'exploratory' | 'comparative' | 'analytical' | 'predictive'
+    우선순위: comparative > predictive > analytical > exploratory(default)
+    """
+    if not text:
+        return "exploratory"
+    lowered = text.lower()
+    for rtype in ("comparative", "predictive", "analytical"):
+        if any(kw.lower() in lowered for kw in _TYPE_KEYWORDS[rtype]):
+            return rtype
+    return "exploratory"
+
+
 def assess(user_input: str) -> InterviewPlan:
     """Phase 0a — Quick triage.
 
@@ -47,11 +82,13 @@ def assess(user_input: str) -> InterviewPlan:
     길고 핵심 차원이 충분하면 Quick interview (부족한 차원만 1-2개 확인).
     """
     text = (user_input or "").strip()
+    rtype = classify_research_type(text)
     if not text:
         return InterviewPlan(
             mode="deep",
             missing_dimensions=["timeframe", "domain", "evaluation"],
             rationale="empty input — full interview 필요",
+            research_type=rtype,
         )
 
     # 차원 매칭
@@ -72,6 +109,7 @@ def assess(user_input: str) -> InterviewPlan:
             mode="quick",
             missing_dimensions=missing,
             rationale=f"입력 {len(text)}자 / {len(detected)}개 차원 충분 — Quick 확인만",
+            research_type=rtype,
         )
 
     if len(text) < 60 or len(detected) < 2:
@@ -79,12 +117,14 @@ def assess(user_input: str) -> InterviewPlan:
             mode="deep",
             missing_dimensions=missing or ["timeframe", "domain", "evaluation"],
             rationale=f"입력 {len(text)}자 / 명시 차원 {len(detected)}개 — Deep interview 필요",
+            research_type=rtype,
         )
 
     return InterviewPlan(
         mode="quick",
         missing_dimensions=missing,
         rationale=f"입력 {len(text)}자 / {len(detected)}개 차원 명시 — Quick 확인만",
+        research_type=rtype,
     )
 
 
@@ -432,3 +472,154 @@ def format_mode_routing_decision(decision: ModeDecision) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# C22-B: Entropy-Greedy Question Routing + Dynamic Options
+# ---------------------------------------------------------------------------
+def select_next_question(rubric: "InterviewRubric") -> Optional["RubricItem"]:
+    """arXiv 2510.27410 Nous greedy entropy 원칙.
+
+    InterviewRubric.next_uncovered() wrapper — 미답변 차원 중 entropy 최대 선택.
+    동률이면 정의 순서(Q1→Q6) 우선.
+    """
+    return rubric.next_uncovered()
+
+
+# 토픽-맞춤 옵션 보정 휴리스틱 (LLM 호출 없이)
+_DOMAIN_HINTS: Dict[str, Tuple[str, ...]] = {
+    "agtech": ("농가", "농업", "AgTech", "MIRIVA", "병원체", "작물", "과수"),
+    "ai_agent": ("에이전트", "agent", "council", "LLM", "GPT", "Claude"),
+    "biotech": ("진단", "프로브", "형광", "biomarker", "분자", "lab-in-the-loop"),
+    "saas": ("SaaS", "구독", "ARR", "MRR", "churn"),
+}
+
+
+def _detect_domain(topic: str) -> str:
+    lowered = (topic or "").lower()
+    for dom, kws in _DOMAIN_HINTS.items():
+        if any(kw.lower() in lowered for kw in kws):
+            return dom
+    return "general"
+
+
+def build_question_options(
+    dim_id: str,
+    topic: str,
+    prev_answers: Optional[Mapping[str, str]] = None,
+) -> List[Dict[str, str]]:
+    """AskUserQuestion 도구용 토픽-맞춤 선택지 생성 (show-me-the-prd 패턴).
+
+    Returns: [{"label": str, "description": str}, ...] — 마지막은 항상 "Other".
+    Q6은 Source A-D 고정. 그 외는 토픽 도메인에 맞춘 4 옵션 + Other.
+    """
+    domain = _detect_domain(topic)
+
+    # Q6: Source quality A-D 고정 (deep-research-query)
+    if dim_id == "Q6_quality":
+        return [
+            {"label": "A급 — peer-review/공식 통계만",
+             "description": "정량 강함, 느림 (학술 논문 + 공공기관)"},
+            {"label": "B급 — 학술 + 산업 리포트",
+             "description": "균형 (Gartner, McKinsey 등 + arXiv)"},
+            {"label": "C급 — 위 + 블로그/뉴스",
+             "description": "빠름 (테크 블로그·언론 포함)"},
+            {"label": "D급 — 추정·논리 위주",
+             "description": "가장 빠름 (1차 근사)"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Q5 deliverable: 산출 형태
+    if dim_id == "Q5_deliverable":
+        return [
+            {"label": "1페이지 결정서",
+             "description": "핵심 숫자 + 권고 (의사결정용)"},
+            {"label": "10-20p 리서치 리포트",
+             "description": "상세 분석 + 다이어그램"},
+            {"label": "Slide deck",
+             "description": "발표/IR/보고용"},
+            {"label": "Obsidian vault 누적",
+             "description": "지속 모니터링 — autonomous_loop 자동 라우팅"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Q2 purpose: 사용 목적
+    if dim_id == "Q2_purpose":
+        return [
+            {"label": "내부 의사결정",
+             "description": "다음 액션 선택 (도구/방향/투자)"},
+            {"label": "외부 보고",
+             "description": "투자자 IR / 정부 과제 / 파트너 제안"},
+            {"label": "지속 모니터링",
+             "description": "트렌드/경쟁사 추적 (vault 누적)"},
+            {"label": "학습·이해",
+             "description": "맥락 파악 / 멘탈 모델 구축"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Q3 context: 도메인 범위 — domain hint 반영
+    if dim_id == "Q3_context":
+        if domain == "agtech":
+            return [
+                {"label": "한국 단일 작물·병원체 한정",
+                 "description": "예: 사과 화상병"},
+                {"label": "한국 작물 전반",
+                 "description": "다 작물·다 병원체"},
+                {"label": "한국 + 글로벌 비교",
+                 "description": "일본/유럽/미국"},
+                {"label": "글로벌 일반",
+                 "description": "지역 무관"},
+                {"label": "Other", "description": "직접 입력"},
+            ]
+        if domain == "biotech":
+            return [
+                {"label": "단일 분자·플랫폼 한정",
+                 "description": "특정 프로브/타겟"},
+                {"label": "분자 클래스 전반",
+                 "description": "유사 메커니즘 군"},
+                {"label": "기술 + 시장 융합",
+                 "description": "기술 + 산업 동향"},
+                {"label": "자율과학 시스템 전반",
+                 "description": "도메인 무관 SOTA"},
+                {"label": "Other", "description": "직접 입력"},
+            ]
+        return [
+            {"label": "특정 산업·제품 한정", "description": "한 도메인 깊게"},
+            {"label": "산업 전반", "description": "여러 도메인 비교"},
+            {"label": "한국 specific", "description": "지역 grounded"},
+            {"label": "글로벌 일반", "description": "지역 무관"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Q1 research_question: 무엇을 알아내고 싶은가
+    if dim_id == "Q1_research_question":
+        return [
+            {"label": "단일 결정·숫자",
+             "description": "1개 답 (예: 적정 가격)"},
+            {"label": "옵션 비교",
+             "description": "A vs B vs C 비교표"},
+            {"label": "구축 가능성·설계도",
+             "description": "feasibility + 아키텍처"},
+            {"label": "벤치마크·SOTA 매핑",
+             "description": "현재 최고 사례 정리"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Q4 known: 이미 아는 것
+    if dim_id == "Q4_known":
+        return [
+            {"label": "관련 도구·솔루션 일부 파악",
+             "description": "이름·키워드 수준"},
+            {"label": "내부 데이터·노하우 보유",
+             "description": "이미 시도한 접근"},
+            {"label": "결정 일부 완료",
+             "description": "특정 옵션은 이미 폐기"},
+            {"label": "거의 없음",
+             "description": "처음부터 매핑 필요"},
+            {"label": "Other", "description": "직접 입력"},
+        ]
+
+    # Default fallback
+    return [
+        {"label": "Other", "description": "직접 입력"},
+    ]
