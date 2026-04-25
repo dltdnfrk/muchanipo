@@ -1,0 +1,4 @@
+slots:
+  model_router: src.runtime.plugin_loader:default_model_router
+  runtime: src.runtime.plugin_loader:tmux_runtime
+  notifier: src.runtime.plugin_loader:default_notifier
