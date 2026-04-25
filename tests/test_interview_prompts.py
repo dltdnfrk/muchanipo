@@ -56,15 +56,30 @@ def test_assess_missing_dimensions_detection():
 # Phase 0b — forcing questions
 # ---------------------------------------------------------------------------
 def test_forcing_questions_returns_six():
+    """PRD-style 리서치 톤의 6 questions — 무엇/왜/맥락/이미 아는 것/산출물 형태/품질."""
     qs = forcing_questions_korean()
     assert len(qs) == 6
     ids = [q["id"] for q in qs]
-    assert "Q1_pain_root" in ids
-    assert "Q2_contrary" in ids
-    assert "Q3_implicit_caps" in ids
-    assert "Q4_premises" in ids
-    assert "Q5_alternatives" in ids
-    assert "Q6_effort" in ids
+    assert "Q1_research_question" in ids  # 무엇을
+    assert "Q2_purpose" in ids            # 왜
+    assert "Q3_context" in ids            # 맥락
+    assert "Q4_known" in ids              # 이미 아는 것
+    assert "Q5_deliverable" in ids        # 산출물 형태
+    assert "Q6_quality" in ids            # 품질 기준
+
+
+def test_forcing_questions_use_research_tone_not_startup():
+    """gstack startup 톤(pain/10-star/scope) 대신 리서치 brief 톤 검증."""
+    qs = forcing_questions_korean()
+    full_text = " ".join(q["question"] for q in qs)
+    # 리서치 톤 키워드는 있어야
+    assert "알아내고" in full_text or "알고" in full_text  # 무엇을 알아내고
+    assert "어디에 쓰" in full_text or "목적" in full_text or "용도" in full_text  # 왜
+    assert "도메인" in full_text or "맥락" in full_text  # 맥락
+    assert "출처" in full_text or "신뢰도" in full_text  # 품질
+    # 스타트업 비즈니스 톤 키워드는 없어야 (재사용된 텍스트면 잔재 점검)
+    assert "10-star" not in full_text
+    assert "Scope Expansion" not in full_text or "비교" in full_text  # alternatives 톤 잔재 X
 
 
 def test_quick_clarification_max_two():
