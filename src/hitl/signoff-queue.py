@@ -18,11 +18,10 @@ rubric evolution (per program.md: after 20+ sign-offs, analyze patterns).
 """
 
 import argparse
+import importlib.util
 import json
-import os
 import subprocess
 import sys
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,7 +37,20 @@ FEEDBACK_FILE = RUBRIC_HISTORY_DIR / "rubric-feedback.jsonl"
 LOGS_DIR = SCRIPT_DIR / "logs"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 
-DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Hyunjun"
+
+def _load_runtime_paths():
+    spec = importlib.util.spec_from_file_location(
+        "muchanipo_runtime_paths",
+        SCRIPT_DIR.parent / "runtime" / "paths.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_runtime_paths = _load_runtime_paths()
+CONFIG_PATH = _runtime_paths.get_config_path()
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +62,17 @@ def load_config() -> Dict[str, Any]:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def score_max(eval_result: Dict[str, Any]) -> int:
+    explicit = eval_result.get("rubric_max")
+    if isinstance(explicit, int) and explicit > 0:
+        return explicit
+    rubric_path = _runtime_paths.get_rubric_path()
+    if rubric_path.exists():
+        with open(rubric_path, "r", encoding="utf-8") as f:
+            return _runtime_paths.rubric_score_max(json.load(f))
+    return 100
 
 
 def load_queue_entries(status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -106,13 +129,9 @@ def resolve_vault_path(report: Dict[str, Any]) -> Path:
         keywords = [kw.lower() for kw in axis.get("keywords", [])]
         if any(kw in topic for kw in keywords):
             vault_path = axis.get("vault_path", "")
-            expanded = Path(os.path.expanduser(vault_path))
-            if expanded.exists():
-                return expanded
+            return _runtime_paths.resolve_vault_path_setting(vault_path, create=True)
 
-    feed_path = DEFAULT_VAULT_BASE / "Feed"
-    feed_path.mkdir(parents=True, exist_ok=True)
-    return feed_path
+    return _runtime_paths.get_vault_path("Feed", create=True)
 
 
 def save_to_vault(entry: Dict[str, Any], modification_note: Optional[str] = None) -> Path:
@@ -202,7 +221,7 @@ def _write_plannotator_review(entry: Dict[str, Any]) -> Path:
         "",
         f"**ID**: {entry_id}  ",
         f"**Timestamp**: {timestamp}  ",
-        f"**Verdict**: {verdict} ({total}/40)  ",
+        f"**Verdict**: {verdict} ({total}/{score_max(eval_result)})  ",
         "",
         "## 평가 점수",
         "",
@@ -299,7 +318,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     scores = eval_result.get("scores", {})
     for axis, val in scores.items():
         print(f"  {axis:15s}: {val:2d}/10")
-    print(f"  {'TOTAL':15s}: {eval_result.get('total', '?')}/40")
+    print(f"  {'TOTAL':15s}: {eval_result.get('total', '?')}/{score_max(eval_result)}")
     print(f"  {'VERDICT':15s}: {eval_result.get('verdict', '?')}")
 
     print("\n--- Eval Reasoning ---")

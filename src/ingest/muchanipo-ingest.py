@@ -12,6 +12,7 @@ Requires: .omc/autoresearch/mp-env/ venv with mempalace installed
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -21,6 +22,23 @@ from collections import Counter
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _load_runtime_paths():
+    spec = importlib.util.spec_from_file_location(
+        "muchanipo_runtime_paths",
+        SCRIPT_DIR.parent / "runtime" / "paths.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_runtime_paths = _load_runtime_paths()
 
 
 # ============================================================
@@ -576,8 +594,8 @@ def store_chunks_to_mempalace(
                 f.write(header + chunk['text'])
 
         # Copy mempalace.yaml from initialized vault to temp dir
-        vault_config = os.path.expanduser("~/Documents/Hyunjun/mempalace.yaml")
-        if os.path.exists(vault_config):
+        vault_config = _runtime_paths.get_vault_path("mempalace.yaml")
+        if vault_config.exists():
             import shutil as sh
             sh.copy2(vault_config, os.path.join(tmpdir, "mempalace.yaml"))
 

@@ -3,7 +3,7 @@
   "parsed_from": "program.md",
   "identity": {
     "owner": "Hyunjun",
-    "vault_path": "~/Documents/Hyunjun/",
+    "vault_path": "${MUCHANIPO_VAULT_PATH}",
     "purpose": "autonomous_second_brain"
   },
   "interest_axes": [
@@ -14,7 +14,7 @@
       "depth": "deep",
       "frequency": "daily",
       "vault_wing": "wing_neobio",
-      "vault_path": "~/Documents/Hyunjun/Neobio/"
+      "vault_path": "${MUCHANIPO_VAULT_PATH}/Neobio/"
     },
     {
       "id": "ai_ml",
@@ -23,7 +23,7 @@
       "depth": "deep",
       "frequency": "daily",
       "vault_wing": "wing_tech",
-      "vault_path": "~/Documents/Hyunjun/Idea Note/"
+      "vault_path": "${MUCHANIPO_VAULT_PATH}/Idea Note/"
     },
     {
       "id": "business",
@@ -32,8 +32,8 @@
       "depth": "moderate",
       "frequency": "weekly",
       "vault_wing": "wing_business",
-      "vault_path": "~/Documents/Hyunjun/Neobio/memo/",
-      "vault_path_alt": "~/Documents/Hyunjun/Neobio/funding/",
+      "vault_path": "${MUCHANIPO_VAULT_PATH}/Neobio/memo/",
+      "vault_path_alt": "${MUCHANIPO_VAULT_PATH}/Neobio/funding/",
       "routing_rule": "투자/자금 관련 → funding/, 나머지 → memo/"
     },
     {
@@ -43,7 +43,7 @@
       "depth": "moderate",
       "frequency": "weekly",
       "vault_wing": "wing_tech",
-      "vault_path": "~/Documents/Hyunjun/Idea Note/"
+      "vault_path": "${MUCHANIPO_VAULT_PATH}/Idea Note/"
     }
   ],
   "eval_rubric": {

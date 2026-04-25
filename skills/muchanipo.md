@@ -95,7 +95,7 @@ To set up a new research session, do the following:
 
 ```
 raw/                        → 인간 소유. 원본 문서. 읽기만, 수정 금지.
-~/Documents/Hyunjun/        → LLM Wiki (= Obsidian vault). LLM이 쓰고 관리.
+${MUCHANIPO_VAULT_PATH}/     → LLM Wiki (= Obsidian vault). LLM이 쓰고 관리.
   ├── Neobio/               → wing_neobio 지식
   ├── Idea Note/            → wing_ai_ml, wing_tech 지식
   ├── Feed/                 → 피드, 기술 트렌드
@@ -151,7 +151,7 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 **What you CAN do:**
 - Use any of your tools: WebSearch, WebFetch, mcp__exa__web_search_exa, mcp__exa__crawling_exa for web research.
 - Use mcp__mempalace__* tools for knowledge storage and retrieval.
-- Use Read/Write/Edit to manage files in `.omc/autoresearch/` and the Obsidian vault (`~/Documents/Hyunjun/`).
+- Use Read/Write/Edit to manage files in `.omc/autoresearch/` and the Obsidian vault (`MUCHANIPO_VAULT_PATH`, default `~/Documents/Hyunjun/`).
 - Use Bash to run the helper scripts: `eval-agent.py`, `vault-router.py`, `signoff-queue.py`, `muchanipo-ingest.py`, `session-check.py`.
 - Generate personas dynamically based on the topic.
 - Conduct multi-round council debates by sequentially adopting different persona perspectives.
