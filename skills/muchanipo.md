@@ -424,6 +424,8 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
 
 Thresholds: as defined in `config.json` / `rubric.json` (v2.0 defaults: PASS >= 70, UNCERTAIN 50-69, FAIL < 50 on 100-point scale; v2.1+ when `citation_fidelity` 11번째 축 활성화 시 thresholds 재조정).
 
+**Grounding gate (v2.1, narrow C1)**: If `grounding_gate.enabled` is true and the natural verdict is `PASS`, the citation grounding pass runs after eval-agent verdict. If `verified_claim_ratio < min_verified_ratio` or `unsupported_critical_claim_count > max_critical_unsupported`, verdict is demoted to `UNCERTAIN` with reason logged. The `citation_fidelity` axis itself is weight 0 in v2.1 (측정만 누적, 점수 무영향) — gate 는 점수 보너스가 아니라 PASS 차단으로만 작동한다. Gate 결정은 `lockdown.audit_log` 로 추적된다.
+
 ### Step 6: Routing
 
 Based on the verdict:

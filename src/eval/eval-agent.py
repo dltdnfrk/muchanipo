@@ -18,6 +18,8 @@ Routing:
 """
 
 import argparse
+import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -35,6 +37,36 @@ SIGNOFF_QUEUE_DIR = SCRIPT_DIR / "signoff-queue"
 RUBRIC_HISTORY_DIR = SCRIPT_DIR / "rubric-history"
 LOGS_DIR = SCRIPT_DIR / "logs"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+
+# ---------------------------------------------------------------------------
+# Lazy imports — citation_grounder + lockdown
+# ---------------------------------------------------------------------------
+def _load_citation_grounder():
+    """citation_grounder 를 lazy import. 실패하면 None 반환 (graceful)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "citation_grounder", SCRIPT_DIR / "citation_grounder.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_lockdown():
+    """src/safety/lockdown 을 optional import. 실패 시 None."""
+    try:
+        src_root = SCRIPT_DIR.parent
+        if str(src_root) not in sys.path:
+            sys.path.insert(0, str(src_root))
+        from safety import lockdown as _lockdown  # type: ignore
+
+        return _lockdown
+    except Exception:  # noqa: BLE001
+        return None
 
 # Default vault base (expanduser handled at runtime)
 DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Hyunjun"
@@ -300,7 +332,15 @@ def score_evidence_quality(report: Dict[str, Any]) -> Tuple[int, str]:
         reasons.append("evidence 없음: -3")
 
     # Check for diverse source types (papers, patents, policies, etc.)
-    all_evidence = " ".join(evidence).lower()
+    # evidence 는 string 또는 dict 혼재 가능 — 안전 coerce
+    def _ev_text(item: Any) -> str:
+        if isinstance(item, dict):
+            return " ".join(
+                str(item.get(k) or "") for k in ("quote", "text", "source", "snippet")
+            )
+        return str(item)
+
+    all_evidence = " ".join(_ev_text(e) for e in evidence).lower()
     source_types = ["논문", "특허", "patent", "pct", "법", "조사", "sci", "doi", "pmid"]
     type_matches = [s for s in source_types if s in all_evidence]
     if len(type_matches) >= 3:
@@ -465,6 +505,100 @@ def score_impact(report: Dict[str, Any]) -> Tuple[int, str]:
     return max(0, min(10, score)), "; ".join(reasons)
 
 
+def _run_citation_grounding(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """citation_grounder 가 있으면 ground_claims 결과 dict, 없으면 None."""
+    grounder = _load_citation_grounder()
+    if grounder is None:
+        return None
+    try:
+        return grounder.ground_claims(
+            consensus=report.get("consensus", ""),
+            recommendations=report.get("recommendations", []),
+            evidence=report.get("evidence", []),
+            dissent=report.get("dissent", ""),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _apply_grounding_gate(
+    grounding: Dict[str, Any],
+    rubric: Dict[str, Any],
+    verdict: str,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """rubric.grounding_gate 설정에 따라 PASS 를 UNCERTAIN 으로 강등한다.
+
+    Returns:
+        (new_verdict, gate_decision_dict_or_None)
+    """
+    gate_cfg = rubric.get("grounding_gate") or {}
+    if not gate_cfg.get("enabled"):
+        return verdict, None
+    if verdict != "PASS":
+        return verdict, None
+
+    grounder = _load_citation_grounder()
+    if grounder is None:
+        return verdict, None
+
+    min_ratio = gate_cfg.get("min_verified_ratio", 0.8)
+    max_crit = gate_cfg.get("max_critical_unsupported", 0)
+    allow, reason = grounder.grounding_gate(
+        grounding,
+        min_verified_ratio=min_ratio,
+        max_critical_unsupported=max_crit,
+    )
+
+    decision = {
+        "enabled": True,
+        "allow_pass": allow,
+        "reason": reason,
+        "min_verified_ratio": min_ratio,
+        "max_critical_unsupported": max_crit,
+    }
+
+    if not allow and gate_cfg.get("demote_pass_to_uncertain"):
+        decision["demoted"] = True
+        return "UNCERTAIN", decision
+
+    decision["demoted"] = False
+    return verdict, decision
+
+
+def _citation_fidelity_score(
+    rubric: Dict[str, Any],
+    grounding: Optional[Dict[str, Any]],
+) -> Tuple[int, str]:
+    """citation_fidelity 축 점수 계산.
+
+    weight 0 → score 0 (점수 영향 없음, 측정 데이터로만 누적)
+    weight > 0 → verified_claim_ratio × max 환산
+    """
+    axes = rubric.get("axes", {}) or {}
+    if not isinstance(axes, dict):
+        return 0, "axes config not dict — citation_fidelity skipped"
+    cf = axes.get("citation_fidelity")
+    if not isinstance(cf, dict):
+        return 0, "citation_fidelity axis 미정의"
+
+    weight = float(cf.get("weight", 0.0) or 0.0)
+    max_score = int(cf.get("max", 10))
+
+    if grounding is None:
+        return 0, "grounding 미실행 (citation_grounder 부재 또는 실패)"
+
+    ratio = float(grounding.get("verified_claim_ratio", 0.0) or 0.0)
+    if weight <= 0.0:
+        return 0, (
+            f"weight=0.0 → 점수 영향 없음 (verified_ratio={ratio:.2f}, 측정 누적용)"
+        )
+
+    score = int(round(ratio * max_score))
+    return max(0, min(max_score, score)), (
+        f"verified_ratio={ratio:.2f} × max={max_score} → {score}"
+    )
+
+
 def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full evaluation on a council report."""
     scorers = {
@@ -480,7 +614,7 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
         "impact": score_impact,
     }
 
-    scores = {}
+    scores: Dict[str, int] = {}
     reasoning_parts = []
 
     for axis in rubric.get("axes", scorers.keys()):
@@ -488,6 +622,16 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
             val, reason = scorers[axis](report)
             scores[axis] = val
             reasoning_parts.append(f"[{axis}={val}] {reason}")
+
+    # citation grounding 패스 (verdict 계산 직후 게이트 적용 위해 미리 실행)
+    grounding = _run_citation_grounding(report)
+
+    # citation_fidelity 점수 (weight 0 → 0, > 0 → 환산)
+    cf_score, cf_reason = _citation_fidelity_score(rubric, grounding)
+    axes_cfg = rubric.get("axes", {})
+    if isinstance(axes_cfg, dict) and "citation_fidelity" in axes_cfg:
+        scores["citation_fidelity"] = cf_score
+        reasoning_parts.append(f"[citation_fidelity={cf_score}] {cf_reason}")
 
     total = sum(scores.values())
 
@@ -502,6 +646,30 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
     else:
         verdict = "FAIL"
 
+    # grounding gate — PASS 일 때만 적용, demote_pass_to_uncertain 가능
+    new_verdict, gate_decision = _apply_grounding_gate(grounding or {}, rubric, verdict)
+    if gate_decision is not None and new_verdict != verdict:
+        reasoning_parts.append(
+            f"[grounding_gate=demoted] {verdict} → {new_verdict} ({gate_decision.get('reason')})"
+        )
+    verdict = new_verdict
+
+    # lockdown audit log (gate 결정 추적)
+    if gate_decision is not None:
+        lockdown = _load_lockdown()
+        if lockdown is not None:
+            try:
+                lockdown.audit_log(
+                    "grounding_gate",
+                    {
+                        "council_id": report.get("council_id", "unknown"),
+                        "topic": report.get("topic", "unknown"),
+                        "decision": gate_decision,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
     return {
         "council_id": report.get("council_id", "unknown"),
         "topic": report.get("topic", "unknown"),
@@ -511,6 +679,8 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
         "reasoning": "\n".join(reasoning_parts),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "rubric_version": rubric.get("version", "v1"),
+        "grounding": grounding or {},
+        "grounding_gate_decision": gate_decision or {},
     }
 
 
@@ -802,6 +972,24 @@ def main() -> int:
         print("  Reasoning:")
         for line in eval_result["reasoning"].split("\n"):
             print(f"    {line}")
+        # citation grounding 결과 (있을 때만)
+        grounding = eval_result.get("grounding") or {}
+        if grounding:
+            print("-" * 60)
+            print("  Citation Grounding:")
+            print(f"    total_claims         : {grounding.get('total_claims', 0)}")
+            print(f"    supported            : {grounding.get('supported', 0)}")
+            print(f"    partial              : {grounding.get('partial', 0)}")
+            print(f"    unsupported          : {grounding.get('unsupported', 0)}")
+            print(f"    verified_ratio       : {grounding.get('verified_claim_ratio', 0)}")
+            print(f"    critical_unsupported : {grounding.get('unsupported_critical_claim_count', 0)}")
+            print(f"    provenance_failures  : {grounding.get('provenance_failures', 0)}")
+            decision = eval_result.get("grounding_gate_decision") or {}
+            if decision:
+                print(
+                    f"    gate                 : allow={decision.get('allow_pass')} "
+                    f"demoted={decision.get('demoted')} reason={decision.get('reason')}"
+                )
         print("=" * 60)
     else:
         print(json.dumps(eval_result, ensure_ascii=False, indent=2))
