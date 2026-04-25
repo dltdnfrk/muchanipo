@@ -39,6 +39,8 @@ AXES = (
     "depth",
     "impact",
     "citation_fidelity",
+    "density",
+    "coverage_breadth",
 )
 
 

@@ -22,11 +22,12 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +600,159 @@ def _citation_fidelity_score(
     )
 
 
+_NUMBER_RE = re.compile(
+    r"(?<![\w.])-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:\s?[%배건명원달러$])?",
+    re.UNICODE,
+)
+_SOURCE_RE = re.compile(
+    r"(https?://\S+|\bdoi:\S+|\bsource\b|\bsources\b|출처|근거|인용)",
+    re.IGNORECASE,
+)
+
+
+def _compute_density_score(report_md: str) -> Tuple[int, str]:
+    """Score quantitative and source density per paragraph on a 0-10 scale."""
+    if not report_md or not report_md.strip():
+        return 0, "report markdown empty"
+
+    paragraphs = [
+        para.strip()
+        for para in re.split(r"\n\s*\n+", report_md)
+        if para.strip()
+    ]
+    paragraph_count = max(1, len(paragraphs))
+    number_count = len(_NUMBER_RE.findall(report_md))
+    source_count = len(_SOURCE_RE.findall(report_md))
+    signal_count = number_count + source_count
+    signals_per_paragraph = signal_count / paragraph_count
+    score = int(round(min(10.0, signals_per_paragraph * 5.0)))
+
+    return max(0, min(10, score)), (
+        f"numbers={number_count}, sources={source_count}, "
+        f"paragraphs={paragraph_count}, signals_per_paragraph={signals_per_paragraph:.2f}"
+    )
+
+
+def _extract_report_markdown(report: Dict[str, Any]) -> str:
+    """Return markdown-ish report text from common council report fields."""
+    for key in ("report_md", "report_markdown", "markdown", "final_report", "report"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    parts = []
+    for key in ("topic", "consensus", "dissent"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    for key in ("recommendations", "evidence"):
+        value = report.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if item)
+    return "\n\n".join(parts)
+
+
+def _load_report_markdown_from_dir(council_dir: Path) -> str:
+    for name in ("REPORT.md", "report.md", "council-report.md", "final-report.md"):
+        path = council_dir / name
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+
+    json_path = council_dir / "council-report.json"
+    if json_path.exists():
+        try:
+            return _extract_report_markdown(json.loads(json_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return ""
+    return ""
+
+
+def _extract_layer_titles(value: Any) -> List[str]:
+    titles: List[str] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            title = node.get("chapter_title")
+            if isinstance(title, str) and title.strip():
+                titles.append(title.strip())
+            for child_key in ("children", "layers", "round_layers", "chapters"):
+                child = node.get(child_key)
+                if child is not None:
+                    visit(child)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(value)
+    return titles
+
+
+def _load_round_layer_titles(council_dir: Path) -> List[str]:
+    for name in ("round_layers.json", "round-layers.json", "layers.json"):
+        path = council_dir / name
+        if not path.exists():
+            continue
+        try:
+            return _extract_layer_titles(json.loads(path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return []
+
+    meta_path = council_dir / "meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        return _extract_layer_titles(meta.get("round_layers", meta.get("layers", [])))
+    return []
+
+
+def _compute_coverage_breadth(council_dir: Path) -> Tuple[int, str]:
+    """Score how many round-layer chapter titles appear in the report."""
+    council_dir = Path(council_dir)
+    titles = _load_round_layer_titles(council_dir)
+    if not titles:
+        return 0, "round layer chapter_title entries not found"
+
+    report_md = _load_report_markdown_from_dir(council_dir)
+    if not report_md.strip():
+        return 0, "report markdown not found"
+
+    report_lower = report_md.lower()
+    covered = [
+        title for title in titles
+        if title.lower() in report_lower
+    ]
+    ratio = len(covered) / len(titles)
+    score = int(round(ratio * 10))
+    return max(0, min(10, score)), (
+        f"covered_layers={len(covered)}/{len(titles)} ({ratio:.2f})"
+    )
+
+
+def _score_density_axis(report: Dict[str, Any]) -> Tuple[int, str]:
+    return _compute_density_score(_extract_report_markdown(report))
+
+
+def _score_coverage_breadth_axis(report: Dict[str, Any]) -> Tuple[int, str]:
+    council_dir = report.get("council_dir") or report.get("council_path")
+    if not council_dir:
+        return 0, "council_dir not provided"
+    return _compute_coverage_breadth(Path(council_dir))
+
+
+def _axis_counts_toward_total(axis: str, rubric: Dict[str, Any]) -> bool:
+    axes = rubric.get("axes", {})
+    if not isinstance(axes, dict):
+        return True
+    cfg = axes.get(axis, {})
+    if not isinstance(cfg, dict):
+        return True
+    if cfg.get("active_for_score") is False:
+        return False
+    return float(cfg.get("weight", 1.0) or 0.0) > 0.0
+
+
 def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full evaluation on a council report."""
     scorers = {
@@ -612,6 +766,8 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
         "coherence": score_coherence,
         "depth": score_depth,
         "impact": score_impact,
+        "density": _score_density_axis,
+        "coverage_breadth": _score_coverage_breadth_axis,
     }
 
     scores: Dict[str, int] = {}
@@ -633,7 +789,10 @@ def evaluate(report: Dict[str, Any], rubric: Dict[str, Any]) -> Dict[str, Any]:
         scores["citation_fidelity"] = cf_score
         reasoning_parts.append(f"[citation_fidelity={cf_score}] {cf_reason}")
 
-    total = sum(scores.values())
+    total = sum(
+        val for axis, val in scores.items()
+        if _axis_counts_toward_total(axis, rubric)
+    )
 
     thresholds = rubric.get("thresholds", {})
     pass_threshold = thresholds.get("pass", THRESHOLD_PASS)
