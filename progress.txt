@@ -1,0 +1,28 @@
+# C27 + C28 Ralph Progress
+
+## Iteration 1 — 2026-04-26 (Auto mode + Ralph)
+
+### PRD setup
+- .omc/prd.json 작성: 3 stories (US-C27, US-C28, US-INTEGRATION)
+- US-C27 acceptance criteria: 9개 (visual_wire.py + 5 framework chart + composer wire + tests + 회귀)
+- US-C28 acceptance criteria: 8개 (rubric v2.2 + density/coverage 함수 + 측정만 weight 0 + tests + 회귀)
+- US-INTEGRATION: skill 갱신 + commit + PR
+
+### Branch
+- feat/c27-c28-visual-density (main에서 분기)
+
+### Worker dispatch
+- omc team 2:codex spawn → tmux session muni
+- worker-1 (pane %14) → US-C27 Visual Wire
+- worker-2 (pane %15) → US-C28 Density Score
+- 시작 시각 약 00:14 UTC
+
+### 상태
+- 양 워커 모두 Working — Enter 송신 완료
+- 폴링 wakeup: 5분 후 lock 파일 확인
+
+### Lessons (이전 sprint에서)
+- omc team 따옴표 안 너무 길면 fail → 짧은 task description + ASSIGNMENT 파일 reference 패턴 안전
+- codex 워커도 prompt 자동 Enter 안 됨 → 첫 사이클 수동 send-keys 필요
+- sandbox에서 tmux socket 접근 안 됨 → dangerouslyDisableSandbox: true 필수
+- main push 차단 → feature branch + PR 패턴 유지

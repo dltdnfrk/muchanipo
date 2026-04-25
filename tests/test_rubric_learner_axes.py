@@ -6,7 +6,7 @@ from conftest import load_script_module
 rubric_learner = load_script_module("rubric_learner", "src/eval/rubric-learner.py")
 
 
-def test_axes_tuple_has_expected_11_axes():
+def test_axes_tuple_has_expected_13_axes():
     assert rubric_learner.AXES == (
         "usefulness",
         "reliability",
@@ -19,6 +19,8 @@ def test_axes_tuple_has_expected_11_axes():
         "depth",
         "impact",
         "citation_fidelity",
+        "density",
+        "coverage_breadth",
     )
 
 
@@ -27,7 +29,7 @@ def test_config_rubric_declares_same_axes(repo_root):
         rubric = json.load(f)
 
     assert tuple(rubric["axes"].keys()) == rubric_learner.AXES
-    assert rubric["version"] == "2.1.0"
+    assert rubric["version"] == "2.2.0"
 
 
 def test_citation_fidelity_penalizes_unsupported_critical_claim(repo_root):
