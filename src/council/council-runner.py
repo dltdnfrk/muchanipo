@@ -673,16 +673,24 @@ def _generate_round1_prompts(
     personas: list[dict[str, Any]],
     council_id: str,
     council_dir: Path,
+    *,
+    total_rounds: int = 10,
+    research_type: str = "exploratory",
 ) -> list[Path]:
-    """Round 1 프롬프트 파일들 생성."""
-    prompt_files: list[Path] = []
+    """Round 1 프롬프트 파일들 생성. C24: layer-aware."""
+    from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
 
+    layer = select_layer_for_round(1, total_rounds=total_rounds,
+                                    research_type=research_type)
+    layer_block = layer_prompt_block(layer)
+
+    prompt_files: list[Path] = []
     for persona in personas:
         persona_slug = persona["name"].replace(" ", "_")
         output_path = council_dir / f"round-1-{persona_slug}.json"
         prompt_path = council_dir / f"prompt-round-1-{persona_slug}.md"
 
-        prompt = _ROUND1_PROMPT_TEMPLATE.format(
+        base_prompt = _ROUND1_PROMPT_TEMPLATE.format(
             name=persona["name"],
             role=persona["role"],
             expertise=", ".join(persona["expertise"]),
@@ -692,6 +700,8 @@ def _generate_round1_prompts(
             council_id=council_id,
             output_path=str(output_path),
         )
+        # C24: layer 가이드 prompt 끝에 append (MBB-급 chapter 구조)
+        prompt = base_prompt.rstrip() + "\n\n---\n\n" + layer_block + "\n"
 
         with open(prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
@@ -708,8 +718,17 @@ def _generate_roundN_prompts(
     council_dir: Path,
     round_num: int,
     previous_results: list[dict[str, Any]],
+    *,
+    total_rounds: int = 10,
+    research_type: str = "exploratory",
 ) -> list[Path]:
-    """Round N (2+) 교차 평가 프롬프트 파일들 생성."""
+    """Round N (2+) 교차 평가 프롬프트 파일들 생성. C24: layer-aware."""
+    from round_layers import select_layer_for_round, layer_prompt_block  # type: ignore
+
+    layer = select_layer_for_round(round_num, total_rounds=total_rounds,
+                                    research_type=research_type)
+    layer_block = layer_prompt_block(layer)
+
     prompt_files: list[Path] = []
 
     # 이전 라운드 결과 요약 텍스트
@@ -739,7 +758,7 @@ def _generate_roundN_prompts(
         output_path = council_dir / f"round-{round_num}-{persona_slug}.json"
         prompt_path = council_dir / f"prompt-round-{round_num}-{persona_slug}.md"
 
-        prompt = _ROUND_N_PROMPT_TEMPLATE.format(
+        base_prompt = _ROUND_N_PROMPT_TEMPLATE.format(
             name=persona["name"],
             role=persona["role"],
             expertise=", ".join(persona["expertise"]),
@@ -751,6 +770,7 @@ def _generate_roundN_prompts(
             previous_results_summary=previous_results_summary,
             output_path=str(output_path),
         )
+        prompt = base_prompt.rstrip() + "\n\n---\n\n" + layer_block + "\n"
 
         with open(prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
@@ -1065,6 +1085,11 @@ def run_council(
     for p in personas:
         print(f"  - {p['name']} ({p['role']})")
 
+    # C24: research_type 추출 — consensus ontology > CLI > default
+    research_type = "exploratory"
+    if consensus_ontology is not None:
+        research_type = consensus_ontology.get("research_type", "exploratory")
+
     # 메타데이터 저장
     meta = {
         "council_id": council_id,
@@ -1073,6 +1098,7 @@ def run_council(
         "personas": personas,
         "max_rounds": max_rounds,
         "convergence_threshold": convergence_threshold,
+        "research_type": research_type,
         "status": "round_1_prompts_generated",
     }
     meta_path = council_dir / "meta.json"
@@ -1080,8 +1106,11 @@ def run_council(
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     # Round 1 프롬프트 생성
-    print(f"\n[CouncilRunner] Round 1 프롬프트 생성 중...")
-    round1_prompt_files = _generate_round1_prompts(topic, personas, council_id, council_dir)
+    print(f"\n[CouncilRunner] Round 1 프롬프트 생성 중... (layer-aware, research_type={research_type})")
+    round1_prompt_files = _generate_round1_prompts(
+        topic, personas, council_id, council_dir,
+        total_rounds=max_rounds, research_type=research_type,
+    )
 
     # 오케스트레이션 가이드
     guide_path = _write_orchestration_guide(
@@ -1176,9 +1205,11 @@ def _resume_council(
     next_round = completed_round + 1
     print(f"\n[CouncilRunner] Round {next_round} 프롬프트 생성 중...")
 
+    research_type = meta.get("research_type", "exploratory")
     prompt_files = _generate_roundN_prompts(
         topic, personas, council_id, council_dir,
-        next_round, last_results
+        next_round, last_results,
+        total_rounds=max_rounds, research_type=research_type,
     )
 
     print(f"[CouncilRunner] Round {next_round} 프롬프트 파일들 ({len(prompt_files)}개):")
