@@ -81,7 +81,11 @@ def _load_stub_fixture() -> dict[str, Any] | None:
 
 def search_mempalace(query: str, wing: str = None, room: str = None, limit: int = 5) -> list[dict]:
     """
-    MemPalace 검색 stub.
+    MemPalace 검색. 우선순위:
+      1) stub fixture (테스트 시)
+      2) 로컬 vault markdown grep fallback (C29 #11)
+      3) 빈 리스트
+
     실제 사용 시: Claude Code에서 mcp__mempalace__mempalace_search 호출로 대체.
     muchanipo.md 오케스트레이터가 이 함수 대신 실제 MCP 도구를 호출함.
 
@@ -97,8 +101,74 @@ def search_mempalace(query: str, wing: str = None, room: str = None, limit: int 
         if isinstance(data, list):
             return data[:limit]
 
-    # TODO: 실제 MemPalace MCP 연동 시 이 함수를 교체
-    return []
+    # C29 #11 fix: 로컬 vault markdown fallback (MemPalace MCP 미가용 시)
+    return _search_local_vault(query, limit=limit)
+
+
+def _search_local_vault(query: str, limit: int = 5) -> list[dict]:
+    """vault/ + ~/Documents/Hyunjun/ markdown 파일에서 query 단어 매칭 줄 추출.
+
+    stdlib only. case-insensitive substring match. 단일 query 토큰 기준.
+    """
+    import os
+    from pathlib import Path
+
+    vault_paths: list[Path] = []
+    env_vault = os.environ.get("MUCHANIPO_VAULT_PATH")
+    if env_vault:
+        vault_paths.append(Path(env_vault).expanduser())
+    # 프로젝트 로컬 vault/
+    proj_vault = Path(__file__).resolve().parent.parent.parent / "vault"
+    if proj_vault.exists():
+        vault_paths.append(proj_vault)
+    # 사용자 obsidian default
+    obsidian = Path("~/Documents/Hyunjun").expanduser()
+    if obsidian.exists() and obsidian not in vault_paths:
+        vault_paths.append(obsidian)
+
+    if not vault_paths or not query.strip():
+        return []
+
+    q_low = query.lower()
+    results: list[dict] = []
+    seen = 0
+
+    for vault in vault_paths:
+        try:
+            for md in vault.rglob("*.md"):
+                if seen >= limit * 4:  # 후보 capped
+                    break
+                try:
+                    text = md.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                low = text.lower()
+                idx = low.find(q_low)
+                if idx == -1:
+                    continue
+                # 매칭 라인 추출 (앞뒤 60자 컨텍스트)
+                start = max(0, idx - 60)
+                end = min(len(text), idx + len(query) + 60)
+                snippet = text[start:end].replace("\n", " ").strip()
+                # 단순 score: query 등장 횟수 / 1000자
+                count = low.count(q_low)
+                score = min(1.0, count / max(1, len(text) // 1000))
+                # Python 3.8 호환 (is_relative_to는 3.9+)
+                try:
+                    src = str(md.relative_to(vault))
+                except ValueError:
+                    src = str(md)
+                results.append({
+                    "text": snippet,
+                    "source": src,
+                    "score": round(score, 3),
+                })
+                seen += 1
+        except OSError:
+            continue
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:limit]
 
 
 # ---------------------------------------------------------------------------
