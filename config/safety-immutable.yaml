@@ -1,0 +1,21 @@
+immutable_axes: [citation_fidelity, reliability]
+immutable_thresholds:
+  pass_min: 70
+  citation_grounding_min: 0.7
+immutable_persona_constraints:
+  critic_addendum_template_hash: "43e5d49e3c8e5ac0e4b0f92784088afdb471cc570a9f88a7f9eb3ff366d95062"
+  skepticism_level_max: 0.7
+immutable_paths:
+  deny_write:
+    - ~/.ssh
+    - ~/.aws
+    - ~/.config
+    - /etc
+    - ~/Library/Keychains
+immutable_evolve_actions:
+  deny:
+    - "modify_axis_weight:citation_fidelity"
+    - "modify_axis_weight:reliability"
+    - "modify_critic_addendum"
+    - "shift_endpoint"
+    - "remove_safety_pattern"

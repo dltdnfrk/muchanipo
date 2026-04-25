@@ -96,6 +96,32 @@ muchanipo/
 └── logs/                          # Ingest & ontology logs
 ```
 
+## Dream Cycle (nightly vault digest)
+
+`tools/dream_cycle.sh` runs the dream-cycle digest over `vault/personas/` and
+`vault/insights/`, deduplicates repeated observations, and writes a cluster
+summary markdown into `logs/dream-cycle/` (or wherever `--output-dir` points).
+
+```bash
+# manual trigger (writes summary to logs/dream-cycle/dream-summary-<ts>.md)
+tools/dream_cycle.sh
+
+# preview without writing
+tools/dream_cycle.sh --no-write
+
+# alternate vault root or threshold
+tools/dream_cycle.sh --vault /path/to/vault --threshold 5
+```
+
+Recommended cron schedule (KST 03:00 daily — operator-installed; the script
+intentionally does **not** modify your crontab):
+
+```cron
+0 3 * * *  cd /path/to/muchanipo && tools/dream_cycle.sh >> logs/dream-cycle.log 2>&1
+```
+
+Stdlib-only — no external LLM calls.
+
 ## Quick Start
 
 ```bash
@@ -103,27 +129,30 @@ muchanipo/
 cp your-document.pdf raw/
 
 # 2. Ingest with ontology extraction
-python3 src/pipeline/muchanipo-ingest.py raw/your-document.pdf \
+python3 src/ingest/muchanipo-ingest.py raw/your-document.pdf \
   --wing research --room topic \
   --strategy semantic --extract-ontology
 
 # 3. Or scan all raw/ files at once
-python3 src/pipeline/muchanipo-ingest.py --scan-raw --wing research
+python3 src/ingest/muchanipo-ingest.py --scan-raw --wing research
 
 # 4. Search with InsightForge
 python3 src/search/insight-forge.py "your research question" --depth deep
 
-# 5. After Council runs, evaluate results
-python3 src/hitl/eval-agent.py council-report.json
+# 5. After Council runs, evaluate results (v2.1 — 11-axis 100/110 scale)
+python3 src/eval/eval-agent.py council-report.json
 
-# 6. Review UNCERTAIN items
+# 5b. Optional: citation grounding pass before vault write
+python3 src/eval/citation_grounder.py council-report.json --verbose
+
+# 6. Review UNCERTAIN items (HITL queue + HTML report)
 python3 src/hitl/signoff-queue.py list
-python3 src/hitl/signoff-queue.py show sq-xxx --html --open
+python3 src/hitl/signoff-report.py sq-xxx --queue-dir signoff-queue --reports-dir reports --open
 python3 src/hitl/signoff-queue.py approve sq-xxx
 
-# 7. After 20+ feedbacks, evolve the rubric
-python3 src/hitl/rubric-learner.py analyze
-python3 src/hitl/rubric-learner.py evolve
+# 7. After 20+ feedbacks, evolve the rubric (11-axis aware)
+python3 src/eval/rubric-learner.py analyze
+python3 src/eval/rubric-learner.py evolve
 ```
 
 ## Requirements
@@ -137,9 +166,11 @@ python3 src/hitl/rubric-learner.py evolve
 ## HITL Quality Gate
 
 ```
-Score 28+ → PASS   → Direct to vault
-Score 20-27 → UNCERTAIN → Sign-off queue (human review)
-Score <20 → FAIL   → Discard + log
+Score 70+/100  → PASS       → Direct to vault                    (v2.0 baseline)
+Score 50-69    → UNCERTAIN  → Sign-off queue (human review)
+Score <50      → FAIL       → Discard + log
+
+v2.1 (citation_fidelity 11번째 축 활성화 시): pass 77/110, uncertain 55/110
 
 After 20+ human decisions → rubric-learner auto-adjusts thresholds
 ```

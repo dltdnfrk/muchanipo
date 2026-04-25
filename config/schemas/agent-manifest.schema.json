@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muchanipo.local/schemas/agent-manifest.schema.json",
+  "title": "MuchaNipo Agent Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent",
+    "allowed_tools",
+    "required_outputs",
+    "token_budget",
+    "reliability_score"
+  ],
+  "properties": {
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allowed_tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "required_outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "token_budget": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reliability_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

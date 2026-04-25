@@ -389,6 +389,149 @@ def _select_personas_from_ontology(
     return selected[:count]
 
 
+# ---------------------------------------------------------------------------
+# C23-A: ConsensusPlan ontology wiring (Phase 0d → council Step 4)
+# ---------------------------------------------------------------------------
+
+# 추상 ConsensusPlan role → 구체 _PERSONA_POOL role 매핑
+_CONSENSUS_ROLE_TO_POOL_ROLE: dict[str, str] = {
+    "topic_owner": "시장분석가",
+    "evidence_reviewer": "학술연구자",
+    "contrarian": "규제전문가",
+    "comparison_judge": "경쟁분석가",
+}
+
+_KOREAN_DOMAIN_KEYWORDS: tuple[str, ...] = (
+    "한국", "korean", "agtech", "농가", "농업", "neobio", "miriva", "농민",
+)
+
+
+def _load_consensus_plan_ontology(path: Path) -> dict[str, Any]:
+    """ConsensusPlan JSON 덤프를 ontology dict로 변환.
+
+    지원 형식:
+      - {"ontology_seed": {...}}     # 전체 ConsensusPlan 직렬화
+      - {"roles": [...], ...}         # to_ontology() 결과 그대로
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"ConsensusPlan JSON must be a dict, got {type(data).__name__}")
+    seed = data.get("ontology_seed")
+    if isinstance(seed, dict) and seed:
+        return dict(seed)
+    return dict(data)
+
+
+def _detect_korean_domain(text: str) -> bool:
+    if not text:
+        return False
+    low = text.lower()
+    return any(kw.lower() in low for kw in _KOREAN_DOMAIN_KEYWORDS)
+
+
+def _farmer_seed_to_persona(seed: dict[str, Any]) -> dict[str, Any]:
+    """KoreaPersonaSampler 결과를 council persona 형식으로 변환."""
+    province = str(seed.get("province", "")).strip()
+    sigungu = str(seed.get("sigungu") or seed.get("city") or "").strip()
+    occupation = str(seed.get("occupation") or "농업 현장 전문가").strip()
+    pain_points = str(seed.get("pain_points") or "현장 부담").strip()
+    goals = str(seed.get("goals") or "검증 가능한 의사결정").strip()
+
+    name_parts = [p for p in (province, sigungu, occupation) if p]
+    name = " ".join(name_parts) or "농가 대표"
+
+    return {
+        "name": name,
+        "role": "agtech_farmer",
+        "expertise": ["현장 농업", "한국 농가 운영", occupation or "농업"],
+        "perspective_bias": (
+            f"{province} {sigungu} 현장 농업 종사자 관점. "
+            f"통증: {pain_points}. 목표: {goals}."
+        ).strip(),
+        "argument_style": "현장 경험 중심, 실용성 우선, 비용/노동 부담 강조",
+        "entity_type": "agtech_farmer",
+        "is_individual": True,
+        "grounded_seed": dict(seed),
+    }
+
+
+def _sample_korean_farmer_personas(count: int) -> list[dict[str, Any]]:
+    """KoreaPersonaSampler로 농가 페르소나를 count개 생성. 실패 시 빈 리스트."""
+    if count < 1:
+        return []
+    try:
+        from persona_sampler import KoreaPersonaSampler  # type: ignore
+    except Exception:
+        try:
+            sys.path.insert(0, str(_BASE_DIR))
+            from persona_sampler import KoreaPersonaSampler  # type: ignore
+        except Exception:
+            return []
+    try:
+        seeds = KoreaPersonaSampler().agtech_farmer_seed(n=count)
+    except Exception:
+        return []
+    return [_farmer_seed_to_persona(s) for s in seeds]
+
+
+def _select_personas_from_consensus_plan(
+    ontology: dict[str, Any],
+    count: int,
+    topic: str = "",
+) -> list[dict[str, Any]]:
+    """ConsensusPlan ontology dict (to_ontology() 결과)에서 페르소나 선택.
+
+    - roles 추상 역할 → _PERSONA_POOL의 구체 역할로 매핑
+    - "agtech_farmer" role 또는 Korean domain 감지 시 KoreaPersonaSampler 자동 호출
+    - 부족한 자리는 _PERSONA_POOL에서 보충
+    """
+    roles_raw = ontology.get("roles") or []
+    roles = [str(r).lower() for r in roles_raw if isinstance(r, (str, bytes))]
+
+    selected: list[dict[str, Any]] = []
+    used_roles: set[str] = set()
+
+    detection_text = " ".join(
+        [topic or "", str(ontology.get("design_doc_brief", ""))]
+        + [str(i) for i in ontology.get("intents", []) or []]
+    )
+    korean_detected = (
+        "agtech_farmer" in roles or _detect_korean_domain(detection_text)
+    )
+
+    if korean_detected:
+        farmer_count = max(1, min(2, count))
+        for fp in _sample_korean_farmer_personas(farmer_count):
+            if len(selected) >= count:
+                break
+            selected.append(fp)
+        used_roles.add("agtech_farmer")
+
+    for abstract_role in roles:
+        if len(selected) >= count:
+            break
+        if abstract_role == "agtech_farmer":
+            continue
+        concrete_role = _CONSENSUS_ROLE_TO_POOL_ROLE.get(abstract_role)
+        if not concrete_role or concrete_role in used_roles:
+            continue
+        for persona in _PERSONA_POOL:
+            if persona["role"] == concrete_role and persona["role"] not in used_roles:
+                selected.append(dict(persona))
+                used_roles.add(persona["role"])
+                break
+
+    for persona in _PERSONA_POOL:
+        if len(selected) >= count:
+            break
+        if persona["role"] not in used_roles:
+            selected.append(dict(persona))
+            used_roles.add(persona["role"])
+
+    return selected[:count]
+
+
 def _select_personas_default(count: int) -> list[dict[str, Any]]:
     """기본 페르소나 풀에서 균형 있게 선택."""
     # 핵심 역할 우선: 투자자, 기술전문가, 사용자대표, 시장분석가 순
@@ -862,6 +1005,7 @@ def run_council(
     output_path: Path | None,
     resume_council_id: str | None,
     finalize_council_id: str | None,
+    consensus_plan_path: Path | None = None,
 ) -> None:
     """Council 전체 오케스트레이션 실행."""
     config = _load_config()
@@ -894,12 +1038,28 @@ def run_council(
     print(f"[CouncilRunner] Council 시작: {council_id}")
     print(f"[CouncilRunner] 주제: {topic}")
 
-    # 페르소나 선택
-    if ontology_path and ontology_path.exists():
+    # 페르소나 선택 — ConsensusPlan ontology 우선
+    consensus_ontology: dict[str, Any] | None = None
+    if consensus_plan_path and consensus_plan_path.exists():
+        consensus_ontology = _load_consensus_plan_ontology(consensus_plan_path)
+        print(f"[CouncilRunner] ConsensusPlan ontology 로드: {consensus_plan_path}")
+
+    if consensus_ontology is not None:
+        personas = _select_personas_from_consensus_plan(
+            consensus_ontology, persona_count, topic
+        )
+    elif ontology_path and ontology_path.exists():
         print(f"[CouncilRunner] 온톨로지 기반 페르소나 선택: {ontology_path}")
-        personas = _select_personas_from_ontology(ontology_path, persona_count)
+        personas = _select_personas_from_ontology(ontology_path, persona_count, topic)
     else:
         personas = _select_personas_default(persona_count)
+        if _detect_korean_domain(topic):
+            farmers = _sample_korean_farmer_personas(1)
+            if farmers and not any(p["role"] == "agtech_farmer" for p in personas):
+                if len(personas) >= persona_count and personas:
+                    personas[-1] = farmers[0]
+                else:
+                    personas.append(farmers[0])
 
     print(f"[CouncilRunner] 선택된 페르소나 ({len(personas)}명):")
     for p in personas:
@@ -1167,21 +1327,63 @@ def main() -> None:
         metavar="COUNCIL_ID",
         help="최종 리포트 생성 (council_id 지정)",
     )
+    parser.add_argument(
+        "--design-doc",
+        type=Path,
+        default=None,
+        help="DesignDoc 마크다운 파일 (raw_input 토픽 추출에 사용)",
+    )
+    parser.add_argument(
+        "--consensus-plan-json",
+        type=Path,
+        default=None,
+        help="ConsensusPlan JSON 덤프 (Phase 0d → council Step 4 ontology 직접 입력)",
+    )
 
     args = parser.parse_args()
 
+    # Topic 자동 추출 — --consensus-plan-json / --design-doc
+    topic = (args.topic or "").strip()
+    if not topic and args.consensus_plan_json and args.consensus_plan_json.exists():
+        try:
+            cp_onto = _load_consensus_plan_ontology(args.consensus_plan_json)
+            for intent in cp_onto.get("intents", []) or []:
+                s = str(intent).strip()
+                if s.lower().startswith("topic:"):
+                    topic = s[len("topic:"):].strip()
+                    break
+            if not topic:
+                intents = cp_onto.get("intents") or []
+                if intents:
+                    topic = str(intents[0])[:200]
+        except Exception:
+            pass
+    if not topic and args.design_doc and args.design_doc.exists():
+        try:
+            text = args.design_doc.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip().lstrip("#").strip()
+                if stripped:
+                    topic = stripped[:200]
+                    break
+        except Exception:
+            pass
+
     # 검증
-    if not args.resume and not args.finalize and not args.topic:
-        parser.error("--topic 또는 --resume / --finalize 중 하나는 필수입니다.")
+    if not args.resume and not args.finalize and not topic:
+        parser.error(
+            "--topic 또는 --consensus-plan-json/--design-doc/--resume/--finalize 중 하나는 필수입니다."
+        )
 
     run_council(
-        topic=args.topic or "",
+        topic=topic,
         ontology_path=args.ontology,
         persona_count=args.personas,
         max_rounds=args.max_rounds,
         output_path=args.output,
         resume_council_id=args.resume,
         finalize_council_id=args.finalize,
+        consensus_plan_path=args.consensus_plan_json,
     )
 
 

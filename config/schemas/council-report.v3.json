@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muchanipo.local/schemas/council-report.v3.json",
+  "title": "MuchaNipo Council Report v3",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "personas",
+    "rounds",
+    "citation_grounding",
+    "final"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "v0.4.0"
+    },
+    "personas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "agent_manifest"
+        ],
+        "properties": {
+          "agent_manifest": {
+            "$ref": "agent-manifest.schema.json"
+          }
+        }
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "stop_reason",
+          "context_checksum",
+          "convergence",
+          "ratchet"
+        ],
+        "properties": {
+          "stop_reason": {
+            "type": "string"
+          },
+          "context_checksum": {
+            "type": "string"
+          },
+          "convergence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "consensus_score",
+              "ambiguity",
+              "coverage",
+              "contradiction_count",
+              "confidence_mad",
+              "belief_delta",
+              "dominant_position_ratio",
+              "can_stop"
+            ],
+            "properties": {
+              "consensus_score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "ambiguity": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "coverage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "contradiction_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "confidence_mad": {
+                "type": "number",
+                "minimum": 0
+              },
+              "belief_delta": {
+                "type": "number"
+              },
+              "dominant_position_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "can_stop": {
+                "type": "boolean"
+              }
+            }
+          },
+          "ratchet": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "decision",
+              "effect_size_mad",
+              "ratchet_score",
+              "deltas"
+            ],
+            "properties": {
+              "decision": {
+                "type": "string"
+              },
+              "effect_size_mad": {
+                "type": "number",
+                "minimum": 0
+              },
+              "ratchet_score": {
+                "type": "number"
+              },
+              "deltas": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "citation_grounding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "verified_claim_ratio",
+        "total_claim_count",
+        "unsupported_critical_claim_count",
+        "per_claim_verdict"
+      ],
+      "properties": {
+        "verified_claim_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "total_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupported_critical_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "per_claim_verdict": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Claim"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Evidence"
+      }
+    },
+    "final": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "scores",
+        "vault_metadata",
+        "cost_trace"
+      ],
+      "properties": {
+        "scores": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "axes",
+            "total",
+            "rubric_max",
+            "verdict",
+            "verdict_reason"
+          ],
+          "properties": {
+            "axes": {
+              "type": "object"
+            },
+            "total": {
+              "type": "number"
+            },
+            "rubric_max": {
+              "type": "number",
+              "minimum": 1
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "PASS",
+                "UNCERTAIN",
+                "FAIL"
+              ]
+            },
+            "verdict_reason": {
+              "type": "string"
+            }
+          }
+        },
+        "vault_metadata": {
+          "type": "object"
+        },
+        "cost_trace": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Claim": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "claim_id",
+        "text",
+        "is_critical",
+        "supporting_evidence_ids",
+        "verification_status"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "is_critical": {
+          "type": "boolean"
+        },
+        "supporting_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verification_status": {
+          "type": "string",
+          "enum": [
+            "supported",
+            "partial",
+            "unsupported",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "Evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "type",
+        "source",
+        "quote",
+        "quote_span",
+        "hash",
+        "fetched_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "image",
+            "chart",
+            "table",
+            "vault_page",
+            "kg_triple"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "quote": {
+          "type": "string"
+        },
+        "quote_span": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "hash": {
+          "type": "string"
+        },
+        "fetched_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

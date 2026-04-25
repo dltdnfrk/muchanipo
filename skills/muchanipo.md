@@ -171,6 +171,60 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 
 ## The Research Cycle (one experiment)
 
+### Step 0: Interactive Intent Interview (사용자 리서치 요청 시 — gstack /office-hours 차용, C21)
+
+**사용자가 리서치 요청을 던진 모든 경우** 적용 (Mode 1 trigger 키워드 "오토리서치 시작"/"세컨드 브레인 돌려" 제외 — 이 trigger는 곧장 자율 무한 루프). 이 phase에서 **Claude이 직접 사용자와 대화**하며 의도를 정밀화하고, 끝에서 **Mode 1/Mode 2를 자동 라우팅**한다.
+
+**Phase 0a — Quick Triage + Type 분류**
+- `src/intent/interview_prompts.py` `assess(user_input)` → InterviewPlan(mode, missing_dimensions, **research_type**)
+- 입력이 짧고 모호하거나 핵심 차원(timeframe/domain/evaluation) 부족 → `mode="deep"`
+- 입력이 풍부하면(차원 3+) → `mode="quick"`
+- `research_type`: `exploratory | comparative | analytical | predictive` (deep-research-query Phase 1 차용)
+
+**Phase 0b — Interactive Interview v2** ⭐ (Adaptive, AskUserQuestion 도구 직접 호출)
+
+흐름:
+1. **Pre-screen** (`office_hours.pre_screen_hook(topic, history)`) — 영문 미지 약어/줄임말 감지 시 1회 명확화. `AskUserQuestion`으로 짧게 묻고 답변 받은 뒤 본 인터뷰 진입. (LangChain ODR "ABSOLUTELY NECESSARY" 원칙 — 1회 초과 금지)
+2. **Rubric 생성** (`InterviewRubric(topic=user_input)`) — 6 RubricItem(Q1~Q6) 자동 생성. `coverage_status=NOT_ASKED`, `entropy_estimate=1.0`.
+3. **루프 (최대 6 round)**:
+   - `select_next_question(rubric)` → 미답변 차원 중 **entropy 최대** 항목 (arXiv 2510.27410 greedy)
+   - `reframe_with_context(dim_id, topic, prev_answers)` → 토픽-맞춤 question text + 4개 선택지 + Other (LLMREI Cookbook)
+   - `AskUserQuestion` 도구 호출 — 헤더에 `[N/6]` progress 표시
+   - 답변 수신 → `rubric.update(dim_id, answer, quality_score)` (Other 입력=0.6 / 옵션 선택=0.9 휴리스틱)
+   - `rubric.is_complete(threshold=0.75)` AND `coverage_rate ≥ 0.75` → **조기 종료** (2601.14798 동적 stop)
+4. 답변 통합 `merge_answers_to_text(user_input, qa_pairs)` → Phase 0c 진입.
+
+**Quick mode**는 위 루프를 `missing_dimensions`만 대상으로 1-2 round 단축.
+
+**Phase 0c — DesignDoc 생성 + 사용자 review**
+- `OfficeHours().reframe(merged_text)` → DesignDoc
+- `format_designdoc_review(design_doc)` 출력 (한 페이지 markdown)
+- 사용자 ✅ 승인 / ✏️ 수정(해당 섹션 재질문) / ❌ Interview부터 다시
+- lockdown.aup_risk + redact 자동 통과
+
+**Phase 0d — Coverage Gate + ConsensusPlan 생성 + 사용자 review**
+- **Coverage Gate**: `plan_review.rubric_coverage_gate(rubric, threshold=0.75)` → 미충족 시 부족 차원 1개 보완 probe (`AskUserQuestion` 1회 추가) 후 재진입 (Anthropic Interviewer planning→analysis 패턴)
+- `PlanReview().autoplan(design_doc)` → ConsensusPlan (CEO mode / Eng feasibility / Design journey / Devex friction)
+- `format_consensusplan_review(plan)` 출력
+- gate 실패(consensus < 0.6 / aup_risk > 0.7 / feasibility=blocked) 시 자동 차단 + 추가 질문
+- 사용자 ✅ 시작 / ✏️ 수정 / ❌ DesignDoc부터 다시
+
+**Phase 0e — Mode Routing (자동 결정)** ⭐
+- `route_mode(design_doc, consensus_plan, user_input, qa_text)` → ModeDecision
+- 휴리스틱:
+  - "지속/장기/매일/쌓아" 키워드 + ceo.mode="expansion" + alternatives 다수 → `autonomous_loop` (Mode 1)
+  - "이번 한 번/지금/결과 받기" 키워드 + ceo.mode="hold"/"reduction" → `targeted_iterative` (Mode 2)
+  - 신호 균형 또는 약함 → default `targeted_iterative` (저비용 안전 진입)
+- `format_mode_routing_decision(decision)` 한 줄 보고 + 사용자 ✅ / ✏️ 다른 모드로
+- 결정된 mode에 따라 Step 1 또는 Mode 1 loop 진입
+
+**Phase 0 종료 시**:
+- `ConsensusPlan.to_ontology()` → Step 4 council ontology 직접 입력 (roles + intents + value_axes(C16) + design_doc_brief)
+- Korean domain 자동 감지 → `agtech_farmer` role + `KoreaPersonaSampler.agtech_farmer_seed(n)` 자동 호출
+- decision.mode == "autonomous_loop" → Mode 1 무한 loop / "targeted_iterative" → Mode 2 10라운드
+
+**Mode 1 직접 trigger 키워드** ("오토리서치 시작" / "세컨드 브레인 돌려")는 Phase 0 전체 skip — 사용자가 명시적으로 자율 누적을 원하는 의도.
+
 ### Step 1: Topic Selection
 
 Select the next topic based on program.md interest axes:
@@ -178,6 +232,7 @@ Select the next topic based on program.md interest axes:
 - Check results.tsv to avoid recently researched topics.
 - Prefer topics that cross 2+ interest axes (higher novelty).
 - If previous research opened new questions, pursue them first.
+- **Mode 2면**: Step 0의 ConsensusPlan.intents가 이 단계를 대체. Topic = `design_doc.raw_input`.
 
 Output a one-line topic statement, e.g.: "형광 프로브 키트 글로벌 시장 규모 2026"
 
@@ -193,7 +248,7 @@ Gather sources using your search tools:
 
 If the user attached a document (PDF, text, URL), ingest it BEFORE the council sees it:
 ```bash
-python3 src/pipeline/muchanipo-ingest.py "{file_path}" \
+python3 src/ingest/muchanipo-ingest.py "{file_path}" \
   --wing {interest_axis} --room {topic_slug} --strategy semantic
 ```
 Then extract ontology (entities + relationships) and store to MemPalace KG:
@@ -412,7 +467,7 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
    ```
 2. Run eval-agent.py (MANDATORY):
    ```bash
-   python3 src/hitl/eval-agent.py \
+   python3 src/eval/eval-agent.py \
      .omc/autoresearch/logs/council-report-{timestamp}.json \
      --rubric config/rubric.json --verbose
    ```
@@ -422,7 +477,9 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
 - Log the error in results.tsv with score=0 and description="CRASH: eval-agent.py failed: {error}"
 - Do NOT fall back to self-evaluation. Skip this experiment and move to the next topic.
 
-Thresholds: as defined in `config.json` / `rubric.json` (current defaults: PASS >= 28, UNCERTAIN 20-27, FAIL < 20).
+Thresholds: as defined in `config.json` / `rubric.json` (v2.0 defaults: PASS >= 70, UNCERTAIN 50-69, FAIL < 50 on 100-point scale; v2.1+ when `citation_fidelity` 11번째 축 활성화 시 thresholds 재조정).
+
+**Grounding gate (v2.1, narrow C1)**: If `grounding_gate.enabled` is true and the natural verdict is `PASS`, the citation grounding pass runs after eval-agent verdict. If `verified_claim_ratio < min_verified_ratio` or `unsupported_critical_claim_count > max_critical_unsupported`, verdict is demoted to `UNCERTAIN` with reason logged. The `citation_fidelity` axis itself is weight 0 in v2.1 (측정만 누적, 점수 무영향) — gate 는 점수 보너스가 아니라 PASS 차단으로만 작동한다. Gate 결정은 `lockdown.audit_log` 로 추적된다.
 
 ### Step 6: Routing
 
@@ -514,7 +571,7 @@ LOOP FOREVER:
 10. **Rubric evolution check (every 20 experiments):**
     If results.tsv has 20+ new rows since last evolution:
     ```bash
-    python3 src/hitl/rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/
+    python3 src/eval/rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/
     ```
     Review suggestions. Apply if they improve quality.
     
@@ -532,18 +589,36 @@ LOOP FOREVER:
 
 **NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you, period.
 
-## Two Modes
+## Two Modes (자동 라우팅됨 — 사용자가 mode 용어 알 필요 없음)
 
-### Mode 1: Autonomous Loop
+사용자는 그냥 리서치 요청을 던지고, **Step 0 Interview Phase 0e Mode Routing**이 의도를 분석해 자동 결정. 사용자에게 한 줄로 보고하고 ✅ 또는 ✏️ 변경 받음.
+
+### Mode 1: Autonomous Loop (무한 누적, 백그라운드)
+**언제**: 지속/장기 모니터링 / vault에 누적 / 트렌드 추적
+**Trigger**:
+- 명시: "오토리서치 시작" / "세컨드 브레인 돌려" → Phase 0 skip
+- 자동 라우팅: Phase 0e가 키워드("지속/장기/매일/쌓아") + ceo.mode="expansion" 감지
+
 ```
-User: "오토리서치 시작" or "세컨드 브레인 돌려"
--> Setup -> Loop forever through interest axes
+User: "오토리서치 시작" 또는 "AgTech 트렌드 매일 모니터링 vault에 쌓아"
+-> [명시 trigger면] Setup → Loop forever
+-> [자동 라우팅면] Setup → Step 0 Interactive Interview → Phase 0e routes to autonomous_loop → Loop forever
 ```
 
-### Mode 2: Targeted Research (iterative deepening, default 10 rounds)
+### Mode 2: Targeted Iterative Research (10 라운드 단발)
+**언제**: 단일 질문 / 이번 한 번 결과 / 명확한 시점
+**Trigger**:
+- 자동 라우팅: 사용자가 구체 토픽 던지면 default 진입 (저비용 안전 첫 진입)
+
 ```
-User: "이 논문 분석해줘" [attachment] or "MIRIVA 경쟁사 분석해줘"
--> Setup -> Ingest document -> 10-round improvement loop -> Final report -> STOP
+User: "이 논문 분석해줘" [attachment] / "MIRIVA 경쟁사 한 번 정리해줘"
+-> Setup
+-> Step 0 Interactive Interview (Phase 0a triage → 0b interview → 0c DesignDoc review → 0d ConsensusPlan review → 0e Mode Routing)
+-> Phase 0e routes to targeted_iterative
+-> Ingest document
+-> 10-round improvement loop (iteration_hooks C20)
+-> Retro summarize (C21) → learnings.jsonl 누적
+-> Final report → STOP
 ```
 
 In targeted mode, you run **multiple improvement iterations** on the same document:
@@ -590,16 +665,21 @@ After all rounds complete, generate the HTML report and open in browser.
 
 ## Helper Scripts Reference
 
-Scripts live in `src/hitl/` and `src/pipeline/`. Call via `Bash: python3 src/hitl/{script}` or `src/pipeline/{script}`:
+Scripts live in `src/{eval,hitl,ingest,runtime,council,search}/` (v0.4 재배치). Call via `Bash: python3 src/<dir>/{script}`:
 
-| Script | Purpose | When to use |
-|--------|---------|-------------|
-| `session-check.py` | Check pending sign-offs, recent activity | Setup step 3 |
-| `muchanipo-ingest.py <file> --wing X --room Y` | Chunk + store document to MemPalace | Step 3 (document provided) |
-| `eval-agent.py <report.json> --rubric rubric.json` | Score council output | Step 5 Option A |
-| `vault-router.py <eval.json> <report.json>` | Route to vault/queue/discard | Step 6 |
-| `signoff-queue.py list` | List pending human reviews | On-demand |
-| `signoff-queue.py approve <id>` | Approve a queued item | On-demand |
+| Script | Path | Purpose | When to use |
+|--------|------|---------|-------------|
+| `session-check.py` | `src/hitl/` | Check pending sign-offs, recent activity | Setup step 3 |
+| `muchanipo-ingest.py <file> --wing X --room Y` | `src/ingest/` | Chunk + store document to MemPalace | Step 3 (document provided) |
+| `eval-agent.py <report.json> --rubric rubric.json` | `src/eval/` | Score council output (v2.1 11-axis) | Step 5 |
+| `citation_grounder.py <report.json>` | `src/eval/` | claim ↔ evidence 1:1 검증 패스 | Step 5 (PASS 게이트) |
+| `rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/` | `src/eval/` | 20+ signoff 후 rubric 진화 | After 20 feedbacks |
+| `vault-router.py <eval.json> <report.json>` | `src/hitl/` | Route to vault/queue/discard | Step 6 |
+| `signoff-queue.py list` / `approve <id>` | `src/hitl/` | List / approve queued items | On-demand |
+| `signoff-report.py <id> --queue-dir ... --reports-dir ... --open` | `src/hitl/` | HTML report 생성 | All verdicts |
+| `council-runner.py` | `src/council/` | Council deliberation engine | Step 4 |
+| `insight-forge.py` / `react-report.py` | `src/search/` | 5W1H + RRF / ReACT report | Step 4 |
+| `orchestrator.py` / `model-router.py` | `src/runtime/` | Loop coordination / model routing | Internal |
 
 ## State Files
 

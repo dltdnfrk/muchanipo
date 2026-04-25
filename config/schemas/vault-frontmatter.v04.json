@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muchanipo.local/schemas/vault-frontmatter.v04.json",
+  "title": "MuchaNipo Vault Frontmatter v0.4",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "uncertainty",
+    "verified_claim_ratio",
+    "belief_valid_from",
+    "belief_updated_at",
+    "supersedes",
+    "sensitivity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "v04"
+    },
+    "uncertainty": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "verified_claim_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "belief_valid_from": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "belief_updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted"
+      ]
+    }
+  }
+}
