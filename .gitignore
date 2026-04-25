@@ -39,3 +39,9 @@ vault/personas/seeds/korea/.gitattributes
 vault/personas/seeds/korea/README.md
 vault/personas/seeds/korea/agtech-farmers.jsonl
 vault/personas/seeds/korea/images/
+
+# Sprint orchestration markers (omc-auto-team done files)
+_research/.c23-locks/
+
+# Council run logs (per-execution artifacts)
+src/council/council-logs/
