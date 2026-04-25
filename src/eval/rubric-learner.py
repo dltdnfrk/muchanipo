@@ -556,10 +556,24 @@ def cmd_evolve(args: argparse.Namespace) -> None:
             ]
             if ia_rejects:
                 axis_avgs: Dict[str, float] = {}
+                axes_cfg = rubric.get("axes", {})
                 for axis in AXES:
-                    vals = [e.get("scores", {}).get(axis, 0) for e in ia_rejects]
-                    axis_avgs[axis] = sum(vals) / len(vals) if vals else 0
+                    cfg = axes_cfg.get(axis, {})
+                    # measurement-only 축 제외 (weight=0 또는 active_for_score: false)
+                    if cfg.get("weight", 1.0) == 0 or cfg.get("active_for_score") is False:
+                        continue
+                    # feedback entry에 axis가 실제로 있을 때만 평균 산입
+                    vals = [
+                        e["scores"][axis]
+                        for e in ia_rejects
+                        if isinstance(e.get("scores"), dict) and axis in e["scores"]
+                    ]
+                    if not vals:
+                        continue
+                    axis_avgs[axis] = sum(vals) / len(vals)
 
+                if not axis_avgs:
+                    continue
                 # 가장 낮은 축의 가중치를 올림
                 lowest_axis = min(axis_avgs, key=lambda a: axis_avgs[a])
                 if lowest_axis in rubric.get("axes", {}):
