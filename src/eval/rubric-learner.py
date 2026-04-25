@@ -27,7 +27,19 @@ FEEDBACK_PATH = BASE_DIR / "rubric-feedback.jsonl"
 HISTORY_DIR = BASE_DIR / "rubric-history"
 PROPOSAL_PATH = BASE_DIR / "rubric-proposal.json"
 
-AXES = ("usefulness", "reliability", "novelty", "actionability")
+AXES = (
+    "usefulness",
+    "reliability",
+    "novelty",
+    "actionability",
+    "completeness",
+    "evidence_quality",
+    "perspective_diversity",
+    "coherence",
+    "depth",
+    "impact",
+    "citation_fidelity",
+)
 
 
 # ---------------------------------------------------------------------------

@@ -193,7 +193,7 @@ Gather sources using your search tools:
 
 If the user attached a document (PDF, text, URL), ingest it BEFORE the council sees it:
 ```bash
-python3 src/pipeline/muchanipo-ingest.py "{file_path}" \
+python3 src/ingest/muchanipo-ingest.py "{file_path}" \
   --wing {interest_axis} --room {topic_slug} --strategy semantic
 ```
 Then extract ontology (entities + relationships) and store to MemPalace KG:
@@ -412,7 +412,7 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
    ```
 2. Run eval-agent.py (MANDATORY):
    ```bash
-   python3 src/hitl/eval-agent.py \
+   python3 src/eval/eval-agent.py \
      .omc/autoresearch/logs/council-report-{timestamp}.json \
      --rubric config/rubric.json --verbose
    ```
@@ -422,7 +422,7 @@ Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.**
 - Log the error in results.tsv with score=0 and description="CRASH: eval-agent.py failed: {error}"
 - Do NOT fall back to self-evaluation. Skip this experiment and move to the next topic.
 
-Thresholds: as defined in `config.json` / `rubric.json` (current defaults: PASS >= 28, UNCERTAIN 20-27, FAIL < 20).
+Thresholds: as defined in `config.json` / `rubric.json` (v2.0 defaults: PASS >= 70, UNCERTAIN 50-69, FAIL < 50 on 100-point scale; v2.1+ when `citation_fidelity` 11번째 축 활성화 시 thresholds 재조정).
 
 ### Step 6: Routing
 
@@ -514,7 +514,7 @@ LOOP FOREVER:
 10. **Rubric evolution check (every 20 experiments):**
     If results.tsv has 20+ new rows since last evolution:
     ```bash
-    python3 src/hitl/rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/
+    python3 src/eval/rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/
     ```
     Review suggestions. Apply if they improve quality.
     
@@ -590,16 +590,21 @@ After all rounds complete, generate the HTML report and open in browser.
 
 ## Helper Scripts Reference
 
-Scripts live in `src/hitl/` and `src/pipeline/`. Call via `Bash: python3 src/hitl/{script}` or `src/pipeline/{script}`:
+Scripts live in `src/{eval,hitl,ingest,runtime,council,search}/` (v0.4 재배치). Call via `Bash: python3 src/<dir>/{script}`:
 
-| Script | Purpose | When to use |
-|--------|---------|-------------|
-| `session-check.py` | Check pending sign-offs, recent activity | Setup step 3 |
-| `muchanipo-ingest.py <file> --wing X --room Y` | Chunk + store document to MemPalace | Step 3 (document provided) |
-| `eval-agent.py <report.json> --rubric rubric.json` | Score council output | Step 5 Option A |
-| `vault-router.py <eval.json> <report.json>` | Route to vault/queue/discard | Step 6 |
-| `signoff-queue.py list` | List pending human reviews | On-demand |
-| `signoff-queue.py approve <id>` | Approve a queued item | On-demand |
+| Script | Path | Purpose | When to use |
+|--------|------|---------|-------------|
+| `session-check.py` | `src/hitl/` | Check pending sign-offs, recent activity | Setup step 3 |
+| `muchanipo-ingest.py <file> --wing X --room Y` | `src/ingest/` | Chunk + store document to MemPalace | Step 3 (document provided) |
+| `eval-agent.py <report.json> --rubric rubric.json` | `src/eval/` | Score council output (v2.1 11-axis) | Step 5 |
+| `citation_grounder.py <report.json>` | `src/eval/` | claim ↔ evidence 1:1 검증 패스 | Step 5 (PASS 게이트) |
+| `rubric-learner.py analyze --feedback .omc/autoresearch/signoff-queue/` | `src/eval/` | 20+ signoff 후 rubric 진화 | After 20 feedbacks |
+| `vault-router.py <eval.json> <report.json>` | `src/hitl/` | Route to vault/queue/discard | Step 6 |
+| `signoff-queue.py list` / `approve <id>` | `src/hitl/` | List / approve queued items | On-demand |
+| `signoff-report.py <id> --queue-dir ... --reports-dir ... --open` | `src/hitl/` | HTML report 생성 | All verdicts |
+| `council-runner.py` | `src/council/` | Council deliberation engine | Step 4 |
+| `insight-forge.py` / `react-report.py` | `src/search/` | 5W1H + RRF / ReACT report | Step 4 |
+| `orchestrator.py` / `model-router.py` | `src/runtime/` | Loop coordination / model routing | Internal |
 
 ## State Files
 

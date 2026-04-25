@@ -143,12 +143,19 @@ def generate_html(entry: Dict[str, Any]) -> str:
     verdict_cls = _verdict_class(verdict)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Build score bars
+    # Build score bars (v2.1 — 11 axes including citation_fidelity)
     score_labels = {
         "usefulness": "Usefulness",
         "reliability": "Reliability",
         "novelty": "Novelty",
         "actionability": "Actionability",
+        "completeness": "Completeness",
+        "evidence_quality": "Evidence Quality",
+        "perspective_diversity": "Perspective Diversity",
+        "coherence": "Coherence",
+        "depth": "Depth",
+        "impact": "Impact",
+        "citation_fidelity": "Citation Fidelity",
     }
     score_rows_html = ""
     for key, label in score_labels.items():
@@ -160,8 +167,10 @@ def generate_html(entry: Dict[str, Any]) -> str:
             f'</div>'
         )
 
-    # Total row
-    total_pct = min(total / 40 * 100, 100)
+    # Total row — dynamic rubric_max (10pt × axis count present in scores; falls
+    # back to 100 if scores empty). Replaces hardcoded /40 from v1 4-axis era.
+    rubric_max = max(1, len(scores) * 10) if scores else 100
+    total_pct = min(total / rubric_max * 100, 100)
     score_rows_html += (
         f'<div class="score-item score-total">'
         f'<span class="score-label">Total</span>'
@@ -169,7 +178,7 @@ def generate_html(entry: Dict[str, Any]) -> str:
         f'<div class="score-bar-track total-track">'
         f'<div class="score-bar-fill total-fill" style="width:{total_pct:.0f}%"></div>'
         f'</div>'
-        f'<span class="score-value total-value">{total}/40 &mdash; '
+        f'<span class="score-value total-value">{total}/{rubric_max} &mdash; '
         f'<span class="{verdict_cls}">{_e(verdict)}</span></span>'
         f'</div>'
         f'</div>'
