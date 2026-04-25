@@ -12,19 +12,17 @@ Usage:
     python eval-agent.py <council-report.json> --verbose
 
 Routing:
-    total >= 28  -> PASS       -> vault 저장 진행
-    total 20-27  -> UNCERTAIN  -> signoff-queue 대기
-    total < 20   -> FAIL       -> 폐기 + 로그
+    total >= 70  -> PASS       -> vault 저장 진행
+    total 50-69  -> UNCERTAIN  -> signoff-queue 대기
+    total < 50   -> FAIL       -> 폐기 + 로그
 """
 
 import argparse
 import importlib
 import importlib.util
 import json
-import os
 import re
 import sys
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +36,22 @@ SIGNOFF_QUEUE_DIR = SCRIPT_DIR / "signoff-queue"
 RUBRIC_HISTORY_DIR = SCRIPT_DIR / "rubric-history"
 LOGS_DIR = SCRIPT_DIR / "logs"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+
+def _load_runtime_paths():
+    spec = importlib.util.spec_from_file_location(
+        "muchanipo_runtime_paths",
+        SCRIPT_DIR.parent / "runtime" / "paths.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_runtime_paths = _load_runtime_paths()
+CONFIG_PATH = _runtime_paths.get_config_path()
+RUBRIC_PATH = _runtime_paths.get_rubric_path()
 
 
 # ---------------------------------------------------------------------------
@@ -60,23 +74,22 @@ def _load_citation_grounder():
 def _load_lockdown():
     """src/safety/lockdown 을 optional import. 실패 시 None."""
     try:
-        src_root = SCRIPT_DIR.parent
-        if str(src_root) not in sys.path:
-            sys.path.insert(0, str(src_root))
-        from safety import lockdown as _lockdown  # type: ignore
-
-        return _lockdown
+        spec = importlib.util.spec_from_file_location(
+            "lockdown",
+            SCRIPT_DIR.parent / "safety" / "lockdown.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
     except Exception:  # noqa: BLE001
         return None
-
-# Default vault base (expanduser handled at runtime)
-DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Hyunjun"
 
 # ---------------------------------------------------------------------------
 # Thresholds (from program.md / config.json)
 # ---------------------------------------------------------------------------
-THRESHOLD_PASS = 28
-THRESHOLD_UNCERTAIN = 20
+THRESHOLD_PASS = 70
+THRESHOLD_UNCERTAIN = 50
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +108,27 @@ def load_rubric(rubric_path: Optional[str]) -> Dict[str, Any]:
     if rubric_path and Path(rubric_path).exists():
         with open(rubric_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    # Default rubric from program.md
+    if RUBRIC_PATH.exists():
+        with open(RUBRIC_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
     return {
-        "axes": ["usefulness", "reliability", "novelty", "actionability"],
+        "version": "2.2.0",
+        "axes": {
+            "usefulness": {"weight": 1.0, "max": 10},
+            "reliability": {"weight": 1.0, "max": 10},
+            "novelty": {"weight": 1.0, "max": 10},
+            "actionability": {"weight": 1.0, "max": 10},
+            "completeness": {"weight": 1.0, "max": 10},
+            "evidence_quality": {"weight": 1.0, "max": 10},
+            "perspective_diversity": {"weight": 1.0, "max": 10},
+            "coherence": {"weight": 1.0, "max": 10},
+            "depth": {"weight": 1.0, "max": 10},
+            "impact": {"weight": 1.0, "max": 10},
+        },
         "thresholds": {
             "pass": THRESHOLD_PASS,
             "uncertain": THRESHOLD_UNCERTAIN,
         },
-        "max_per_axis": 10,
     }
 
 
@@ -857,14 +883,10 @@ def resolve_vault_path(report: Dict[str, Any]) -> Path:
         keywords = [kw.lower() for kw in axis.get("keywords", [])]
         if any(kw in topic for kw in keywords):
             vault_path = axis.get("vault_path", "")
-            expanded = Path(os.path.expanduser(vault_path))
-            if expanded.exists():
-                return expanded
+            return _runtime_paths.resolve_vault_path_setting(vault_path, create=True)
 
     # Default: Feed directory for uncategorized research
-    feed_path = DEFAULT_VAULT_BASE / "Feed"
-    feed_path.mkdir(parents=True, exist_ok=True)
-    return feed_path
+    return _runtime_paths.get_vault_path("Feed", create=True)
 
 
 def route_pass(report: Dict[str, Any], eval_result: Dict[str, Any], dry_run: bool = False) -> str:
@@ -1124,7 +1146,7 @@ def main() -> int:
         for axis, val in eval_result["scores"].items():
             print(f"  {axis:15s}: {val:2d}/10")
         print("-" * 60)
-        max_score = sum(a.get("max", 10) for a in rubric.get("axes", {}).values()) if isinstance(rubric.get("axes"), dict) else len(rubric.get("axes", [])) * 10
+        max_score = _runtime_paths.rubric_score_max(rubric)
         print(f"  {'TOTAL':15s}: {eval_result['total']:2d}/{max_score}")
         print(f"  {'VERDICT':15s}: {eval_result['verdict']}")
         print("-" * 60)

@@ -117,7 +117,7 @@ def classify_score(total: float, rubric: Dict[str, Any]) -> str:
     thresholds = rubric["thresholds"]
     if total >= thresholds["pass"]:
         return "PASS"
-    elif total >= thresholds["uncertain_min"]:
+    elif total >= thresholds.get("uncertain", thresholds.get("uncertain_min", 50)):
         return "UNCERTAIN"
     else:
         return "FAIL"
@@ -159,8 +159,15 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     interest_axis_reject: Dict[str, int] = defaultdict(int)
     interest_axis_total: Dict[str, int] = defaultdict(int)
 
-    # 구간 정의 (FAIL: <20, UNCERTAIN: 20-27, PASS: 28+)
-    score_bins = {"FAIL (<20)": (0, 20), "UNCERTAIN (20-27)": (20, 28), "PASS (28+)": (28, 100)}
+    # 구간 정의 (100점 rubric 기준)
+    thresholds = rubric.get("thresholds", {})
+    uncertain = thresholds.get("uncertain", thresholds.get("uncertain_min", 50))
+    passing = rubric.get("thresholds", {}).get("pass", 70)
+    score_bins = {
+        f"FAIL (<{uncertain})": (0, uncertain),
+        f"UNCERTAIN ({uncertain}-{passing - 1})": (uncertain, passing),
+        f"PASS ({passing}+)": (passing, 100),
+    }
     bin_actions: Dict[str, Dict[str, int]] = {
         b: defaultdict(int) for b in score_bins
     }
