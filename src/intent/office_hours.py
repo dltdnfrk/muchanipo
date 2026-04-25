@@ -213,3 +213,129 @@ class OfficeHours:
             "score < 70이면 'Scope Expansion' 또는 'Reduction with branches'로 전환. "
             "Git Ratchet으로 단조 증가 보장."
         )
+
+
+# ---------------------------------------------------------------------------
+# C22-C: Pre-screen hook + reframe with context
+# ---------------------------------------------------------------------------
+import re as _re
+
+# 잘 알려진 영문 약어 — 명확화 불필요 (화이트리스트)
+_KNOWN_ACRONYMS: frozenset = frozenset({
+    "AI", "ML", "LLM", "GPT", "API", "SDK", "URL", "HTTP", "JSON", "YAML",
+    "SQL", "CPU", "GPU", "RAM", "OS", "UI", "UX", "PR", "CI", "CD", "QA",
+    "PoC", "MVP", "B2B", "B2C", "SaaS", "ROI", "GTM", "KPI", "OKR", "RFP",
+    "US", "EU", "UK", "JP", "KR", "PDF", "CSV", "XML", "HTML", "CSS", "JS",
+    "TS", "DB", "RAG", "MCP", "TDD", "BDD",
+})
+
+
+@dataclass(frozen=True)
+class PreScreenResult:
+    """LangChain ODR clarification 1회 결과."""
+    need_clarification: bool
+    question: str = ""
+    detected_terms: List[str] = field(default_factory=list)
+    reason: str = ""
+
+
+def _detect_unknown_acronyms(text: str) -> List[str]:
+    """영문 대문자 3-7자 약어 중 화이트리스트 외 — 명확화 후보."""
+    candidates = _re.findall(r"\b[A-Z][A-Z0-9]{2,6}\b", text or "")
+    seen = set()
+    unknown: List[str] = []
+    for c in candidates:
+        if c in _KNOWN_ACRONYMS:
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        unknown.append(c)
+    return unknown
+
+
+def pre_screen_hook(
+    topic: str,
+    history: Optional[Sequence[Dict[str, Any]]] = None,
+) -> PreScreenResult:
+    """LangChain ODR "ABSOLUTELY NECESSARY" 패턴 — 인터뷰 시작 전 1회 명확화.
+
+    원칙:
+    1. history에 이미 clarification 있으면 → 재질문 금지
+    2. 영문 약어/줄임말 미지 용어 감지 → 명확화 트리거
+    3. 그 외 → 명확화 불필요, 본 인터뷰로 진입
+
+    Returns: PreScreenResult(need_clarification, question, detected_terms, reason)
+    """
+    history = history or []
+    already_clarified = any(
+        (msg.get("role") == "assistant" and "명확화" in str(msg.get("content", "")))
+        or msg.get("type") == "clarification"
+        for msg in history
+    )
+    if already_clarified:
+        return PreScreenResult(
+            need_clarification=False,
+            reason="이미 1회 명확화 완료 — 재질문 억제 (LangChain ODR ABSOLUTELY NECESSARY)",
+        )
+
+    unknown = _detect_unknown_acronyms(topic)
+    if unknown:
+        terms = ", ".join(unknown[:3])
+        return PreScreenResult(
+            need_clarification=True,
+            question=(
+                f"'{terms}' 용어가 익숙하지 않은데 의미를 짧게 알려주실 수 있을까요?\n"
+                "(약어가 명확하면 본 인터뷰로 바로 진입합니다.)"
+            ),
+            detected_terms=unknown,
+            reason=f"영문 약어 미지 감지: {unknown}",
+        )
+
+    return PreScreenResult(
+        need_clarification=False,
+        reason="모호 용어 없음 — 본 인터뷰 진입 가능",
+    )
+
+
+def reframe_with_context(
+    dim_id: str,
+    topic: str,
+    prev_answers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """LLMREI Interview Cookbook + show-me-the-prd — 다음 질문 동적 재구성.
+
+    이전 답변(prev_answers)을 참조해 다음 질문 + 선택지를 보정.
+
+    Returns: {"dim_id", "question", "options"} — AskUserQuestion에 그대로 전달 가능.
+    """
+    prev_answers = prev_answers or {}
+
+    # interview_prompts에서 base options 가져오기 (지연 import — 순환 회피)
+    try:
+        from .interview_prompts import build_question_options
+    except ImportError:  # pragma: no cover
+        from interview_prompts import build_question_options  # type: ignore
+
+    options = build_question_options(dim_id, topic, prev_answers)
+
+    # base question text — dim별 PRD 톤
+    base_questions: Dict[str, str] = {
+        "Q1_research_question": "정확히 무엇을 알아내고 싶나요?",
+        "Q2_purpose": "결과를 어디에 쓰시나요?",
+        "Q3_context": "도메인 맥락은 어디까지인가요?",
+        "Q4_known": "이미 알고 있는 게 있나요?",
+        "Q5_deliverable": "산출물은 어떤 형태인가요?",
+        "Q6_quality": "근거 품질 기준은? (Source A-D)",
+    }
+    question = base_questions.get(dim_id, dim_id)
+
+    # 이전 답변 기반 보정 — Q3이 이전에 답해졌으면 Q4에 연결
+    if dim_id == "Q4_known" and "Q3_context" in prev_answers:
+        question = f"({prev_answers['Q3_context']} 맥락에서) 이미 알고 있는 게 있나요?"
+    elif dim_id == "Q5_deliverable" and "Q2_purpose" in prev_answers:
+        question = f"({prev_answers['Q2_purpose']} 목적에 맞춰) 어떤 형태의 산출물을 원하세요?"
+    elif dim_id == "Q6_quality" and "Q5_deliverable" in prev_answers:
+        question = f"({prev_answers['Q5_deliverable']} 산출물에 맞는) 근거 품질 기준은? (Source A-D)"
+
+    return {"dim_id": dim_id, "question": question, "options": options}

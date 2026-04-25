@@ -3,7 +3,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path("src/intent")))
-from office_hours import OfficeHours, DesignDoc, Alternative  # type: ignore
+from office_hours import (  # type: ignore
+    Alternative,
+    DesignDoc,
+    OfficeHours,
+    PreScreenResult,
+    pre_screen_hook,
+    reframe_with_context,
+)
 
 
 def test_reframe_basic_design_doc_shape():
@@ -90,3 +97,63 @@ def test_aup_risk_field_present_when_lockdown_available():
     # lockdown 부재 시 0.0, 있으면 0.0 이상의 float
     assert isinstance(doc.aup_risk_score, float)
     assert 0.0 <= doc.aup_risk_score <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# C22-C — pre_screen_hook + reframe_with_context
+# ---------------------------------------------------------------------------
+def test_pre_screen_detects_unknown_acronym():
+    res = pre_screen_hook("MIRIVA 진단키트 가격 책정")
+    assert res.need_clarification is True
+    assert "MIRIVA" in res.detected_terms
+
+
+def test_pre_screen_skips_known_acronyms():
+    res = pre_screen_hook("AI 에이전트 ROI 분석")
+    assert res.need_clarification is False
+    assert res.detected_terms == []
+
+
+def test_pre_screen_skips_if_already_clarified():
+    history = [{"role": "assistant", "content": "MIRIVA 명확화 — 진단키트 제품명"}]
+    res = pre_screen_hook("MIRIVA 가격 책정", history=history)
+    assert res.need_clarification is False
+    assert "ABSOLUTELY NECESSARY" in res.reason or "재질문 억제" in res.reason
+
+
+def test_pre_screen_no_acronym_no_clarification():
+    res = pre_screen_hook("한국 농가 가격 분석")
+    assert res.need_clarification is False
+
+
+def test_reframe_returns_question_and_options():
+    out = reframe_with_context("Q1_research_question", "MIRIVA 가격")
+    assert out["dim_id"] == "Q1_research_question"
+    assert "알아내고" in out["question"] or out["question"]
+    assert isinstance(out["options"], list) and len(out["options"]) >= 2
+    assert out["options"][-1]["label"] == "Other"
+
+
+def test_reframe_uses_prev_answers_q4():
+    out = reframe_with_context(
+        "Q4_known",
+        "MIRIVA 가격",
+        prev_answers={"Q3_context": "한국 사과 농가"},
+    )
+    assert "한국 사과 농가" in out["question"]
+
+
+def test_reframe_uses_prev_answers_q5():
+    out = reframe_with_context(
+        "Q5_deliverable",
+        "MIRIVA 가격",
+        prev_answers={"Q2_purpose": "투자자 IR"},
+    )
+    assert "투자자 IR" in out["question"]
+
+
+def test_reframe_q6_options_source_quality():
+    out = reframe_with_context("Q6_quality", "any topic")
+    labels = [o["label"] for o in out["options"]]
+    assert any("A급" in l for l in labels)
+    assert any("D급" in l for l in labels)

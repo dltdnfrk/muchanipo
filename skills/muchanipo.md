@@ -175,15 +175,26 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 
 **사용자가 리서치 요청을 던진 모든 경우** 적용 (Mode 1 trigger 키워드 "오토리서치 시작"/"세컨드 브레인 돌려" 제외 — 이 trigger는 곧장 자율 무한 루프). 이 phase에서 **Claude이 직접 사용자와 대화**하며 의도를 정밀화하고, 끝에서 **Mode 1/Mode 2를 자동 라우팅**한다.
 
-**Phase 0a — Quick Triage**
-- `src/intent/interview_prompts.py` `assess(user_input)` → InterviewPlan
-- 입력이 짧고 모호하거나 핵심 차원(timeframe/domain/evaluation)이 부족하면 `mode="deep"`
-- 입력이 풍부하면(차원 3+) `mode="quick"`
+**Phase 0a — Quick Triage + Type 분류**
+- `src/intent/interview_prompts.py` `assess(user_input)` → InterviewPlan(mode, missing_dimensions, **research_type**)
+- 입력이 짧고 모호하거나 핵심 차원(timeframe/domain/evaluation) 부족 → `mode="deep"`
+- 입력이 풍부하면(차원 3+) → `mode="quick"`
+- `research_type`: `exploratory | comparative | analytical | predictive` (deep-research-query Phase 1 차용)
 
-**Phase 0b — Interactive Interview** (Claude이 사용자에게 직접 질문)
-- **Deep mode**: `forcing_questions_korean()` 6개 질문을 **한 번에 하나씩** 차례로 사용자에게 출력. 각 답변 받은 뒤 다음 질문.
-- **Quick mode**: `quick_clarification_questions(missing_dims)` 부족한 차원만 1-2개 짧게 확인.
-- 답변들을 `merge_answers_to_text(user_input, qa_pairs)`로 통합 텍스트로 합침.
+**Phase 0b — Interactive Interview v2** ⭐ (Adaptive, AskUserQuestion 도구 직접 호출)
+
+흐름:
+1. **Pre-screen** (`office_hours.pre_screen_hook(topic, history)`) — 영문 미지 약어/줄임말 감지 시 1회 명확화. `AskUserQuestion`으로 짧게 묻고 답변 받은 뒤 본 인터뷰 진입. (LangChain ODR "ABSOLUTELY NECESSARY" 원칙 — 1회 초과 금지)
+2. **Rubric 생성** (`InterviewRubric(topic=user_input)`) — 6 RubricItem(Q1~Q6) 자동 생성. `coverage_status=NOT_ASKED`, `entropy_estimate=1.0`.
+3. **루프 (최대 6 round)**:
+   - `select_next_question(rubric)` → 미답변 차원 중 **entropy 최대** 항목 (arXiv 2510.27410 greedy)
+   - `reframe_with_context(dim_id, topic, prev_answers)` → 토픽-맞춤 question text + 4개 선택지 + Other (LLMREI Cookbook)
+   - `AskUserQuestion` 도구 호출 — 헤더에 `[N/6]` progress 표시
+   - 답변 수신 → `rubric.update(dim_id, answer, quality_score)` (Other 입력=0.6 / 옵션 선택=0.9 휴리스틱)
+   - `rubric.is_complete(threshold=0.75)` AND `coverage_rate ≥ 0.75` → **조기 종료** (2601.14798 동적 stop)
+4. 답변 통합 `merge_answers_to_text(user_input, qa_pairs)` → Phase 0c 진입.
+
+**Quick mode**는 위 루프를 `missing_dimensions`만 대상으로 1-2 round 단축.
 
 **Phase 0c — DesignDoc 생성 + 사용자 review**
 - `OfficeHours().reframe(merged_text)` → DesignDoc
@@ -191,7 +202,8 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 - 사용자 ✅ 승인 / ✏️ 수정(해당 섹션 재질문) / ❌ Interview부터 다시
 - lockdown.aup_risk + redact 자동 통과
 
-**Phase 0d — ConsensusPlan 생성 + 사용자 review**
+**Phase 0d — Coverage Gate + ConsensusPlan 생성 + 사용자 review**
+- **Coverage Gate**: `plan_review.rubric_coverage_gate(rubric, threshold=0.75)` → 미충족 시 부족 차원 1개 보완 probe (`AskUserQuestion` 1회 추가) 후 재진입 (Anthropic Interviewer planning→analysis 패턴)
 - `PlanReview().autoplan(design_doc)` → ConsensusPlan (CEO mode / Eng feasibility / Design journey / Devex friction)
 - `format_consensusplan_review(plan)` 출력
 - gate 실패(consensus < 0.6 / aup_risk > 0.7 / feasibility=blocked) 시 자동 차단 + 추가 질문
