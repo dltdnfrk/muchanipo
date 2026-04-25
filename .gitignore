@@ -27,3 +27,5 @@ mp-env/
 
 # OMC state
 .omc/state/
+.omx/
+autoresearch/
