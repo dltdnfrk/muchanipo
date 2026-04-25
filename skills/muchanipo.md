@@ -678,6 +678,35 @@ In targeted mode, you run **MBB-style chapter-by-chapter** rounds (C24 — `src/
 
 After all rounds complete, generate the HTML report and open in browser.
 
+## MBB Report Synthesis (C26 + C27 + C28)
+
+Council 종료 시 `_finalize_council`이 자동으로 두 산출물을 생성:
+- `council-report.json` — raw 토론 결과 (legacy)
+- **`REPORT.md` — MBB-급 markdown deck** ⭐
+
+`REPORT.md` 구조 (C26 `src/report/composer.py`):
+1. Cover (topic + council_id + research_type + 메타 표)
+2. Executive Summary (Net Position + Avg Confidence + Top Findings + 분포 표)
+3. Table of Contents (chapter list)
+4. Chapter 1~10 (round별, layer별 — C24 round_layers와 1:1 매핑)
+5. Cross-Round Consensus & Dissent
+6. Appendix A — Personas (expertise/bias/style)
+7. Appendix B — Evidence Index (모든 출처 dedupe)
+
+**C27 Visual Wire** (`src/report/visual_wire.py`):
+- 각 chapter의 `framework_output`을 raw JSON 대신 시각화로 출력
+- Porter 5 Forces → 5x3 markdown table (severity 이모지 🟢🟡🔴 포함)
+- JTBD → 3x4 markdown table (functional/emotional/social × dimensions)
+- SWOT → 2x2 quadrant table + TOWS
+- North Star Tree / MECE Tree → mermaid graph
+- Alias 폭넓게 지원 (severity/sev/level, north_star/star/metric, …)
+
+**C28 Density Score** (`config/rubric.json` v2.2):
+- 11 axis → **13 axis** (density + coverage_breadth 추가, 측정만 weight 0)
+- `density`: 단락당 정량 수치·출처 인용 밀도 (0-10)
+- `coverage_breadth`: 10 layer 중 충실 커버 비율 (0-10)
+- 30 run 측정 후 weight 결정 (citation_fidelity 패턴 동일)
+
 ## Helper Scripts Reference
 
 Scripts live in `src/{eval,hitl,ingest,runtime,council,search}/` (v0.4 재배치). Call via `Bash: python3 src/<dir>/{script}`:
