@@ -31,3 +31,11 @@ mp-env/
 autoresearch/
 .claude/
 .omc/
+
+# Nemotron-Personas-Korea raw data (CC BY 4.0 — 사용자 별도 다운로드)
+vault/personas/seeds/korea/data/
+vault/personas/seeds/korea/.cache/
+vault/personas/seeds/korea/.gitattributes
+vault/personas/seeds/korea/README.md
+vault/personas/seeds/korea/agtech-farmers.jsonl
+vault/personas/seeds/korea/images/
