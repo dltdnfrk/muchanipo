@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Office Hours 산출물을 입력으로 받음
 try:
@@ -325,3 +325,40 @@ class PlanReview:
             "ceo_mode": ceo.mode,
             "feasibility": eng.feasibility,
         }
+
+
+# ---------------------------------------------------------------------------
+# C22-D: Rubric Coverage Gate
+# ---------------------------------------------------------------------------
+try:
+    from .interview_rubric import InterviewRubric, CoverageStatus
+except ImportError:  # pragma: no cover
+    from interview_rubric import InterviewRubric, CoverageStatus  # type: ignore
+
+
+def rubric_coverage_gate(
+    rubric: "InterviewRubric",
+    threshold: float = 0.75,
+) -> Tuple[bool, str]:
+    """Phase 0d 진입 직전 rubric coverage 검증 (Anthropic Interviewer 패턴).
+
+    Args:
+        rubric: Phase 0b에서 채워진 InterviewRubric
+        threshold: 통과 임계 (기본 0.75 = 6 차원 중 5개 이상 covered)
+
+    Returns:
+        (passed, reason) — passed=False면 부족 차원 보완 probe 필요.
+
+    근거:
+    - Anthropic Interviewer planning → analysis 3단계
+    - arXiv 2601.14798 Teacher-Educator stop signal (정량 임계)
+    """
+    rate = rubric.coverage_rate()
+    if rate >= threshold:
+        return True, f"Coverage {rate:.2f} ≥ {threshold:.2f} — Phase 0d 진입 OK"
+
+    uncov = rubric.uncovered_dimension_ids()
+    return False, (
+        f"Coverage {rate:.2f} < {threshold:.2f} — 추가 probe 필요. "
+        f"미충족 차원: {uncov}"
+    )

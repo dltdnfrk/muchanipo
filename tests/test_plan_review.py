@@ -101,3 +101,52 @@ def test_value_axes_match_ceo_mode():
     assert axes["innovation_orientation"] >= 0.4
     assert axes["time_horizon"] in {"short", "mid", "long"}
     assert 0.0 <= axes["risk_tolerance"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# C22-D — rubric_coverage_gate
+# ---------------------------------------------------------------------------
+from interview_rubric import InterviewRubric  # type: ignore
+from plan_review import rubric_coverage_gate  # type: ignore
+
+
+def _rubric_with_n_covered(n: int) -> InterviewRubric:
+    r = InterviewRubric(topic="x")
+    for i, item in enumerate(r.items):
+        if i < n:
+            r.update(item.dimension_id, "ok", quality=0.9)
+    return r
+
+
+def test_coverage_gate_passes_at_threshold():
+    r = _rubric_with_n_covered(5)  # 5/6 = 0.833 ≥ 0.75
+    passed, reason = rubric_coverage_gate(r, threshold=0.75)
+    assert passed is True
+    assert "0.83" in reason or "OK" in reason
+
+
+def test_coverage_gate_passes_full_coverage():
+    r = _rubric_with_n_covered(6)
+    passed, reason = rubric_coverage_gate(r)
+    assert passed is True
+
+
+def test_coverage_gate_fails_below_threshold():
+    r = _rubric_with_n_covered(4)  # 4/6 = 0.666 < 0.75
+    passed, reason = rubric_coverage_gate(r, threshold=0.75)
+    assert passed is False
+    assert "추가 probe" in reason
+
+
+def test_coverage_gate_reports_uncovered_dims():
+    r = _rubric_with_n_covered(3)
+    passed, reason = rubric_coverage_gate(r)
+    assert passed is False
+    assert "Q4_known" in reason or "Q5_deliverable" in reason or "Q6_quality" in reason
+
+
+def test_coverage_gate_zero_initial():
+    r = InterviewRubric(topic="x")
+    passed, reason = rubric_coverage_gate(r, threshold=0.5)
+    assert passed is False
+    assert "0.00" in reason
