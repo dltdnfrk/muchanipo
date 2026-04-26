@@ -41,6 +41,35 @@ but for knowledge instead of model weights. You are the researcher. You directly
 use your tools (Bash, WebSearch, Read, Write, MemPalace MCP) to execute every
 step. There is no external orchestrator.py to call. You ARE the orchestrator.
 
+## Policy Decisions (C29 hybrid — issue #9 resolution)
+
+이 4 정책은 skills/muchanipo.md의 다른 섹션 + muchanipo.md(root)에서 단일 SoT로 사용한다.
+충돌 시 항상 이 섹션이 우선.
+
+### ① Self-Evaluation — Hybrid
+- **Default**: `eval-agent.py` 외부 sub-agent로 점수 (PROHIBITED self-eval).
+- **Fallback**: eval-agent 호출 실패 시(예: rate limit) → Claude 자체 평가 OK,
+  단 결과에 `"eval_mode": "self_fallback"` 명시 + 다음 cycle에서 재평가 큐 등록.
+
+### ② Orchestrator — Two-tier
+- **High-level control flow**: Claude (이 skill 내부 reasoning).
+- **Mechanical steps** (lock acquisition, file IO, subprocess): `src/runtime/orchestrator.py`
+  같은 deterministic Python 헬퍼.
+- "You ARE the orchestrator"는 **high-level만**. orchestrator.py는 helper 역할.
+
+### ③ Council — Hybrid
+- **Round 1**: 26 페르소나 차례로 plays (cross-influence 차단, 독립 의견).
+- **Round 2+**: parallel sub-agent (다른 의견 보면서 토론).
+- 즉 "you are council" + "parallel Agent" 둘 다 옳다 — round 단계에 따라 다름.
+
+### ④ Loop — Pause + Notify (NEVER STOP의 안전망)
+- **Default**: NEVER STOP — 인간 interrupt까지 무한 cycle.
+- **Exception**: 5회 연속 council UNCERTAIN+FAIL → 자동 PAUSE + 사람에게 알림
+  (예: state file `.omc/autoresearch/circuit-breaker.json`에 기록).
+- PAUSE 상태에서 사람이 resume 명령(or 토픽 변경) 시 cycle 재개.
+
+---
+
 ## Execution Independence
 
 MuchaNipo runs **completely independent** of OMC autopilot/ralph/ultrawork modes.
@@ -459,7 +488,7 @@ AUP 거부는 페르소나 손실 = 관점 손실. 거부율 0%를 목표로 프
 
 ### Step 5: Evaluation
 
-Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED.** You MUST call the external eval script for objective scoring.
+Score the council output using eval-agent.py. **Self-evaluation is PROHIBITED by default** — call external eval script. Self-eval fallback only as defined in **Policy Decisions ①** (eval-agent unavailable).
 
 1. Write the council report JSON to a file:
    ```bash
@@ -587,7 +616,9 @@ LOOP FOREVER:
 
 **results.tsv Rotation**: When results.tsv exceeds 500 rows, archive as `results-{date}.tsv` and keep only the last 100 rows in active file.
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you, period.
+**NEVER STOP** (default): Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research.
+
+**Exception (Policy Decisions ④)**: 5회 연속 UNCERTAIN+FAIL이면 자동 PAUSE + `.omc/autoresearch/circuit-breaker.json`에 기록 + 사람에게 알림. 사람이 resume 명령 또는 토픽 변경 시 재개. 이 외에는 인간 interrupt까지 무한 cycle.
 
 ## Two Modes (자동 라우팅됨 — 사용자가 mode 용어 알 필요 없음)
 
