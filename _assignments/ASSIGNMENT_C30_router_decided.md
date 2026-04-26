@@ -1,5 +1,7 @@
 # C30 Model Router — Decided Design (4-agent 합성)
 
+> **SUPERSEDED:** 이 문서는 PR #20의 historical artifact로 유지한다. 사용자 피드백에 따라 C30 구현 방향은 `src/router/` 중심이 아니라 `_assignments/ASSIGNMENT_C30_idea_to_council.md`의 **Idea-to-Council Pipeline Architecture**로 대체한다. Model Router는 top-level package가 아니라 `src/execution/models.py` 하위 gateway로 격하한다.
+
 **작성:** 2026-04-26
 **참조:** `_design/c30/{api,impl,cost,config}_proposal_*.md` (1454 LOC, 4 worker)
 **핵심:** 4 proposal 모두 다른 layer를 다뤄 충돌 없음 → 모두 수용 + 통합
