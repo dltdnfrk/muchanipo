@@ -849,6 +849,48 @@ def _measure_consensus(results: list[dict[str, Any]]) -> tuple[float, str]:
 
 
 # ---------------------------------------------------------------------------
+# C2: Plateau detection — score 정체 시 자동 stop
+# ---------------------------------------------------------------------------
+def _detect_plateau(
+    all_round_results: dict[int, list[dict[str, Any]]],
+    window: int = 3,
+    tolerance: float = 0.05,
+) -> tuple[bool, str]:
+    """최근 `window` round의 avg_confidence가 ±tolerance 이내면 plateau.
+
+    Args:
+        all_round_results: {round_num: [results]}
+        window: 비교할 round 개수 (default 3)
+        tolerance: confidence 변동 허용 폭 (default 0.05)
+
+    Returns:
+        (plateau_detected, reason)
+    """
+    if len(all_round_results) < window:
+        return False, f"plateau check skipped: only {len(all_round_results)} rounds (need {window})"
+
+    last_rounds = sorted(all_round_results.keys())[-window:]
+    confidences: list[float] = []
+    for r in last_rounds:
+        avg, _ = _measure_consensus(all_round_results[r])
+        confidences.append(avg)
+
+    if not confidences:
+        return False, "plateau check skipped: empty confidences"
+
+    spread = max(confidences) - min(confidences)
+    if spread <= tolerance:
+        return True, (
+            f"plateau detected over rounds {last_rounds}: "
+            f"confidence spread {spread:.3f} ≤ {tolerance:.2f} "
+            f"(values: {[round(c, 3) for c in confidences]})"
+        )
+    return False, (
+        f"no plateau: rounds {last_rounds} spread {spread:.3f} > {tolerance:.2f}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 오케스트레이션 상태 파일
 # ---------------------------------------------------------------------------
 
@@ -1198,9 +1240,15 @@ def _resume_council(
 
     print(f"[CouncilRunner] 현재 합의 수준: confidence={avg_confidence:.3f} ({consensus_desc})")
 
-    # 합의 달성 또는 최대 라운드 도달
+    # 합의 달성 또는 최대 라운드 도달 또는 score plateau (C2 task #17)
     if avg_confidence >= convergence_threshold:
         print(f"[CouncilRunner] 합의 달성! (threshold: {convergence_threshold})")
+        _finalize_council(council_id, output_path, all_round_results, personas, topic, completed_round)
+        return
+
+    plateau, plateau_reason = _detect_plateau(all_round_results, window=3, tolerance=0.05)
+    if plateau:
+        print(f"[CouncilRunner] Score plateau 감지 — 조기 stop. {plateau_reason}")
         _finalize_council(council_id, output_path, all_round_results, personas, topic, completed_round)
         return
 

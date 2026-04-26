@@ -709,6 +709,14 @@ In targeted mode, you run **MBB-style chapter-by-chapter** rounds (C24 — `src/
 
 After all rounds complete, generate the HTML report and open in browser.
 
+**Score Plateau Auto-Stop (C2 task #17):**
+`_resume_council`이 매 round 종료 시 `_detect_plateau(window=3, tolerance=0.05)` 호출.
+최근 3 round의 avg_confidence spread ≤ 0.05면 더 이상 진척 없음 → 자동 stop + finalize.
+세 가지 stop 조건 (어느 하나만 만족해도 finalize):
+  1. consensus 달성 (avg_confidence ≥ convergence_threshold)
+  2. **score plateau 감지** (3 round 변동 ≤ tolerance) ← C2
+  3. max_rounds 도달
+
 ## MBB Report Synthesis (C26 + C27 + C28)
 
 Council 종료 시 `_finalize_council`이 자동으로 두 산출물을 생성:
