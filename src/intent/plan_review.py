@@ -18,10 +18,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 try:
     from .office_hours import DesignDoc, Alternative
 except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from office_hours import DesignDoc, Alternative  # type: ignore
+    from src.intent.office_hours import DesignDoc, Alternative  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +330,7 @@ class PlanReview:
 try:
     from .interview_rubric import InterviewRubric, CoverageStatus
 except ImportError:  # pragma: no cover
-    from interview_rubric import InterviewRubric, CoverageStatus  # type: ignore
+    from src.intent.interview_rubric import InterviewRubric, CoverageStatus  # type: ignore
 
 
 def rubric_coverage_gate(

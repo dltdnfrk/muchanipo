@@ -1,9 +1,6 @@
 """Frameworks Library (C25) 테스트."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src")))
-from frameworks import (  # type: ignore
+from src.frameworks import (
     JTBD,
     JobDimension,
     KPIDriver,

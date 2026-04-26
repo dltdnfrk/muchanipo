@@ -16,10 +16,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 try:
     from .learnings_log import LearningsLog, Learning
 except ImportError:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from learnings_log import LearningsLog, Learning  # type: ignore
+    from src.intent.learnings_log import LearningsLog, Learning  # type: ignore
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,8 @@
 """LearningsLog + Retro (REFLECT 단계) 테스트."""
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/intent")))
-from learnings_log import LearningsLog, Learning  # type: ignore
-from retro import Retro, Retrospective  # type: ignore
+from src.intent.learnings_log import LearningsLog, Learning
+from src.intent.retro import Retro, Retrospective
 
 
 # ---------------------------------------------------------------------------

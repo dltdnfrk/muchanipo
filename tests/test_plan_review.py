@@ -1,10 +1,7 @@
 """Plan Review (PLAN 단계) 테스트."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/intent")))
-from office_hours import OfficeHours  # type: ignore
-from plan_review import (  # type: ignore
+from src.intent.office_hours import OfficeHours
+from src.intent.plan_review import (
     PlanReview, CeoReview, EngReview, DesignReview, DevexReview, ConsensusPlan,
 )
 
@@ -106,8 +103,8 @@ def test_value_axes_match_ceo_mode():
 # ---------------------------------------------------------------------------
 # C22-D — rubric_coverage_gate
 # ---------------------------------------------------------------------------
-from interview_rubric import InterviewRubric  # type: ignore
-from plan_review import rubric_coverage_gate  # type: ignore
+from src.intent.interview_rubric import InterviewRubric
+from src.intent.plan_review import rubric_coverage_gate
 
 
 def _rubric_with_n_covered(n: int) -> InterviewRubric:

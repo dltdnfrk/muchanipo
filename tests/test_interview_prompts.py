@@ -1,9 +1,6 @@
 """Interview Prompts (Phase 0a~0e) 테스트."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/intent")))
-from interview_prompts import (  # type: ignore
+from src.intent.interview_prompts import (
     InterviewPlan,
     ModeDecision,
     assess,
@@ -18,9 +15,9 @@ from interview_prompts import (  # type: ignore
     format_mode_routing_decision,
     select_next_question,
 )
-from interview_rubric import InterviewRubric  # type: ignore
-from office_hours import OfficeHours  # type: ignore
-from plan_review import PlanReview  # type: ignore
+from src.intent.interview_rubric import InterviewRubric
+from src.intent.office_hours import OfficeHours
+from src.intent.plan_review import PlanReview
 
 
 # ---------------------------------------------------------------------------

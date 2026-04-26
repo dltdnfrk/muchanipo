@@ -1,9 +1,6 @@
 """Round Layers (C24) 테스트 — 10 layer × Type-aware 매핑."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/council")))
-from round_layers import (  # type: ignore
+from src.council.round_layers import (
     DEFAULT_LAYERS,
     RoundLayer,
     all_layer_ids,

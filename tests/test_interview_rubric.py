@@ -1,9 +1,6 @@
 """InterviewRubric (Phase 0b v2) 테스트 — entropy-greedy + coverage gate."""
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path("src/intent")))
-from interview_rubric import (  # type: ignore
+from src.intent.interview_rubric import (
     CoverageStatus,
     InterviewRubric,
     RubricItem,

@@ -2,17 +2,13 @@
 from __future__ import annotations
 
 import json
-import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# round_layers (C24) import
-_BASE_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(_BASE_DIR / "council"))
 try:
-    from round_layers import DEFAULT_LAYERS, RoundLayer  # type: ignore
+    from src.council.round_layers import DEFAULT_LAYERS, RoundLayer
 except ImportError:  # pragma: no cover
     DEFAULT_LAYERS = []
     RoundLayer = None  # type: ignore
