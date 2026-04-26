@@ -121,12 +121,24 @@ def acquire_lock() -> bool:
             fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             try:
-                pid = int(LOCK_FILE.read_text().strip())
+                raw_pid = LOCK_FILE.read_text().strip()
+            except FileNotFoundError:
+                # Another contender removed a stale lock between our failed
+                # O_EXCL create and read attempt. Retry the atomic create.
+                continue
+            if not raw_pid:
+                # A competing process/thread created the lock file but has not
+                # written its PID yet. Treat it as owned instead of unlinking;
+                # unlinking here lets multiple concurrent callers acquire.
+                print("[LOCK] Lock 생성 중입니다. 종료합니다.")
+                return False
+            try:
+                pid = int(raw_pid)
                 # stale lock 감지: PID가 살아있는지 확인
                 os.kill(pid, 0)
                 print(f"[LOCK] 이미 실행 중입니다 (PID {pid}). 종료합니다.")
                 return False
-            except (ValueError, ProcessLookupError):
+            except ProcessLookupError:
                 # stale lock: 제거하고 원자적 생성 재시도
                 print("[LOCK] Stale lock 감지. 제거 후 진행합니다.")
                 try:
@@ -134,6 +146,9 @@ def acquire_lock() -> bool:
                 except FileNotFoundError:
                     pass
                 continue
+            except ValueError:
+                print("[LOCK] Lock PID가 아직 유효하지 않습니다. 종료합니다.")
+                return False
             except PermissionError:
                 print("[LOCK] Lock 소유 프로세스 상태를 확인할 수 없습니다. 종료합니다.")
                 return False

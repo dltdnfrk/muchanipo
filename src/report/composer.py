@@ -300,3 +300,40 @@ class ReportComposer:
 def compose_report(council_dir: Path, output_name: str = "REPORT.md") -> Path:
     """Convenience: ReportComposer wrapper."""
     return ReportComposer(council_dir).write(output_name)
+
+
+def compose_research_report_markdown(report: "ResearchReport") -> str:
+    """Compose an evidence-backed ResearchReport markdown artifact.
+
+    This function is separate from ReportComposer, which handles council
+    directory reports. It supports the Idea-to-Council pipeline report stage.
+    """
+    lines = [
+        f"# {report.title}",
+        "",
+        "## Executive Summary",
+        "",
+        report.executive_summary or "_No summary provided._",
+        "",
+        "## Findings",
+        "",
+    ]
+    if not report.findings:
+        lines.append("_No findings. Limitation: empty finding set._")
+    for idx, finding in enumerate(report.findings, start=1):
+        lines.append(f"### Finding {idx}: {finding.claim}")
+        lines.append(f"- Confidence: {finding.confidence:.2f}")
+        if finding.support:
+            lines.append("- Evidence: " + ", ".join(ev.id for ev in finding.support))
+        if finding.limitations:
+            lines.append("- Limitations: " + "; ".join(finding.limitations))
+        lines.append("")
+    lines += ["## Evidence", ""]
+    for ev in report.evidence_refs:
+        title = ev.source_title or ev.source_url or "untitled source"
+        lines.append(f"- `{ev.id}` [{ev.source_grade}] {title}")
+    lines += ["", "## Open Questions", ""]
+    lines.extend(f"- {q}" for q in (report.open_questions or ["None recorded"]))
+    lines += ["", "## Limitations", ""]
+    lines.extend(f"- {lim}" for lim in (report.limitations or ["None recorded"]))
+    return "\n".join(lines).rstrip() + "\n"
