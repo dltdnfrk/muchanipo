@@ -166,7 +166,7 @@ Score the council output using the rubric. You can either:
    ```
 3. Read the output to get verdict + scores.
 
-**Option B -- Self-evaluate** (when eval-agent.py is unavailable):
+**Option B -- Self-evaluate** (fallback per `skills/muchanipo.md` Policy Decisions ① — only when eval-agent.py is unavailable; mark `eval_mode: self_fallback` and queue for re-eval):
 Score each axis 0-10 yourself:
 - **Usefulness**: Does this help Hyunjun make better decisions?
 - **Reliability**: Are claims well-sourced?
@@ -241,7 +241,7 @@ LOOP FOREVER:
 
 **Crashes**: If a step fails (web search timeout, MemPalace offline, file write error), log the error in results.tsv with score=0 and description="CRASH: {reason}", then skip to the next topic. Do NOT stop the loop.
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you, period.
+**NEVER STOP** (default; see `skills/muchanipo.md` Policy Decisions ④ for circuit-breaker exception): Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from their computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of topics, cycle back through the interest axes with new angles -- combine keywords across axes, explore tangential areas, follow up on previous UNCERTAIN results with deeper research. The loop runs until the human interrupts you OR 5 consecutive UNCERTAIN+FAIL trigger circuit-breaker pause.
 
 ## Two Modes
 
