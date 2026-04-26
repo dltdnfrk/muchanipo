@@ -1,9 +1,7 @@
-"""Minimal execution runtime wrapper."""
+"""Runtime-facing entry points for model execution."""
+
 from __future__ import annotations
 
-from .models import ModelGateway
+from .models import ModelGateway, ModelResult, Provider
 
-
-class ExecutionRuntime:
-    def __init__(self, model_gateway: ModelGateway):
-        self.model_gateway = model_gateway
+__all__ = ["ModelGateway", "ModelResult", "Provider"]
