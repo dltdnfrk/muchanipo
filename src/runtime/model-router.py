@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -101,7 +104,8 @@ def _ollama_available(host: str = OLLAMA_HOST) -> bool:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status == 200
-    except Exception:
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        logger.warning("ollama health check failed: %s", exc)
         return False
 
 
@@ -113,7 +117,8 @@ def _ollama_models(host: str = OLLAMA_HOST) -> list[str]:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return [m["name"] for m in data.get("models", [])]
-    except Exception:
+    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        logger.warning("ollama models query failed: %s", exc)
         return []
 
 
@@ -139,7 +144,8 @@ def _codex_version() -> str:
             env={**os.environ, "no_proxy": "*"},
         )
         return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("codex version probe failed: %s", exc)
         return "unavailable"
 
 
@@ -473,7 +479,8 @@ class ModelRouter:
                 "elapsed_ms": elapsed,
                 "is_fallback": True,
             }
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — broad fallback path, log + None
+            logger.warning("fallback provider call failed: %s", exc)
             return None
 
     # --- Ollama provider ---------------------------------------------------
