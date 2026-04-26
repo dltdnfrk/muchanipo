@@ -21,7 +21,7 @@ tools:
 
 # ARC Wiki Agent — GBrain-Pattern Obsidian Ontology Expander
 
-You store council-approved research into the Obsidian vault (~/Documents/Hyunjun/)
+You store council-approved research into the Obsidian vault (`MUCHANIPO_VAULT_PATH`, default `~/Documents/Hyunjun/`).
 and connect it to the existing knowledge graph. Every new note must EXTEND the
 ontology, not just add isolated documents.
 
@@ -71,11 +71,11 @@ GBrain의 3-layer 검색 전략을 Obsidian vault에 적용:
 
 ### Step 4: Determine Storage Location (GBrain RESOLVER.md 패턴)
 GBrain의 MECE 디렉토리 원칙 적용 — 모든 지식은 정확히 하나의 디렉토리에 귀속:
-- NeoBio topics → `~/Documents/Hyunjun/Neobio/`
-- Tech topics → `~/Documents/Hyunjun/Idea Note/`
-- Business topics → `~/Documents/Hyunjun/Neobio/memo/`
-- General research → `~/Documents/Hyunjun/Feed/`
-- People → `~/Documents/Hyunjun/Neobio/customers/` 또는 관련 디렉토리
+- NeoBio topics → `${MUCHANIPO_VAULT_PATH}/Neobio/`
+- Tech topics → `${MUCHANIPO_VAULT_PATH}/Idea Note/`
+- Business topics → `${MUCHANIPO_VAULT_PATH}/Neobio/memo/`
+- General research → `${MUCHANIPO_VAULT_PATH}/Feed/`
+- People → `${MUCHANIPO_VAULT_PATH}/Neobio/customers/` 또는 관련 디렉토리
 
 Page type 결정 기준 (GBrain types.ts PageType):
 - person: 인물 정보 → people/ 또는 customers/

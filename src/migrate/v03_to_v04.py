@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import sys
 from dataclasses import dataclass
@@ -22,7 +23,21 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS_TSV = REPO_ROOT / ".omc" / "autoresearch" / "results.tsv"
 DEFAULT_SIGNOFF_QUEUE = REPO_ROOT / "src" / "hitl" / "signoff-queue"
-DEFAULT_VAULT_PATH = Path.home() / "Documents" / "Hyunjun"
+
+
+def _load_runtime_paths():
+    spec = importlib.util.spec_from_file_location(
+        "muchanipo_runtime_paths",
+        REPO_ROOT / "src" / "runtime" / "paths.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_runtime_paths = _load_runtime_paths()
+DEFAULT_VAULT_PATH = _runtime_paths.get_vault_path()
 BACKUP_SUFFIX = ".v03-to-v04.bak"
 MIGRATED_RUBRIC_VERSION = "2.0.0"
 
@@ -273,4 +288,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

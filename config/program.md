@@ -3,7 +3,7 @@
 ## Identity
 - Owner: Hyunjun (NeoBio CEO, AI/AgTech entrepreneur)
 - Purpose: Continuously expand personal ontology through autonomous research and council deliberation
-- Output: Obsidian vault (~/Documents/Hyunjun/) knowledge wiki + decision reports
+- Output: Obsidian vault (`MUCHANIPO_VAULT_PATH`, default `~/Documents/Hyunjun/`) knowledge wiki + decision reports
 
 ## Interest Axes
 
@@ -79,10 +79,10 @@
 ## Obsidian Vault Structure
 
 ### Target Wings (MemPalace mapping)
-- wing_neobio → ~/Documents/Hyunjun/Neobio/
-- wing_tech → ~/Documents/Hyunjun/Idea Note/
-- wing_business → ~/Documents/Hyunjun/Neobio/funding/ + memo/
-- wing_research → ~/Documents/Hyunjun/Feed/ (new research outputs)
+- wing_neobio → `${MUCHANIPO_VAULT_PATH}/Neobio/`
+- wing_tech → `${MUCHANIPO_VAULT_PATH}/Idea Note/`
+- wing_business → `${MUCHANIPO_VAULT_PATH}/Neobio/funding/` + `memo/`
+- wing_research → `${MUCHANIPO_VAULT_PATH}/Feed/` (new research outputs)
 
 ### File Naming
 - Format: `YYYY-MM-DD-{topic-slug}.md`

@@ -62,7 +62,7 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 **What you CAN do:**
 - Use any of your tools: WebSearch, WebFetch, mcp__exa__web_search_exa, mcp__exa__crawling_exa for web research.
 - Use mcp__mempalace__* tools for knowledge storage and retrieval.
-- Use Read/Write/Edit to manage files in `.omc/autoresearch/` and the Obsidian vault (`~/Documents/Hyunjun/`).
+- Use Read/Write/Edit to manage files in `.omc/autoresearch/` and the Obsidian vault (`MUCHANIPO_VAULT_PATH`, default `~/Documents/Hyunjun/`).
 - Use Bash to run the helper scripts: `eval-agent.py`, `vault-router.py`, `signoff-queue.py`, `muchanipo-ingest.py`, `session-check.py`.
 - Generate personas dynamically based on the topic.
 - Conduct multi-round council debates by sequentially adopting different persona perspectives.
@@ -74,7 +74,7 @@ Each research cycle is one "experiment." You select a topic, research it, run a 
 - Exceed 5 council rounds per topic (escalate to human instead).
 - Skip logging. Every experiment gets a row in results.tsv.
 
-**The goal is simple: produce the highest-quality knowledge entries for Hyunjun's Obsidian vault.** Quality is measured by the eval rubric (usefulness + reliability + novelty + actionability, each 0-10, total out of 40). Aim for PASS (>= 28). UNCERTAIN (20-27) gets queued for human sign-off. FAIL (< 20) gets discarded.
+**The goal is simple: produce the highest-quality knowledge entries for Hyunjun's Obsidian vault.** Quality is measured by `config/rubric.json` v2.2: 13 axes are recorded, 10 active scoring axes count toward a 100-point total, and measurement-only axes stay out of the total until activated. Aim for PASS (>= 70). UNCERTAIN (50-69) gets queued for human sign-off. FAIL (< 50) gets discarded.
 
 **Simplicity criterion**: A deep insight with 3 solid sources beats a sprawling report with 12 weak ones. Prefer depth over breadth. If a topic is too broad, narrow it down before researching.
 
@@ -173,7 +173,7 @@ Score each axis 0-10 yourself:
 - **Novelty**: Is this new to the vault?
 - **Actionability**: Are there concrete next steps?
 
-Total >= 28 = PASS, 20-27 = UNCERTAIN, < 20 = FAIL.
+Total >= 70 = PASS, 50-69 = UNCERTAIN, < 50 = FAIL.
 
 ### Step 6: Routing
 
@@ -187,10 +187,10 @@ Based on the verdict:
      .omc/autoresearch/logs/council-report-{ts}.json
    ```
    OR write directly to the vault path from config.json:
-   - wing_neobio -> `~/Documents/Hyunjun/Neobio/`
-   - wing_tech -> `~/Documents/Hyunjun/Idea Note/`
-   - wing_business -> `~/Documents/Hyunjun/Neobio/memo/` (or `funding/` for investment topics)
-   - wing_research -> `~/Documents/Hyunjun/Feed/`
+   - wing_neobio -> `${MUCHANIPO_VAULT_PATH}/Neobio/`
+   - wing_tech -> `${MUCHANIPO_VAULT_PATH}/Idea Note/`
+   - wing_business -> `${MUCHANIPO_VAULT_PATH}/Neobio/memo/` (or `funding/` for investment topics)
+   - wing_research -> `${MUCHANIPO_VAULT_PATH}/Feed/`
 2. Store key facts to MemPalace KG.
 3. File format: `YYYY-MM-DD-{topic-slug}.md` with frontmatter (source, date, confidence, council-id) and [[wikilinks]].
 
@@ -214,7 +214,7 @@ timestamp	topic	axis	verdict	score	description
 - topic: the research topic
 - axis: which interest axis (neobio, ai_ml, business, tech_stack)
 - verdict: PASS, UNCERTAIN, or FAIL
-- score: total out of 40 (0 for crashes/skips)
+- score: total out of 100 (0 for crashes/skips)
 - description: one-line summary of what was found
 
 Example:

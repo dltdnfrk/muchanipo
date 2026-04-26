@@ -24,8 +24,8 @@ Usage:
 
 import argparse
 import hashlib
+import importlib.util
 import json
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -44,7 +44,20 @@ WIKI_LOG = WIKI_DIR / "log.md"
 WIKI_INDEX = WIKI_DIR / "index.md"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 
-DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Hyunjun"
+
+def _load_runtime_paths():
+    spec = importlib.util.spec_from_file_location(
+        "muchanipo_runtime_paths",
+        SCRIPT_DIR.parent / "runtime" / "paths.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_runtime_paths = _load_runtime_paths()
+CONFIG_PATH = _runtime_paths.get_config_path()
 
 # GBrain 패턴: Page type 정의 (garrytan/gbrain types.ts 참조)
 GBRAIN_PAGE_TYPES = [
@@ -64,6 +77,17 @@ def load_config() -> Dict[str, Any]:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def score_max(eval_result: Dict[str, Any]) -> int:
+    explicit = eval_result.get("rubric_max")
+    if isinstance(explicit, int) and explicit > 0:
+        return explicit
+    rubric_path = _runtime_paths.get_rubric_path()
+    if rubric_path.exists():
+        with open(rubric_path, "r", encoding="utf-8") as f:
+            return _runtime_paths.rubric_score_max(json.load(f))
+    return 100
 
 
 # ---------------------------------------------------------------------------
@@ -169,14 +193,10 @@ def resolve_vault_path(report: Dict[str, Any]) -> Path:
         keywords = [kw.lower() for kw in axis.get("keywords", [])]
         if any(kw in topic for kw in keywords):
             vault_path = axis.get("vault_path", "")
-            expanded = Path(os.path.expanduser(vault_path))
-            if expanded.exists():
-                return expanded
+            return _runtime_paths.resolve_vault_path_setting(vault_path, create=True)
 
     # 기본: Feed 디렉토리
-    feed_path = DEFAULT_VAULT_BASE / "Feed"
-    feed_path.mkdir(parents=True, exist_ok=True)
-    return feed_path
+    return _runtime_paths.get_vault_path("Feed", create=True)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +240,7 @@ def build_compiled_truth(report: Dict[str, Any], eval_result: Dict[str, Any]) ->
     lines.append("### 평가 점수")
     for axis, val in scores.items():
         lines.append(f"- {axis}: {val}/10")
-    lines.append(f"- **총점**: {total}/40 (confidence: {confidence:.2f})")
+    lines.append(f"- **총점**: {total}/{score_max(eval_result)} (confidence: {confidence:.2f})")
     lines.append("")
 
     return "\n".join(lines)
@@ -231,7 +251,7 @@ def build_timeline_entry(eval_result: Dict[str, Any], council_id: str) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     verdict = eval_result.get("verdict", "?")
     total = eval_result.get("total", 0)
-    return f"- {now} | {verdict} | score={total}/40 | council_id={council_id}\n"
+    return f"- {now} | {verdict} | score={total}/{score_max(eval_result)} | council_id={council_id}\n"
 
 
 def build_frontmatter(
@@ -582,7 +602,7 @@ Examples:
     total = eval_result.get("total", 0)
 
     if args.verbose:
-        print(f"Routing: topic='{topic}' verdict={verdict} score={total}/40")
+        print(f"Routing: topic='{topic}' verdict={verdict} score={total}/{score_max(eval_result)}")
 
     handlers = {
         "PASS": handle_pass,
