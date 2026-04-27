@@ -390,6 +390,46 @@ def audit_log(decision: str, context: Mapping[str, Any] | None = None) -> Path:
     return AUDIT_PATH
 
 
+def validate_targeting_map(tmap: Any) -> Tuple[bool, List[str]]:
+    """Validate that every institution/journal/paper has API provenance.
+
+    Items without a matching provenance entry are removed and reported.
+    Returns (passed, warnings).  ``passed`` is True if at least one valid
+    item remains in each of the three API-backed fields.
+    """
+    warnings: List[str] = []
+
+    if tmap is None:
+        return False, ["TargetingMap is None"]
+
+    # Expected fields that must be API-backed
+    api_backed_fields = ("target_institutions", "target_journals", "seed_papers")
+    provenance = getattr(tmap, "provenance", {}) or {}
+
+    for field_name in api_backed_fields:
+        items: List[str] = list(getattr(tmap, field_name, []) or [])
+        prov_list: List[dict] = list(provenance.get(field_name, []) or [])
+        # Build a set of item names that have provenance
+        provenanced_names = {str(p.get("name", "")).strip() for p in prov_list if isinstance(p, dict)}
+        cleaned: List[str] = []
+        for item in items:
+            name = item.strip() if isinstance(item, str) else str(item)
+            if name and name in provenanced_names:
+                cleaned.append(name)
+            else:
+                warnings.append(
+                    f"{field_name}: '{name}' lacks API provenance — removed (hallucination guard)"
+                )
+        # Mutate the tmap in place (TargetingMap is a dataclass, not frozen)
+        setattr(tmap, field_name, cleaned)
+
+    passed = all(
+        bool(getattr(tmap, field_name, []))
+        for field_name in api_backed_fields
+    )
+    return passed, warnings
+
+
 def critic_addendum_template_hash(template: str) -> str:
     """Helper for regenerating the immutable template hash."""
     return hashlib.sha256(template.encode("utf-8")).hexdigest()
