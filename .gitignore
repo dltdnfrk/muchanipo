@@ -45,3 +45,20 @@ _research/.c23-locks/
 
 # Council run logs (per-execution artifacts)
 src/council/council-logs/
+
+# Swift app build artifacts (C33 native shell, paused for Tauri pivot)
+app/Muchanipo/.build/
+app/Muchanipo/.swiftpm/
+app/Muchanipo/*.xcworkspace/xcuserdata/
+
+# Tauri / Vite (C34)
+app/muchanipo-tauri/node_modules/
+app/muchanipo-tauri/dist/
+app/muchanipo-tauri/src-tauri/target/
+app/muchanipo-tauri/src-tauri/gen/
+
+# Tauri build artifacts
+app/muchanipo-tauri/target/
+app/muchanipo-tauri/node_modules/
+app/muchanipo-tauri/dist/
+app/muchanipo-tauri/.tauri/
