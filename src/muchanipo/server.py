@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import IO, List, Sequence
+from typing import Any, IO, List, Sequence
 
 from .events import Action, emit, parse_action
 
@@ -292,36 +292,32 @@ def serve_full(
     stdout: IO[str],
 ) -> int:
     """PRD-v2 §2.1 full pipeline — offline mock providers."""
+    from src.pipeline.runner import run_pipeline
     from src.report.chapter_mapper import ChapterMapper
     from src.report.pyramid_formatter import PyramidFormatter
 
     emit("phase_change", phase="STARTUP", stream=stdout, data={"topic": topic, "pipeline": "full"})
 
-    council_layers = [
-        (1, "L1_market_sizing"), (2, "L2_competition"),
-        (3, "L3_jtbd"), (4, "L4_finance"), (5, "L5_risk"),
-        (6, "L6_roadmap"), (7, "L7_governance"),
-        (8, "L8_kpi"), (9, "L9_dissent"), (10, "L10_executive_synthesis"),
-    ]
+    def emit_progress(event: dict[str, Any]) -> None:
+        name = str(event.get("event") or "")
+        fields = {key: value for key, value in event.items() if key != "event"}
+        if name == "stage_started":
+            emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
+        emit(name, stream=stdout, **fields)
 
-    for stage in PIPELINE_STAGES:
-        emit("phase_change", phase=stage.upper(), stream=stdout, data={"stage": stage})
-        emit("stage_started", stream=stdout, stage=stage)
+    pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=True)
+    rounds = pipeline_result["rounds"]
 
-        if stage == "council":
-            for round_no, layer in council_layers:
-                emit("council_round_start", stream=stdout, round=round_no, layer=layer)
-                emit(
-                    "council_persona_token",
-                    stream=stdout,
-                    persona="agent",
-                    delta=f"[{layer}] analysing…",
-                )
-                emit("council_round_done", stream=stdout, round=round_no, score=70 + (round_no % 5))
+    for round_no, digest in enumerate(rounds, start=1):
+        emit("council_round_start", stream=stdout, round=round_no, layer=digest.layer_id)
+        emit(
+            "council_persona_token",
+            stream=stdout,
+            persona="agent",
+            delta=digest.key_claim,
+        )
+        emit("council_round_done", stream=stdout, round=round_no, score=round(digest.confidence * 100))
 
-        emit("stage_completed", stream=stdout, stage=stage)
-
-    rounds = _build_demo_rounds(topic)
     chapters = ChapterMapper().map(rounds)
     chapters = PyramidFormatter().reorder_all(chapters)
 
