@@ -18,6 +18,7 @@ pub struct PythonBridge {
 #[tauri::command]
 pub async fn start_pipeline(
     topic: String,
+    pipeline: Option<String>,
     app: AppHandle,
     bridge: State<'_, PythonBridge>,
 ) -> Result<(), String> {
@@ -33,8 +34,19 @@ pub async fn start_pipeline(
         }
     }
 
+    // pipeline 모드 (기본 "full" — PRD-v2 §2.1 8-stage MBB)
+    let pipeline_mode = match pipeline.as_deref() {
+        Some("stub") => "stub",
+        _ => "full",
+    };
+
     let mut child = Command::new("python3")
-        .args(["-m", "muchanipo", "serve", "--topic", &topic])
+        .args([
+            "-m", "muchanipo", "serve",
+            "--topic", &topic,
+            "--pipeline", pipeline_mode,
+            "--no-wait",
+        ])
         .current_dir(workspace_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
