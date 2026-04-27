@@ -6,11 +6,12 @@ MuchaNipo Citation Grounder — claim ↔ evidence 1:1 검증 패스 (narrow sco
 Council Report의 consensus / recommendations / dissent 텍스트에서 원자적 claim을
 뽑고, 각 claim을 evidence 풀에 대조해 supported / partial / unsupported 판정.
 
-이 모듈은 entailment verifier가 아닌 **citation presence + substring checker**다.
+이 모듈은 entailment verifier가 아닌 **citation presence + semantic overlap checker**다.
 atomic claim decomposition은 NLI 모델이 필요하므로 stdlib 구현은 보수적인
-substring 우선 + overlap secondary 정책을 따른다. 즉:
-  - substring 직접 인용이 유일한 'supported' 판정 경로
-  - keyword overlap 만으로는 'partial' 까지만 (citation laundering 차단)
+substring 우선 + semantic fallback 정책을 따른다. 즉:
+  - substring 직접 인용은 fast-path supported
+  - substring 실패 시 token Jaccard / trigram overlap 이 threshold 이상이면 supported
+  - 낮은 keyword overlap 은 'partial' 까지만 (citation laundering 차단)
 
 stdlib only. eval-agent.py가 import해서 사용하거나 CLI로 단독 실행 가능.
 
@@ -110,6 +111,7 @@ _CRITICAL_PATTERNS = [
     re.compile(r"\b\d{4}\s?년"),
     re.compile(r"(?:must|반드시|필수|critical|치명|핵심)", re.IGNORECASE),
 ]
+_NUMBER_RE = re.compile(r"\d+(?:[\.,]\d+)?")
 
 
 def _tokenize(text: str) -> List[str]:
@@ -223,6 +225,105 @@ def _overlap_ratio(claim: str, evidence_text: str) -> float:
     return len(claim_terms & ev_terms) / len(claim_terms)
 
 
+def _ngrams(text: str, n: int = 3) -> set:
+    compact = re.sub(r"\s+", "", str(text).lower())
+    if len(compact) < n:
+        return {compact} if compact else set()
+    return {compact[idx : idx + n] for idx in range(len(compact) - n + 1)}
+
+
+def _jaccard(left: set, right: set) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _token_windows(tokens: List[str], size: int) -> Iterable[List[str]]:
+    if not tokens:
+        return []
+    if size <= 0 or len(tokens) <= size:
+        return [tokens]
+    return (tokens[idx : idx + size] for idx in range(0, len(tokens) - size + 1))
+
+
+def _score_semantic_window(quote: str, candidate: str) -> Tuple[float, Dict[str, Any]]:
+    quote_tokens = _tokenize(quote)
+    candidate_tokens = _tokenize(candidate)
+    quote_terms = set(quote_tokens)
+    quote_trigrams = _ngrams(quote)
+    best = {"score": 0.0, "method": "none", "jaccard": 0.0, "trigram": 0.0}
+
+    window_sizes = sorted({
+        max(1, len(quote_tokens) - 2),
+        max(1, len(quote_tokens)),
+        max(1, len(quote_tokens) + 2),
+    })
+    windows: Iterable[List[str]]
+    if candidate_tokens:
+        collected: List[List[str]] = []
+        for size in window_sizes:
+            collected.extend(list(_token_windows(candidate_tokens, size)))
+        windows = collected or [candidate_tokens]
+    else:
+        windows = []
+
+    for window in windows:
+        window_text = " ".join(window)
+        jaccard = _jaccard(quote_terms, set(window))
+        trigram = _jaccard(quote_trigrams, _ngrams(window_text))
+        if max(jaccard, trigram) > float(best["score"]):
+            method = "jaccard" if jaccard >= trigram else "trigram"
+            best = {
+                "score": max(jaccard, trigram),
+                "method": method,
+                "jaccard": jaccard,
+                "trigram": trigram,
+            }
+
+    if not windows:
+        trigram = _jaccard(quote_trigrams, _ngrams(candidate))
+        best = {"score": trigram, "method": "trigram" if trigram else "none", "jaccard": 0.0, "trigram": trigram}
+
+    return float(best["score"]), best
+
+
+def _number_tokens(text: str) -> set:
+    return set(_NUMBER_RE.findall(text or ""))
+
+
+def _has_conflicting_numbers(quote: str, source_text: str) -> bool:
+    quote_numbers = _number_tokens(quote)
+    source_numbers = _number_tokens(source_text)
+    return bool(quote_numbers and source_numbers and not quote_numbers <= source_numbers)
+
+
+def semantic_match(quote: str, source_text: str, threshold: float = 0.6) -> Tuple[bool, float, Dict[str, Any]]:
+    """Return whether quote is semantically present in source_text.
+
+    This is a stdlib-only lexical semantic fallback. Substring remains the
+    fast path; otherwise the best token-window Jaccard or character trigram
+    overlap score is used.
+    """
+    details: Dict[str, Any] = {
+        "method": "none",
+        "jaccard": 0.0,
+        "trigram": 0.0,
+        "threshold": threshold,
+    }
+    if not quote or not source_text:
+        return False, 0.0, details
+    if _is_substring_quote(quote, source_text):
+        details.update({"method": "substring", "jaccard": 1.0, "trigram": 1.0})
+        return True, 1.0, details
+    if _has_conflicting_numbers(quote, source_text):
+        details.update({"method": "numeric_mismatch"})
+        return False, 0.0, details
+
+    score, best = _score_semantic_window(quote, source_text)
+    details.update(best)
+    return score >= threshold, round(score, 3), details
+
+
 def _is_substring_quote(claim: str, evidence_text: str) -> bool:
     """claim이 evidence 안에 의미 있는 길이로 직접 인용된 경우 즉시 supported.
 
@@ -245,6 +346,7 @@ def ground_claims(
     dissent: str = "",
     overlap_threshold: float = 0.7,
     partial_threshold: float = 0.4,
+    semantic_threshold: float = 0.6,
 ) -> Dict[str, Any]:
     """Council 결과의 claim들을 evidence 풀에 대조 (narrow C1 정책).
 
@@ -289,10 +391,14 @@ def ground_claims(
         best_ratio = 0.0
         best_ids: List[str] = []
         substring_hit: Optional[str] = None
+        semantic_hit: Optional[Tuple[str, float, Dict[str, Any]]] = None
+        match_method = "none"
+        match_details: Dict[str, Any] = {}
 
         # 1) substring 직접 인용 — 유일한 'supported' 경로
         for ev in trusted_evidence:
-            if _is_substring_quote(claim, ev["quote"]):
+            candidate_text = ev["source_text"] or ev["quote"]
+            if _is_substring_quote(claim, candidate_text):
                 substring_hit = ev["id"]
                 break
 
@@ -300,9 +406,39 @@ def ground_claims(
             best_ratio = 1.0
             best_ids = [substring_hit]
             status = "supported"
+            match_method = "substring"
+            match_details = {"method": "substring", "threshold": semantic_threshold}
             supported += 1
         else:
-            # 2) keyword overlap (secondary signal — partial 까지만)
+            # 2) semantic fallback — paraphrase/near-quote supported if strong enough
+            for ev in trusted_evidence:
+                if not ev["source_text"]:
+                    continue
+                candidate_text = ev["source_text"]
+                ok, score, details = semantic_match(claim, candidate_text, threshold=semantic_threshold)
+                if ok and (semantic_hit is None or score > semantic_hit[1]):
+                    semantic_hit = (ev["id"], score, details)
+
+            if semantic_hit is not None:
+                best_ids = [semantic_hit[0]]
+                best_ratio = semantic_hit[1]
+                status = "supported"
+                match_method = str(semantic_hit[2].get("method") or "semantic")
+                match_details = semantic_hit[2]
+                supported += 1
+                redacted_claim = _lockdown_redact(claim)
+                per_claim.append({
+                    "claim": redacted_claim,
+                    "status": status,
+                    "overlap_ratio": round(best_ratio, 3),
+                    "match_method": match_method,
+                    "match_details": match_details,
+                    "supporting_evidence_ids": best_ids,
+                    "critical": critical,
+                })
+                continue
+
+            # 3) keyword overlap (secondary signal — partial 까지만)
             for ev in trusted_evidence:
                 ratio = _overlap_ratio(claim, ev["quote"])
                 if ratio > best_ratio + 1e-9:
@@ -314,9 +450,13 @@ def ground_claims(
             if best_ratio >= partial_threshold:
                 # overlap_threshold 도달해도 substring 미검증이면 partial 로만 인정
                 status = "partial"
+                match_method = "overlap"
+                match_details = {"method": "overlap", "threshold": partial_threshold}
                 partial += 1
             else:
                 status = "unsupported"
+                match_method = "none"
+                match_details = {"method": "none", "threshold": semantic_threshold}
                 unsupported += 1
                 if critical:
                     critical_unsupported += 1
@@ -326,6 +466,8 @@ def ground_claims(
             "claim": redacted_claim,
             "status": status,
             "overlap_ratio": round(best_ratio, 3),
+            "match_method": match_method,
+            "match_details": match_details,
             "supporting_evidence_ids": best_ids if status != "unsupported" else [],
             "critical": critical,
         })
