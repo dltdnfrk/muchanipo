@@ -77,12 +77,28 @@ class DesignDoc:
             "## Q6 Future-Fit",
             self.future_fit or self.effort_map_summary or "(no signal)",
         ]
+        # 레거시 섹션 (PlanReview / interview_real_wire 호환).
+        # Q*와 의미 중복이 있더라도 명시적 섹션 헤딩이 필요한 호출자가 있어 유지.
+        if self.pain_root:
+            lines += ["", "## Pain Root", self.pain_root]
+        if self.contrary_framing:
+            lines += ["", "## Contrary Framing", self.contrary_framing]
+        if self.implicit_capabilities:
+            lines += ["", f"## Implicit Capabilities ({len(self.implicit_capabilities)})"]
+            for cap in self.implicit_capabilities:
+                lines.append(f"- {cap}")
+        if self.challenged_premises:
+            lines += ["", "## Challenged Premises"]
+            for p in self.challenged_premises:
+                lines.append(f"- {p}")
         if self.alternatives:
             lines += ["", "## Alternatives"]
             for alt in self.alternatives:
                 lines.append(
                     f"- **{alt.title}** (effort={alt.effort}, risk={alt.risk}): {alt.summary}"
                 )
+        if self.effort_map_summary:
+            lines += ["", "## Effort Summary", self.effort_map_summary]
         if self.aup_risk_score > 0.0:
             lines += ["", f"_AUP risk: {self.aup_risk_score:.2f}_"]
         return "\n".join(lines)
@@ -134,12 +150,20 @@ class OfficeHours:
 
         return DesignDoc(
             raw_input=raw,
+            # PRD-v2 §3.2 새 필드
             demand_reality=self._q1_demand_reality(raw),
             status_quo=self._q2_status_quo(raw),
             desperate_specificity=self._q3_desperate_specificity(raw),
             narrowest_wedge=self._q4_narrowest_wedge(raw),
             observation_surprise=self._q5_observation_surprise(raw),
             future_fit=self._q6_future_fit(raw),
+            # 레거시 필드 (PlanReview 등 기존 호출자 호환 유지)
+            pain_root=self._q1_pain_root(raw),
+            contrary_framing=self._q2_contrary(raw),
+            implicit_capabilities=self._q3_implicit_capabilities(raw),
+            challenged_premises=self._q4_challenge_premises(raw),
+            alternatives=self._q5_alternatives(raw),
+            effort_map_summary=self._q6_effort_summary(raw),
             aup_risk_score=risk_score,
             redacted=was_redacted,
         )
@@ -250,6 +274,91 @@ class OfficeHours:
             "'의도적으로 하지 않을 것은? 범위 밖에 두는 것은?' — "
             "제품 경계가 불분명. 리서치가 산으로 갈 위험이 있으므로, "
             "out-of-scope 리스트를 인터뷰 후속 질문으로 도출해야."
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy 6 questions (PlanReview / interview_real_wire 호환 유지).
+    # PRD-v2 §3.2의 새 메서드와 공존 — reframe()이 둘 다 호출.
+    # ------------------------------------------------------------------
+
+    def _q1_pain_root(self, text: str) -> str:
+        for kw, framing in self.SURFACE_PATTERNS:
+            if kw in text:
+                return f"{framing} (트리거: '{kw}')"
+        words = [w for w in text.replace("?", "").split() if len(w) >= 2]
+        focus = max(words, key=len, default=text[:40])
+        return (
+            f"입력 텍스트에서 '{focus}'가 핵심 객체로 보임. 실제 pain은 이 객체의 "
+            "_현재 부재로 인한 불편_ 또는 _존재로 인한 부작용_ 중 하나."
+        )
+
+    def _q2_contrary(self, text: str) -> str:
+        return (
+            f"반대 프레이밍: '{text[:60]}...'를 _하지 않으면_ 무슨 일이 일어나는가? "
+            "이 답이 명확하지 않다면 진짜 needed가 아니라 nice-to-have일 수 있음. "
+            "또한 정반대 가설 (예: 'X가 도움이 안 된다')도 council에서 contrarian persona가 검증해야."
+        )
+
+    def _q3_implicit_capabilities(self, text: str) -> List[str]:
+        caps: List[str] = []
+        if any(k in text for k in ("비교", "vs", "vs.", "or", "또는")):
+            caps.append("비교 기준의 명시적 정의 (X축, 가중치)")
+        if any(k in text for k in ("최신", "2026", "지금", "현재")):
+            caps.append("시점 명시적 정의 (cutoff date, freshness 기준)")
+        if any(k in text for k in ("한국", "Korean", "국내", "AgTech", "농가")):
+            caps.append("한국 도메인 grounding (Nemotron-Personas-Korea seed 활용 가능)")
+        if any(k in text for k in ("리서치", "조사", "research", "분석")):
+            caps.append("출처 신뢰도 메타데이터 (citation_grounder 게이트 통과)")
+        if any(k in text for k in ("비용", "가격", "cost", "price", "ROI")):
+            caps.append("정량 ROI 추정 (불확실성 분포 명시)")
+        if not caps:
+            caps.append("입력에서 암묵적 능력을 추출할 단서 부족 — 추가 질문 필요")
+        return caps
+
+    def _q4_challenge_premises(self, text: str) -> List[str]:
+        challenges: List[str] = []
+        if any(k in text for k in ("반드시", "당연", "must", "분명")):
+            challenges.append("단정적 어조 — 정말 그런가? 반례 1개 이상 council에서 검증.")
+        if any(k in text for k in ("다들", "everyone", "everybody", "전부")):
+            challenges.append("'모두가 그렇다' 가정 — 표본 편향 가능. 누가 그렇지 않은가?")
+        if any(k in text for k in ("계속", "여전히", "아직도")):
+            challenges.append("정적 가정 — 최근 N개월 변화는 반영했는가?")
+        if not challenges:
+            challenges.append(
+                "명시적으로 도전할 전제가 입력에 보이지 않음 — council의 contrarian persona가 발견 책임."
+            )
+        return challenges
+
+    def _q5_alternatives(self, text: str) -> List["Alternative"]:
+        return [
+            Alternative(
+                title="좁게 가기 (Hold Scope)",
+                summary="입력 그대로 — 가장 빠르게 답을 얻고 후속 라운드에서 확장",
+                effort="S",
+                risk="low",
+                why_consider="Mode 2 첫 라운드 baseline. 후속 ratchet으로 score 증가 검증 가능.",
+            ),
+            Alternative(
+                title="확장 (Scope Expansion)",
+                summary="입력의 1단계 인접 토픽까지 — 교차 axis 발견 기회",
+                effort="M",
+                risk="med",
+                why_consider="2개 이상 interest axis 교차 시 novelty score boost (program.md 정책).",
+            ),
+            Alternative(
+                title="축소 + 가설 분기 (Reduction with branches)",
+                summary="입력을 더 작은 sub-question 2-3개로 쪼개 병렬 council",
+                effort="M",
+                risk="low",
+                why_consider="async branch fork-join 패턴 — 충돌 시 EvoAgentX MAP-Elites archive로 다양성 maintain.",
+            ),
+        ]
+
+    def _q6_effort_summary(self, text: str) -> str:
+        return (
+            "권장 첫 진입: 'Hold Scope' (effort S, risk low) → 1 라운드 baseline 확보 → "
+            "score < 70이면 'Scope Expansion' 또는 'Reduction with branches'로 전환. "
+            "Git Ratchet으로 단조 증가 보장."
         )
 
 
