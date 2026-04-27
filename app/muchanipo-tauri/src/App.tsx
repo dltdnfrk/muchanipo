@@ -1,17 +1,15 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import HomePage from "./pages/HomePage";
-import InterviewPage from "./pages/InterviewPage";
-import CouncilPage from "./pages/CouncilPage";
-import ReportPage from "./pages/ReportPage";
+import IdeaSubmit from "./pages/IdeaSubmit";
+import RunProgress from "./pages/RunProgress";
+import ReportView from "./pages/ReportView";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/interview" element={<InterviewPage />} />
-        <Route path="/council" element={<CouncilPage />} />
-        <Route path="/report" element={<ReportPage />} />
+        <Route path="/" element={<IdeaSubmit />} />
+        <Route path="/run/:runId" element={<RunProgress />} />
+        <Route path="/report/:runId" element={<ReportView />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
