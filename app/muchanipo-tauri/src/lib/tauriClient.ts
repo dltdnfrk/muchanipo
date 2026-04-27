@@ -41,8 +41,11 @@ export interface FinalReport {
   chapters: Chapter[];
 }
 
-export async function submitIdea(idea: string): Promise<{ run_id: string }> {
-  return invoke("submit_idea", { idea });
+export async function submitIdea(
+  idea: string,
+  pipeline: "stub" | "full" = "full",
+): Promise<{ run_id: string }> {
+  return invoke("start_pipeline", { topic: idea, pipeline });
 }
 
 export async function fetchReport(runId: string): Promise<FinalReport> {
@@ -52,7 +55,13 @@ export async function fetchReport(runId: string): Promise<FinalReport> {
 export async function onMuchanipoEvent(
   handler: (e: MuchanipoEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<MuchanipoEvent>("muchanipo_event", ({ payload }) => {
-    handler(payload);
+  return listen<Record<string, unknown>>("backend_event", ({ payload }) => {
+    const adapted: MuchanipoEvent = {
+      stage: (payload.stage as MuchanipoStage) || "intake",
+      type: (payload.type as MuchanipoEventType) || "progress",
+      payload: (payload.payload as Record<string, unknown>) || {},
+      timestamp: (payload.timestamp as string) || new Date().toISOString(),
+    };
+    handler(adapted);
   });
 }
