@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { onMuchanipoEvent, type MuchanipoEvent, type MuchanipoStage } from "../lib/tauriClient";
+import {
+  onBackendEvent,
+  type BackendEvent,
+} from "../lib/tauriClient";
+
+type Stage =
+  | "intake"
+  | "interview"
+  | "targeting"
+  | "research"
+  | "evidence"
+  | "council"
+  | "report"
+  | "finalize";
 
 interface StageState {
   status: "pending" | "active" | "completed" | "error";
@@ -10,7 +23,7 @@ interface StageState {
   durationMs?: number;
 }
 
-const STAGES: MuchanipoStage[] = [
+const STAGES: Stage[] = [
   "intake",
   "interview",
   "targeting",
@@ -21,68 +34,120 @@ const STAGES: MuchanipoStage[] = [
   "finalize",
 ];
 
-const STAGE_LABELS: Record<MuchanipoStage, string> = {
+const STAGE_LABELS: Record<Stage, string> = {
   intake: "아이디어 접수",
   interview: "인터뷰",
   targeting: "타겟팅",
   research: "리서치",
   evidence: "증거 수집",
-  council: "심의",
+  council: "심의 (10 round)",
   report: "보고서 작성",
   finalize: "완료",
 };
 
+function initialState(): Record<Stage, StageState> {
+  const init: Record<Stage, StageState> = {} as any;
+  for (const s of STAGES) {
+    init[s] = { status: "pending", message: "" };
+  }
+  return init;
+}
+
 export default function RunProgress() {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
-  const [stages, setStages] = useState<Record<MuchanipoStage, StageState>>(() => {
-    const init: Record<MuchanipoStage, StageState> = {} as any;
-    for (const s of STAGES) {
-      init[s] = { status: "pending", message: "" };
-    }
-    return init;
-  });
+  const [stages, setStages] = useState<Record<Stage, StageState>>(() => initialState());
+  const [councilRound, setCouncilRound] = useState<number>(0);
+  const [topic, setTopic] = useState<string>("");
   const unlistenRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (!runId) return;
+    try {
+      setTopic(localStorage.getItem(`run:${runId}:topic`) || "");
+    } catch {
+      /* ignore */
+    }
+  }, [runId]);
 
   useEffect(() => {
     let mounted = true;
 
-    onMuchanipoEvent((event: MuchanipoEvent) => {
+    onBackendEvent((event: BackendEvent) => {
       if (!mounted) return;
 
-      setStages((prev) => {
-        const next = { ...prev };
-        const current = { ...next[event.stage] };
+      // stage_started / stage_completed
+      if (
+        (event.event === "stage_started" || event.event === "stage_completed") &&
+        typeof event.stage === "string"
+      ) {
+        const stage = event.stage as Stage;
+        if (!STAGES.includes(stage)) return;
 
-        if (event.type === "started") {
-          current.status = "active";
-          current.startedAt = Date.now();
-          current.message = (event.payload.message as string) || "진행 중…";
-        } else if (event.type === "progress") {
-          current.status = "active";
-          current.message = (event.payload.message as string) || current.message;
-        } else if (event.type === "completed") {
-          current.status = "completed";
-          current.completedAt = Date.now();
-          if (current.startedAt) {
-            current.durationMs = current.completedAt - current.startedAt;
+        setStages((prev) => {
+          const next = { ...prev };
+          const current = { ...next[stage] };
+          if (event.event === "stage_started") {
+            current.status = "active";
+            current.startedAt = Date.now();
+            current.message = "진행 중…";
+          } else {
+            current.status = "completed";
+            current.completedAt = Date.now();
+            if (current.startedAt) {
+              current.durationMs = current.completedAt - current.startedAt;
+            }
+            current.message = "완료";
           }
-          current.message = (event.payload.message as string) || "완료";
-        } else if (event.type === "error") {
-          current.status = "error";
-          current.message = (event.payload.message as string) || "오류 발생";
+          next[stage] = current;
+          return next;
+        });
+        return;
+      }
+
+      // council_round_start
+      if (event.event === "council_round_start" && typeof event.round === "number") {
+        setCouncilRound(event.round);
+        return;
+      }
+
+      // final_report — capture markdown into localStorage so ReportView can render
+      if (event.event === "final_report" && runId) {
+        const markdown = (event.markdown as string) || "";
+        const reportPath = (event.report_path as string) || "";
+        const chapterCount = (event.chapter_count as number) || 0;
+        try {
+          localStorage.setItem(`run:${runId}:report`, markdown);
+          localStorage.setItem(`run:${runId}:report_path`, reportPath);
+          localStorage.setItem(`run:${runId}:chapter_count`, String(chapterCount));
+        } catch {
+          /* ignore */
         }
+        return;
+      }
 
-        next[event.stage] = current;
-        return next;
-      });
-
-      if (event.type === "completed" && event.stage === "finalize") {
+      // done — pipeline complete, jump to report view
+      if (event.event === "done" && runId) {
         setTimeout(() => {
-          if (mounted && runId) {
-            navigate(`/report/${runId}`);
+          if (mounted) navigate(`/report/${runId}`);
+        }, 600);
+        return;
+      }
+
+      if (event.event === "error") {
+        setStages((prev) => {
+          const next = { ...prev };
+          for (const stage of STAGES) {
+            if (next[stage].status === "active") {
+              next[stage] = {
+                ...next[stage],
+                status: "error",
+                message: (event.message as string) || "오류 발생",
+              };
+            }
           }
-        }, 800);
+          return next;
+        });
       }
     }).then((unlisten) => {
       if (mounted) {
@@ -94,24 +159,22 @@ export default function RunProgress() {
 
     return () => {
       mounted = false;
-      if (unlistenRef.current) {
-        unlistenRef.current();
-      }
+      if (unlistenRef.current) unlistenRef.current();
     };
   }, [runId, navigate]);
 
   return (
     <div className="min-h-screen bg-[#15141B] px-4 py-10">
       <div className="mx-auto max-w-3xl">
-        <h1 className="mb-8 text-center text-2xl font-bold text-[#E8E0D0]">
+        <h1 className="mb-2 text-center text-2xl font-bold text-[#E8E0D0]">
           리서치 진행 상황
         </h1>
-        <p className="mb-10 text-center text-sm text-[#8A8599]">
-          Run ID: {runId}
-        </p>
+        {topic && (
+          <p className="mb-2 text-center text-sm text-[#FFB347]">"{topic}"</p>
+        )}
+        <p className="mb-10 text-center text-xs text-[#6E6B7A]">Run ID: {runId}</p>
 
         <div className="relative space-y-0">
-          {/* vertical line */}
           <div className="absolute left-5 top-4 bottom-4 w-px bg-[#2A2833]" />
 
           {STAGES.map((stage) => {
@@ -122,8 +185,7 @@ export default function RunProgress() {
 
             return (
               <div key={stage} className="relative flex items-start gap-4 py-4">
-                {/* indicator dot */}
-                <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2">
+                <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 border-[#2A2833] bg-[#15141B]">
                   {isCompleted ? (
                     <svg className="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -137,10 +199,8 @@ export default function RunProgress() {
                   ) : (
                     <div className="h-2 w-2 rounded-full bg-[#5A5669]" />
                   )}
-                  <span className="sr-only">{state.status}</span>
                 </div>
 
-                {/* content */}
                 <div className="flex-1 pt-1">
                   <div className="flex items-center justify-between">
                     <h3
@@ -155,6 +215,11 @@ export default function RunProgress() {
                       }`}
                     >
                       {STAGE_LABELS[stage]}
+                      {stage === "council" && isActive && councilRound > 0 && (
+                        <span className="ml-2 text-xs text-[#FFB347]">
+                          {councilRound}/10
+                        </span>
+                      )}
                     </h3>
                     {state.durationMs && (
                       <span className="text-xs text-[#6E6B7A]">

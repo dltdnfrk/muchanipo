@@ -2,6 +2,10 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { submitIdea } from "../lib/tauriClient";
 
+function newRunId(): string {
+  return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function IdeaSubmit() {
   const [idea, setIdea] = useState("");
   const [error, setError] = useState("");
@@ -20,8 +24,15 @@ export default function IdeaSubmit() {
 
     setLoading(true);
     try {
-      const { run_id } = await submitIdea(trimmed);
-      navigate(`/run/${run_id}`);
+      const runId = newRunId();
+      // store the topic so RunProgress / ReportView can show it
+      try {
+        localStorage.setItem(`run:${runId}:topic`, trimmed);
+      } catch {
+        /* private mode etc. — ignore */
+      }
+      await submitIdea(trimmed, "full");
+      navigate(`/run/${runId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "제출 중 오류가 발생했습니다.");
       setLoading(false);
@@ -47,9 +58,7 @@ export default function IdeaSubmit() {
             className="w-full resize-none rounded-xl border border-[#2A2833] bg-[#1E1D26] p-4 text-base text-[#E8E0D0] placeholder-[#5A5669] outline-none ring-[#FFB347] transition focus:ring-2"
           />
 
-          {error && (
-            <p className="text-sm text-red-400">{error}</p>
-          )}
+          {error && <p className="text-sm text-red-400">{error}</p>}
 
           <button
             type="submit"
