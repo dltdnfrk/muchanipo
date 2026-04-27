@@ -7,8 +7,11 @@ from enum import Enum
 class Stage(str, Enum):
     IDEA_DUMP = "idea_dump"
     INTERVIEW = "interview"
+    TARGETING = "targeting"
     RESEARCH = "research"
-    REPORT = "report"
-    AGENTS = "agents"
+    EVIDENCE = "evidence"
     COUNCIL = "council"
+    REPORT = "report"
+    VAULT = "vault"
+    AGENTS = "agents"
     DONE = "done"
