@@ -157,7 +157,8 @@ class AcademicHttpClient:
             elapsed = time.monotonic() - self._last_request_at
             wait_for = self._min_interval_seconds - elapsed
             if wait_for > 0:
-                await asyncio.to_thread(time.sleep, wait_for)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, time.sleep, wait_for)
             self._last_request_at = time.monotonic()
 
     def _ensure_client(self) -> httpx.AsyncClient:
