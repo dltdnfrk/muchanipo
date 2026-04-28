@@ -8,7 +8,7 @@ import {
   type BackendEvent,
   type PipelineMode,
 } from "../lib/tauriClient";
-import { markRunDone } from "../lib/runsIndex";
+import { deleteRun, markRunDone } from "../lib/runsIndex";
 
 function readEnvsFromSettings(): Record<string, string> {
   const backendMode =
@@ -152,6 +152,8 @@ export default function RunProgress() {
   const [interviewError, setInterviewError] = useState<string | null>(null);
   const [aborting, setAborting] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
+  const chunkKeysRef = useRef<Set<string>>(new Set());
+  const finalReportReceivedRef = useRef(false);
 
   useEffect(() => {
     if (!runId) return;
@@ -164,6 +166,8 @@ export default function RunProgress() {
 
   useEffect(() => {
     let mounted = true;
+    chunkKeysRef.current.clear();
+    finalReportReceivedRef.current = false;
     const handleEvent = (event: BackendEvent) => {
       if (!mounted) return;
 
@@ -258,7 +262,9 @@ export default function RunProgress() {
 
       if (event.event === "report_chunk" && runId) {
         const chunk = String(event.markdown ?? event.delta ?? "");
-        if (!chunk) return;
+        const key = chunk.trim();
+        if (!key || finalReportReceivedRef.current || chunkKeysRef.current.has(key)) return;
+        chunkKeysRef.current.add(key);
         setReportPreview((prev) => {
           const next = `${prev}${prev ? "\n\n" : ""}${chunk}`;
           try {
@@ -275,19 +281,20 @@ export default function RunProgress() {
         const markdown = (event.markdown as string) || "";
         const reportPath = (event.report_path as string) || "";
         const chapterCount = (event.chapter_count as number) || 0;
+        finalReportReceivedRef.current = true;
+        chunkKeysRef.current.clear();
         try {
-          localStorage.setItem(`run:${runId}:report`, markdown);
+          if (markdown) localStorage.setItem(`run:${runId}:report`, markdown);
           localStorage.setItem(`run:${runId}:report_path`, reportPath);
           localStorage.setItem(`run:${runId}:chapter_count`, String(chapterCount));
         } catch {
           /* ignore */
         }
-        setReportPreview(markdown);
+        if (markdown) setReportPreview(markdown);
         return;
       }
 
       if (event.event === "done" && runId && !runErrorRef.current) {
-        markRunDone(runId);
         setStages((prev) => {
           const next = { ...prev };
           for (const stage of STAGES) {
@@ -303,11 +310,13 @@ export default function RunProgress() {
           return next;
         });
         if (event.aborted) {
+          deleteRun(runId);
           setTimeout(() => {
             if (mounted) navigate("/");
           }, 300);
           return;
         }
+        markRunDone(runId);
         setTimeout(() => {
           if (mounted) navigate(`/report/${runId}`);
         }, 600);

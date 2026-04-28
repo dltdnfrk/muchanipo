@@ -168,7 +168,9 @@ pub async fn start_pipeline(
             match line {
                 Ok(line) if line.trim().is_empty() => {}
                 Ok(line) => {
-                    push_event_buffer(&bridge_for_stdout, &line);
+                    if should_buffer_backend_line(&line) {
+                        push_event_buffer(&bridge_for_stdout, &line);
+                    }
                     emit_backend_line(&stdout_app, &line);
                 }
                 Err(error) => emit_backend_event(
@@ -622,6 +624,13 @@ fn run_command_with_timeout(
     })
 }
 
+fn should_buffer_backend_line(line: &str) -> bool {
+    // Token deltas are useful live but can evict stage/final-report events
+    // from the bounded replay buffer during long council runs.
+    !line.contains("\"event\":\"council_persona_token\"")
+        && !line.contains("\"event\": \"council_persona_token\"")
+}
+
 fn cli_diagnosis(name: &str) -> Option<&'static str> {
     match name {
         "claude" => Some("Pipeline uses `claude -p`; run the smoke test to verify OAuth/auth."),
@@ -842,5 +851,15 @@ mod tests {
         assert_eq!(cli_login_command("codex"), "codex login");
         assert_eq!(cli_login_command("gemini"), "gemini -i /auth");
         assert_eq!(cli_login_command("kimi"), "kimi login");
+    }
+
+    #[test]
+    fn replay_buffer_skips_council_token_deltas() {
+        assert!(!should_buffer_backend_line(
+            r#"{"event":"council_persona_token","delta":"x"}"#
+        ));
+        assert!(should_buffer_backend_line(
+            r#"{"event":"final_report","markdown":"done"}"#
+        ));
     }
 }

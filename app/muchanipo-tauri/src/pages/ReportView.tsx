@@ -18,6 +18,7 @@ export default function ReportView() {
   const [showRaw, setShowRaw] = useState(false);
   const [topic, setTopic] = useState<string>("");
   const chunkKeysRef = useRef<Set<string>>(new Set());
+  const finalReportReceivedRef = useRef(false);
 
   useEffect(() => {
     if (!runId) return;
@@ -30,7 +31,7 @@ export default function ReportView() {
     };
     const appendChunk = (chunk: string) => {
       const key = chunk.trim();
-      if (!key || chunkKeysRef.current.has(key)) return;
+      if (!key || finalReportReceivedRef.current || chunkKeysRef.current.has(key)) return;
       chunkKeysRef.current.add(key);
       const current = localStorage.getItem(`run:${runId}:report`) || "";
       const next = `${current}${current ? "\n\n" : ""}${chunk}`;
@@ -42,6 +43,7 @@ export default function ReportView() {
       if (event.event === "final_report") {
         const md = String(event.markdown ?? "");
         if (md) {
+          finalReportReceivedRef.current = true;
           chunkKeysRef.current.clear();
           localStorage.setItem(`run:${runId}:report`, md);
           applyMarkdown(md);
@@ -90,6 +92,8 @@ export default function ReportView() {
             uniqueChunks.push(chunk);
           }
           const rebuilt = uniqueChunks.join("\n\n");
+          const current = localStorage.getItem(`run:${runId}:report`) || "";
+          if (current.length >= rebuilt.length) return;
           localStorage.setItem(`run:${runId}:report`, rebuilt);
           applyMarkdown(rebuilt);
         }
