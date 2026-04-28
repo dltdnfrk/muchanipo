@@ -74,13 +74,12 @@ def test_session_run_one_round_uses_three_stage_fanout():
 
     result = session.run_one_round(1)
 
-    assert len(provider.calls) == 6
+    assert len(provider.calls) == 5
     assert [call["kwargs"]["council_stage"] for call in provider.calls] == [
         "individual",
         "individual",
         "peer_review",
         "peer_review",
-        "chairman",
         "chairman",
     ]
     assert result.key_claim == "chairman consensus with explicit disagreement"
@@ -108,7 +107,7 @@ def test_peer_review_prompt_blinds_other_persona_ids():
     assert "Hidden Name" not in prompt
 
 
-def test_plateau_detection_still_applies_after_chairman_results():
+def test_plateau_detection_does_not_stop_mandatory_layer_traversal():
     provider = StageProvider()
     session = Session(
         gateway=_gateway(provider),
@@ -119,6 +118,23 @@ def test_plateau_detection_still_applies_after_chairman_results():
 
     results = session.run_all()
 
-    assert len(results) == 3
+    assert len(results) == 4
+    assert session.stopped is False
+    assert "mandatory layers" in (session.stop_reason or "")
+
+
+def test_plateau_detection_still_applies_to_repeated_same_layer_deliberation():
+    provider = StageProvider()
+    session = Session(
+        gateway=_gateway(provider),
+        layers=list(DEFAULT_LAYERS[:1]),
+        personas=[_persona("p1", "Alpha")],
+        plateau=PlateauDetector(window=3, tolerance=0.05),
+    )
+
+    session.run_one_round(1)
+    session.run_one_round(1)
+    session.run_one_round(1)
+
     assert session.stopped is True
     assert "plateau detected" in (session.stop_reason or "")

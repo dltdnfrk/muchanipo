@@ -87,6 +87,28 @@ export default function RunProgress() {
     onBackendEvent((event: BackendEvent) => {
       if (!mounted) return;
 
+      if (event.event === "error") {
+        setStages((prev) => {
+          const next = { ...prev };
+          const activeStages = STAGES.filter((s) => prev[s].status === "active");
+          const targets = activeStages.length > 0 ? activeStages : (["finalize"] as Stage[]);
+          const now = Date.now();
+
+          for (const target of targets) {
+            next[target] = {
+              ...next[target],
+              status: "error",
+              completedAt: now,
+              durationMs: next[target].startedAt ? now - next[target].startedAt : undefined,
+              message: String(event.message || "오류"),
+            };
+          }
+
+          return next;
+        });
+        return;
+      }
+
       const stage = stageFromEvent(event.event);
       if (stage) {
         setStages((prev) => {
@@ -104,9 +126,6 @@ export default function RunProgress() {
               current.durationMs = current.completedAt - current.startedAt;
             }
             current.message = "완료";
-          } else if (event.event === "error") {
-            current.status = "error";
-            current.message = String(event.message || "오류");
           } else if (current.status !== "completed") {
             current.status = "active";
             if (current.startedAt == null) {

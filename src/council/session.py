@@ -49,9 +49,15 @@ class PlateauDetector:
             return False, f"plateau check skipped: only {len(rounds)} rounds"
 
         recent = rounds[-self.window :]
+        round_ids = [round_result.layer_id for round_result in recent]
+        if len(set(round_ids)) != 1:
+            return False, (
+                f"plateau check skipped across mandatory layers {round_ids}: "
+                "only repeated deliberation of the same layer can stop early"
+            )
+
         confidences = [round_result.confidence_score for round_result in recent]
         spread = max(confidences) - min(confidences)
-        round_ids = [round_result.layer_id for round_result in recent]
         if spread <= self.tolerance:
             return True, (
                 f"plateau detected over {round_ids}: confidence spread "
@@ -99,10 +105,10 @@ class Session:
             self.stopped = True
         return round_result
 
-    def run_all(self) -> list[RoundResult]:
+    def run_all(self, allow_early_stop: bool = False) -> list[RoundResult]:
         max_rounds = min(10, len(self.layers))
         for round_no in range(1, max_rounds + 1):
-            if self.stopped:
+            if allow_early_stop and self.stopped:
                 break
             self.run_one_round(round_no)
         return list(self.rounds)
@@ -159,13 +165,8 @@ class Session:
         layer: RoundLayer,
     ) -> RoundResult:
         prompt = build_chairman_prompt(individuals, peer_reviews, layer)
-        chairman_texts: list[str] = []
-        # One chairman dispatch per persona keeps the 3-stage fanout explicit:
-        # individual N + peer N + chairman N = 3N calls per round.
-        for idx, _persona in enumerate(self.personas, start=1):
-            result = self.gateway.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
-            chairman_texts.append(getattr(result, "text", str(result)))
-        text = chairman_texts[-1] if chairman_texts else _fallback_chairman_json(individuals, peer_reviews)
+        result = self.gateway.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
+        text = getattr(result, "text", str(result)) if result else _fallback_chairman_json(individuals, peer_reviews)
         parsed = parse_council_response(text, layer)
         if not parsed.disagreements:
             parsed = RoundResult(
