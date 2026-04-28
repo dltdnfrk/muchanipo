@@ -71,12 +71,12 @@ class Session:
         gateway: GatewayV2,
         layers: list[RoundLayer],
         personas: list[Any],
-        plateau: PlateauDetector,
+        plateau: PlateauDetector | None = None,
     ) -> None:
         self.gateway = gateway
         self.layers = list(layers)
         self.personas = list(personas)
-        self.plateau = plateau
+        self.plateau = plateau or PlateauDetector(window=11, tolerance=0.05)
         self.rounds: list[RoundResult] = []
         self.stopped = False
         self.stop_reason: str | None = None

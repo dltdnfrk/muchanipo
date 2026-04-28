@@ -115,7 +115,7 @@ def build_default_providers(
     from src.execution.providers.mock import MockProvider
 
     providers: Dict[str, Provider] = {
-        "anthropic": AnthropicProvider(),
+        "anthropic": AnthropicProvider(offline=True if force_offline else None),
         "gemini": GeminiProvider(offline=True if force_offline else None),
         "kimi": KimiProvider(offline=True if force_offline else None),
         "codex": CodexProvider(offline=True if force_offline else None),

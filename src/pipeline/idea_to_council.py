@@ -7,9 +7,14 @@ from typing import Any, Callable, Dict
 from uuid import uuid4
 
 from src.agents.generator import DebateAgentGenerator, DebateAgentSpec
-from src.council.session import CouncilSession
+from src.agents.mirofish import debate_agent_to_council_persona
+from src.council.parsers import RoundResult
+from src.council.persona_generator import PersonaGenerator
+from src.council.round_layers import DEFAULT_LAYERS
+from src.council.session import Session as KarpathySession
 from src.evidence.artifact import EvidenceRef, Finding
 from src.evidence.store import EvidenceStore
+from src.execution.gateway_v2 import GatewayV2, default_gateway
 from src.execution.models import ModelGateway
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
@@ -42,7 +47,7 @@ class IdeaToCouncilResult:
     hitl_results: dict[str, HITLResult]
     progress_events: list[dict[str, Any]]
     agents: list[DebateAgentSpec]
-    council: CouncilSession
+    council: KarpathySession
 
 
 class IdeaToCouncilPipeline:
@@ -58,7 +63,7 @@ class IdeaToCouncilPipeline:
     ) -> None:
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
         self.research_runner = research_runner or MockResearchRunner()
-        self.model_gateway = model_gateway or ModelGateway(provider=MockProvider(response="mock council critique"))
+        self.gateway_v2 = _coerce_gateway_v2(model_gateway)
         self.vault_dir = Path(vault_dir)
         self.council_log_dir = Path(council_log_dir)
         self.progress_callback = progress_callback
@@ -124,18 +129,20 @@ class IdeaToCouncilPipeline:
 
         agents = DebateAgentGenerator().from_report(report)
         state.record_artifact("agents", ",".join(agent.name for agent in agents))
+        personas = _generate_council_personas(
+            report=report,
+            agents=agents,
+            gateway=self.gateway_v2,
+        )
 
         state.advance(Stage.COUNCIL)
         self._emit(state, Stage.COUNCIL)
-        council = CouncilSession(
-            report_id=report.id,
-            agents=agents,
-            topic=brief.research_question,
-            council_dir=self.council_log_dir / f"council-{report.id}",
-            max_rounds=10,
+        council = KarpathySession(
+            gateway=self.gateway_v2,
+            layers=list(DEFAULT_LAYERS),
+            personas=personas,
         )
-        for _round in range(10):
-            council.run_round(model_gateway=self.model_gateway)
+        council.run_all()
         state.record_artifact("council_id", report.id)
 
         state.advance(Stage.REPORT)
@@ -194,7 +201,7 @@ class IdeaToCouncilPipeline:
 def _compose_six_chapter_report(
     brief: ResearchBrief,
     report: ResearchReport,
-    council: CouncilSession,
+    council: KarpathySession,
     targeting_map: TargetingMap,
 ) -> str:
     digests = _round_digests(council, report.evidence_refs)
@@ -225,14 +232,29 @@ def _compose_six_chapter_report(
     return "\n".join(lines).strip() + "\n"
 
 
-def _round_digests(council: CouncilSession, evidence_refs: list[EvidenceRef]) -> list[RoundDigest]:
+def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -> list[RoundDigest]:
     evidence_ids = [ref.id for ref in evidence_refs]
     digests: list[RoundDigest] = []
     for idx in range(1, 11):
-        round_record = council.rounds[idx - 1] if idx <= len(council.rounds) else {}
-        results = list(round_record.get("results", []))
+        round_record = council.rounds[idx - 1] if idx <= len(council.rounds) else None
+        if isinstance(round_record, RoundResult):
+            digests.append(
+                RoundDigest(
+                    layer_id=round_record.layer_id,
+                    chapter_title=round_record.chapter_title,
+                    key_claim=round_record.key_claim,
+                    body_claims=list(round_record.body_claims) or [round_record.key_claim],
+                    evidence_ref_ids=list(round_record.evidence_ref_ids) or evidence_ids,
+                    confidence=round_record.confidence_score,
+                    framework=round_record.framework,
+                )
+            )
+            continue
+
+        round_mapping = round_record if isinstance(round_record, dict) else {}
+        results = list(round_mapping.get("results", []))
         first = results[0] if results else {}
-        analysis = str(first.get("analysis") or round_record.get("consensus") or f"Round {idx} synthesis")
+        analysis = str(first.get("analysis") or round_mapping.get("consensus") or f"Round {idx} synthesis")
         key_points = [str(point) for point in first.get("key_points", []) if point]
         digests.append(
             RoundDigest(
@@ -245,3 +267,56 @@ def _round_digests(council: CouncilSession, evidence_refs: list[EvidenceRef]) ->
             )
         )
     return digests
+
+
+def _coerce_gateway_v2(model_gateway: ModelGateway | None) -> GatewayV2:
+    if model_gateway is None:
+        return default_gateway(force_offline=True)
+    if isinstance(model_gateway, GatewayV2):
+        return model_gateway
+
+    provider = model_gateway.provider
+    if provider is None and model_gateway.providers:
+        provider = next(iter(model_gateway.providers.values()))
+    if provider is None:
+        provider = MockProvider(response="mock council critique")
+    provider_name = getattr(provider, "name", provider.__class__.__name__)
+    return GatewayV2(
+        providers={provider_name: provider},
+        stage_routes={"council": provider_name},
+        fallback_chain={"council": [provider_name]},
+        budget=model_gateway.budget,
+        audit=model_gateway.audit,
+    )
+
+
+def _generate_council_personas(
+    *,
+    report: ResearchReport,
+    agents: list[DebateAgentSpec],
+    gateway: GatewayV2,
+) -> list[Any]:
+    ontology = {
+        "topic": report.title,
+        "roles": [agent.role for agent in agents] or ["evidence_reviewer"],
+        "intents": [
+            agent.system_prompt or agent.perspective or "Evaluate topic-specific evidence."
+            for agent in agents
+        ] or ["Evaluate topic-specific evidence."],
+        "allowed_tools": ["model_gateway"],
+        "required_outputs": ["council_round_response"],
+        "value_axes": {
+            "time_horizon": "mid",
+            "risk_tolerance": 0.35,
+            "stakeholder_priority": ["primary", "secondary", "tertiary"],
+            "innovation_orientation": 0.55,
+        },
+    }
+    finals, _telemetry = PersonaGenerator(gateway=gateway).generate(
+        ontology,
+        target_count=max(1, len(agents)),
+        topic=report.title,
+    )
+    if finals:
+        return finals
+    return [debate_agent_to_council_persona(agent) for agent in agents]
