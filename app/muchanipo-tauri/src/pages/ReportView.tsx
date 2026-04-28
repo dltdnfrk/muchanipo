@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,6 +17,7 @@ export default function ReportView() {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [showRaw, setShowRaw] = useState(false);
   const [topic, setTopic] = useState<string>("");
+  const chunkKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!runId) return;
@@ -27,11 +28,21 @@ export default function ReportView() {
       setMarkdown(md);
       setChapters(parseChapterMarkdown(md));
     };
+    const appendChunk = (chunk: string) => {
+      const key = chunk.trim();
+      if (!key || chunkKeysRef.current.has(key)) return;
+      chunkKeysRef.current.add(key);
+      const current = localStorage.getItem(`run:${runId}:report`) || "";
+      const next = `${current}${current ? "\n\n" : ""}${chunk}`;
+      localStorage.setItem(`run:${runId}:report`, next);
+      applyMarkdown(next);
+    };
     const handleEvent = (event: BackendEvent) => {
       if (!runId) return;
       if (event.event === "final_report") {
         const md = String(event.markdown ?? "");
         if (md) {
+          chunkKeysRef.current.clear();
           localStorage.setItem(`run:${runId}:report`, md);
           applyMarkdown(md);
         }
@@ -40,10 +51,7 @@ export default function ReportView() {
       if (event.event === "report_chunk") {
         const chunk = String(event.markdown ?? event.delta ?? "");
         if (!chunk) return;
-        const current = localStorage.getItem(`run:${runId}:report`) || "";
-        const next = `${current}${current ? "\n\n" : ""}${chunk}`;
-        localStorage.setItem(`run:${runId}:report`, next);
-        applyMarkdown(next);
+        appendChunk(chunk);
       }
     };
     try {
@@ -61,7 +69,30 @@ export default function ReportView() {
       unlisten = cleanup;
       try {
         const history = await getBufferedEvents();
-        for (const event of history) handleEvent(event);
+        const finalReports = history.filter((event) => event.event === "final_report");
+        const latestFinal = finalReports[finalReports.length - 1];
+        if (latestFinal) {
+          handleEvent(latestFinal);
+          return;
+        }
+
+        const chunks = history
+          .filter((event) => event.event === "report_chunk")
+          .map((event) => String(event.markdown ?? event.delta ?? ""))
+          .filter(Boolean);
+        if (chunks.length > 0) {
+          chunkKeysRef.current.clear();
+          const uniqueChunks: string[] = [];
+          for (const chunk of chunks) {
+            const key = chunk.trim();
+            if (!key || chunkKeysRef.current.has(key)) continue;
+            chunkKeysRef.current.add(key);
+            uniqueChunks.push(chunk);
+          }
+          const rebuilt = uniqueChunks.join("\n\n");
+          localStorage.setItem(`run:${runId}:report`, rebuilt);
+          applyMarkdown(rebuilt);
+        }
       } catch {
         /* non-fatal */
       }
