@@ -461,15 +461,18 @@ pub async fn open_cli_auth(name: String) -> Result<CliAuthLaunch, String> {
         .arg("-e")
         .arg(osa)
         .output()
-        .map_err(|error| format!("failed to open Terminal: {error}"))?;
+        .map_err(|error| {
+            cli_auth_fallback_error(&format!("failed to open Terminal: {error}"), login_command)
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
+        let detail = if stderr.is_empty() {
             format!("osascript exited with {:?}", output.status.code())
         } else {
             stderr
-        });
+        };
+        return Err(cli_auth_fallback_error(&detail, login_command));
     }
 
     Ok(CliAuthLaunch {
@@ -531,6 +534,15 @@ fn terminal_login_script(name: &str, login_command: &str) -> String {
         shell_quote("Complete the login flow in this Terminal window."),
         login_command,
         shell_quote("When finished, return to Muchanipo and click 다시 확인 or 실호출 테스트.")
+    )
+}
+
+fn cli_auth_fallback_error(detail: &str, login_command: &str) -> String {
+    format!(
+        "{}. Manual fallback: open Terminal, run `cd {}`, then run `{}`.",
+        detail,
+        shell_quote(&workspace_root().to_string_lossy()),
+        login_command
     )
 }
 
@@ -851,6 +863,16 @@ mod tests {
         assert_eq!(cli_login_command("codex"), "codex login");
         assert_eq!(cli_login_command("gemini"), "gemini -i /auth");
         assert_eq!(cli_login_command("kimi"), "kimi login");
+    }
+
+    #[test]
+    fn cli_auth_error_includes_manual_terminal_fallback() {
+        let message = cli_auth_fallback_error("Terminal automation blocked", "codex login");
+
+        assert!(message.contains("Terminal automation blocked"));
+        assert!(message.contains("Manual fallback: open Terminal"));
+        assert!(message.contains("codex login"));
+        assert!(message.contains("cd "));
     }
 
     #[test]
