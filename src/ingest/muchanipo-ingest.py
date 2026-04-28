@@ -45,13 +45,16 @@ _runtime_paths = _load_runtime_paths()
 # 1. TEXT EXTRACTION (No model needed - pure code)
 # ============================================================
 
+_PDFTOTEXT_TIMEOUT = int(os.environ.get("PDFTOTEXT_TIMEOUT", "60"))
+
+
 def extract_text_from_pdf(file_path: str) -> str:
     """PDF에서 텍스트 추출 (pdftotext 또는 Python fallback)"""
     # Try pdftotext first (faster, better quality)
     try:
         result = subprocess.run(
             ["pdftotext", "-layout", file_path, "-"],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=_PDFTOTEXT_TIMEOUT
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
@@ -599,10 +602,11 @@ def store_chunks_to_mempalace(
             import shutil as sh
             sh.copy2(vault_config, os.path.join(tmpdir, "mempalace.yaml"))
 
+        _MEMPALACE_TIMEOUT = int(os.environ.get("MEMPALACE_TIMEOUT", "120"))
         # Mine the entire temp directory into mempalace
         result = subprocess.run(
             [mempalace_cmd, "mine", tmpdir, "--wing", wing],
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=_MEMPALACE_TIMEOUT
         )
 
         if result.returncode == 0:

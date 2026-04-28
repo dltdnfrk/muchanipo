@@ -1,57 +1,72 @@
+@import url("https://rsms.me/inter/inter.css");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 222 47% 11%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 11%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 222 47% 11%;
-    --radius: 0.5rem;
-  }
+:root {
+  color-scheme: dark;
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --background: 222 47% 8%;
-      --foreground: 210 40% 98%;
-      --card: 222 47% 10%;
-      --card-foreground: 210 40% 98%;
-      --primary: 210 40% 98%;
-      --primary-foreground: 222 47% 11%;
-      --secondary: 217 33% 17%;
-      --secondary-foreground: 210 40% 98%;
-      --muted: 217 33% 17%;
-      --muted-foreground: 215 20% 65%;
-      --accent: 217 33% 17%;
-      --accent-foreground: 210 40% 98%;
-      --destructive: 0 63% 31%;
-      --destructive-foreground: 210 40% 98%;
-      --border: 217 33% 20%;
-      --input: 217 33% 20%;
-      --ring: 213 27% 84%;
-    }
-  }
+  /* ChatGPT / OpenAI dark palette */
+  --bg: #212121;
+  --bg-elev: #2F2F2F;
+  --bg-sidebar: #171717;
+  --border: #3D3D3D;
+  --border-soft: #2C2C2C;
+  --text: #ECECF1;
+  --text-secondary: #B4B4B4;
+  --text-tertiary: #8E8E93;
+  --accent: #FFFFFF;
+}
 
-  * {
-    border-color: hsl(var(--border));
-  }
-  body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  }
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Söhne",
+    "Segoe UI", Helvetica, Arial, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 200ms ease-out;
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+.text-tertiary {
+  color: var(--text-tertiary);
+}
+
+.surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
 }

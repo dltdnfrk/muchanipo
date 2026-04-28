@@ -39,47 +39,55 @@ export default function ReportView() {
 
   if (!markdown) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#15141B] px-4">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#FFB347] border-t-transparent" />
-        <p className="text-sm text-[#8A8599]">보고서를 불러오는 중…</p>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-4">
+        <svg className="h-5 w-5 animate-spin text-white/60" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.3" strokeWidth="3" />
+          <path d="M12 2a10 10 0 0110 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+        <p className="text-sm text-tertiary">보고서를 불러오는 중…</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#15141B] px-4 py-10">
+    <div className="min-h-screen px-6 py-10">
       <div className="mx-auto max-w-4xl">
-        <div className="mb-8 flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
+        {/* Header */}
+        <header className="fade-in mb-8 flex flex-col items-start justify-between gap-3 md:flex-row md:items-end">
           <div>
-            <h1 className="text-2xl font-bold text-[#E8E0D0]">
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+              MBB 6-chapter report
+            </p>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
               {topic || "리서치 보고서"}
             </h1>
-            <p className="mt-1 text-sm text-[#8A8599]">Run ID: {runId}</p>
+            <p className="mt-1 font-mono text-xs text-tertiary">{runId}</p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowRaw((s) => !s)}
-              className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-3 py-2 text-xs font-medium text-[#E8E0D0] transition hover:border-[#FFB347]"
+              className="rounded-full border border-white/10 bg-transparent px-3.5 py-1.5 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
             >
               {showRaw ? "카드 보기" : "원본 Markdown"}
             </button>
             <button
               onClick={exportMarkdown}
-              className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-3 py-2 text-xs font-medium text-[#E8E0D0] transition hover:border-[#FFB347] hover:text-[#FFB347]"
+              className="rounded-full bg-white px-3.5 py-1.5 text-xs font-medium text-black transition hover:opacity-90"
             >
               다운로드
             </button>
           </div>
-        </div>
+        </header>
 
+        {/* Body */}
         {showRaw ? (
-          <div className="rounded-xl border border-[#2A2833] bg-[#1E1D26] p-6">
-            <div className="prose prose-invert max-w-none prose-sm">
+          <div className="rounded-xl border border-white/5 bg-white/[0.02] p-6">
+            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-strong:text-white prose-li:text-secondary prose-p:text-secondary">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
             </div>
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="space-y-3">
             {chapters.length > 0 ? (
               chapters.map((chapter) => (
                 <ChapterCard
@@ -89,8 +97,8 @@ export default function ReportView() {
                 />
               ))
             ) : (
-              <div className="rounded-xl border border-[#2A2833] bg-[#1E1D26] p-6">
-                <p className="text-sm text-[#8A8599]">
+              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-6">
+                <p className="text-sm text-tertiary">
                   파싱된 챕터가 없습니다. 원본 Markdown을 확인해주세요.
                 </p>
               </div>

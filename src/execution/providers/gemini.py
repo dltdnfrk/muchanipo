@@ -1,15 +1,33 @@
-"""Google Gemini provider — search grounding, model routing, offline-safe."""
+"""Google Gemini provider — search grounding, model routing, offline-safe.
+
+Supports CLI mode (`gemini -p`) for local OAuth flows when GEMINI_USE_CLI=1
+or MUCHANIPO_USE_CLI=1 is set and the `gemini` binary is available.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from typing import Any
 
 from src.execution.models import ModelResult
 
-_DEFAULT_MODEL = "gemini-2.5-flash"
-_RESEARCH_MODEL = "gemini-2.5-pro"
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_DEFAULT_MODEL = os.environ.get("MUCHANIPO_GEMINI_MODEL", "gemini-2.5-flash")
+_RESEARCH_MODEL = os.environ.get("MUCHANIPO_GEMINI_RESEARCH_MODEL", "gemini-2.5-pro")
+_HTTP_TIMEOUT_SEC = _env_int("MUCHANIPO_GEMINI_TIMEOUT_SEC", 30)
 
 # Stage → model mapping (PRD-v2 §8.1)
 _STAGE_MODELS: dict[str, str] = {
@@ -28,6 +46,21 @@ def _resolve_api_key() -> str | None:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
+def _cli_enabled() -> bool:
+    if os.environ.get("GEMINI_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    return False
+
+
+def _resolve_gemini_bin() -> str | None:
+    explicit = os.environ.get("GEMINI_BIN")
+    if explicit and os.path.exists(explicit):
+        return explicit
+    return shutil.which("gemini")
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -35,14 +68,28 @@ class GeminiProvider:
         self,
         model: str = _DEFAULT_MODEL,
         api_key: str | None = None,
-        endpoint_template: str = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        endpoint_template: str = "",
         offline: bool | None = None,
+        use_cli: bool | None = None,
+        gemini_bin: str | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or _resolve_api_key()
-        self.endpoint_template = endpoint_template
+        self.endpoint_template = (
+            endpoint_template
+            or os.environ.get(
+                "GEMINI_ENDPOINT_TEMPLATE",
+                "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            )
+        )
+        self.gemini_bin = gemini_bin or _resolve_gemini_bin()
+        if use_cli is None:
+            use_cli = _cli_enabled() and bool(self.gemini_bin)
+        self.use_cli = use_cli
         if offline is None:
-            offline = bool(os.environ.get("GEMINI_OFFLINE")) or self.api_key is None
+            offline = bool(os.environ.get("GEMINI_OFFLINE")) or (
+                self.api_key is None and not self.use_cli
+            )
         self.offline = offline
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
@@ -52,12 +99,50 @@ class GeminiProvider:
         model = kwargs.pop("model", _STAGE_MODELS.get(stage, self.model))
         search_grounding = kwargs.pop("search_grounding", stage in ("research", "evidence", "intake"))
 
+        if self.use_cli and self.gemini_bin:
+            try:
+                return self._call_cli(stage, prompt, model=model, **kwargs)
+            except Exception:
+                # If CLI fails and we have an API key, fall through to REST.
+                if not self.api_key:
+                    raise
+
         return self._call_real(
             stage=stage,
             prompt=prompt,
             model=model,
             search_grounding=search_grounding,
             **kwargs,
+        )
+
+    def _call_cli(
+        self,
+        stage: str,
+        prompt: str,
+        *,
+        model: str,
+        **kwargs: Any,
+    ) -> ModelResult:  # pragma: no cover - subprocess path
+        timeout = int(kwargs.pop("timeout", 300))
+        # gemini -p reads `--prompt` arg; we send the body via stdin and pass
+        # an empty -p to switch into headless mode.
+        args = [self.gemini_bin, "-p", "", "-m", model, "-o", "text"]
+        proc = subprocess.run(
+            args,
+            input=prompt.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(stderr or f"gemini CLI exited with {proc.returncode}")
+        text = proc.stdout.decode("utf-8", errors="replace").strip()
+        return ModelResult(
+            text=text,
+            provider=self.name,
+            model=model,
+            cost_usd=0.0,
+            raw={"mode": "cli"},
         )
 
     def _call_real(
@@ -87,7 +172,7 @@ class GeminiProvider:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
 
         text = ""

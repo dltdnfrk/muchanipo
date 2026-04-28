@@ -18,7 +18,27 @@ from typing import Any
 from src.execution.models import ModelResult
 
 
-_DEFAULT_MODEL = "gpt-5.5"
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_DEFAULT_MODEL = os.environ.get("MUCHANIPO_CODEX_MODEL", "gpt-5.5")
+_HTTP_TIMEOUT_SEC = _env_int("MUCHANIPO_CODEX_TIMEOUT_SEC", 30)
+_CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_CODEX_CLI_TIMEOUT_SEC", 600)
+
+
+def _cli_enabled() -> bool:
+    if os.environ.get("CODEX_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    return False
 
 
 class CodexProvider:
@@ -29,13 +49,19 @@ class CodexProvider:
         model: str = _DEFAULT_MODEL,
         api_key: str | None = None,
         codex_bin: str | None = None,
-        endpoint: str = "https://api.openai.com/v1/chat/completions",
+        endpoint: str = "",
         offline: bool | None = None,
+        use_cli: bool | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.codex_bin = codex_bin or os.environ.get("CODEX_BIN") or shutil.which("codex")
-        self.endpoint = endpoint
+        self.endpoint = endpoint or os.environ.get("OPENAI_ENDPOINT", "https://api.openai.com/v1/chat/completions")
+        # CLI is preferred whenever the binary is available AND either the
+        # USE_CLI flag is set or there is no API key.
+        if use_cli is None:
+            use_cli = bool(self.codex_bin) and (_cli_enabled() or not self.api_key)
+        self.use_cli = use_cli
         if offline is None:
             offline = bool(os.environ.get("CODEX_OFFLINE")) or (
                 self.api_key is None and not self.codex_bin
@@ -45,7 +71,7 @@ class CodexProvider:
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
         if self.offline:
             return _mock_result(stage, prompt, model=self.model, provider=self.name)
-        if self.codex_bin and not self.api_key:
+        if self.use_cli and self.codex_bin:
             return self._call_subprocess(stage, prompt, **kwargs)
         return self._call_openai(stage, prompt, **kwargs)
 
@@ -54,17 +80,19 @@ class CodexProvider:
             [self.codex_bin, "exec", "-m", self.model, "-"],
             input=prompt.encode("utf-8"),
             capture_output=True,
-            timeout=int(kwargs.pop("timeout", 60)),
+            timeout=int(kwargs.pop("timeout", _CLI_TIMEOUT_SEC)),
         )
         stderr = proc.stderr.decode("utf-8", errors="replace")
         if proc.returncode != 0:
             raise RuntimeError(stderr or f"codex exited with {proc.returncode}")
-        text = proc.stdout.decode("utf-8", errors="replace")
+        raw_text = proc.stdout.decode("utf-8", errors="replace")
+        text = _strip_codex_noise(raw_text)
         return ModelResult(
             text=text,
             provider=self.name,
             model=self.model,
-            raw={"returncode": proc.returncode, "stderr": stderr},
+            cost_usd=0.0,
+            raw={"returncode": proc.returncode, "stderr": stderr, "mode": "cli"},
         )
 
     def _call_openai(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:  # pragma: no cover
@@ -84,7 +112,7 @@ class CodexProvider:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         text = ""
         try:
@@ -92,6 +120,38 @@ class CodexProvider:
         except (KeyError, IndexError, TypeError):
             text = json.dumps(payload)
         return ModelResult(text=text, provider=self.name, model=self.model, raw=payload)
+
+
+def _strip_codex_noise(raw: str) -> str:
+    """Codex `exec` mixes hook lifecycle lines + token counters into stdout.
+
+    Drop hook scaffolding so the model output is the only thing returned.
+    The conversation transcript also tends to repeat the final assistant
+    response, so we deduplicate trailing identical paragraphs.
+    """
+    lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Hook scaffolding emitted by codex CLI.
+        if stripped.startswith("hook:"):
+            continue
+        if stripped == "codex":
+            continue
+        if stripped.startswith("tokens used"):
+            continue
+        # Codex prints `ERROR codex_models_manager` etc. — usually safe to drop.
+        if " ERROR " in stripped and "codex_models_manager" in stripped:
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines).strip()
+    # Codex tends to print the final answer twice (transcript + summary).
+    if cleaned:
+        halves = cleaned.split("\n\n")
+        if len(halves) >= 2 and halves[-1] == halves[-2]:
+            cleaned = "\n\n".join(halves[:-1])
+    return cleaned
 
 
 def _mock_result(stage: str, prompt: str, *, model: str, provider: str) -> ModelResult:

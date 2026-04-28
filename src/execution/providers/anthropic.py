@@ -1,8 +1,16 @@
-"""Anthropic provider wrapper — OAuth-aware, streaming, cost-tracking, fallback."""
+"""Anthropic provider wrapper — OAuth-aware, streaming, cost-tracking, fallback.
+
+Supports three execution modes:
+  1. CLI subprocess (`claude -p`) — uses local Claude Code OAuth, no API key.
+  2. Anthropic SDK direct (ANTHROPIC_API_KEY).
+  3. Offline mock.
+"""
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from typing import Any, Callable
 
 from src.execution.models import ModelResult
@@ -24,6 +32,20 @@ _PRICING: dict[str, tuple[float, float]] = {
 }
 
 FALLBACK_CHAIN = ("claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_DEFAULT_MODEL = os.environ.get("MUCHANIPO_ANTHROPIC_MODEL", "claude-sonnet-4-6")
+_CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_ANTHROPIC_CLI_TIMEOUT_SEC", 300)
 
 
 def _resolve_api_key() -> str | None:
@@ -50,21 +72,45 @@ def _resolve_api_key() -> str | None:
     return None
 
 
+def _cli_enabled() -> bool:
+    if os.environ.get("ANTHROPIC_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
+        return True
+    return False
+
+
+def _resolve_claude_bin() -> str | None:
+    explicit = os.environ.get("CLAUDE_BIN")
+    if explicit and os.path.exists(explicit):
+        return explicit
+    return shutil.which("claude")
+
+
 class AnthropicProvider:
     name = "anthropic"
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
+        model: str = _DEFAULT_MODEL,
         api_key: str | None = None,
         client: Any = None,
         offline: bool | None = None,
+        use_cli: bool | None = None,
+        claude_bin: str | None = None,
     ) -> None:
         self.model = model
         self.client = client
         self.api_key = api_key or _resolve_api_key()
+        self.claude_bin = claude_bin or _resolve_claude_bin()
+        if use_cli is None:
+            use_cli = _cli_enabled() and bool(self.claude_bin)
+        self.use_cli = use_cli
         if offline is None:
-            offline = bool(os.environ.get("ANTHROPIC_OFFLINE")) or self.api_key is None
+            # CLI mode bypasses the offline-by-no-key check.
+            offline = bool(os.environ.get("ANTHROPIC_OFFLINE")) or (
+                self.api_key is None and not self.use_cli
+            )
         # Injected client trumps offline default — caller wants real call path.
         if client is not None and offline:
             offline = False
@@ -76,12 +122,52 @@ class AnthropicProvider:
 
         stream_callback = kwargs.pop("stream_callback", None)
         allow_fallback = kwargs.pop("allow_fallback", True)
+
+        if self.use_cli and self.claude_bin:
+            try:
+                return self._call_cli(stage, prompt, stream_callback=stream_callback, **kwargs)
+            except Exception as exc:
+                if allow_fallback:
+                    return _fallback_result(exc, self.model)
+                raise
+
         try:
             return self._call_with_fallback(stage, prompt, stream_callback=stream_callback, **kwargs)
         except Exception as exc:
             if allow_fallback:
                 return _fallback_result(exc, self.model)
             raise
+
+    def _call_cli(
+        self,
+        stage: str,
+        prompt: str,
+        *,
+        stream_callback: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> ModelResult:  # pragma: no cover - subprocess path
+        model = kwargs.pop("model", self.model)
+        timeout = int(kwargs.pop("timeout", _CLI_TIMEOUT_SEC))
+        args = [self.claude_bin, "-p", "--output-format", "text", "--model", model]
+        proc = subprocess.run(
+            args,
+            input=prompt.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(stderr or f"claude CLI exited with {proc.returncode}")
+        text = proc.stdout.decode("utf-8", errors="replace").strip()
+        if stream_callback:
+            stream_callback(text)
+        return ModelResult(
+            text=text,
+            provider=self.name,
+            model=model,
+            cost_usd=0.0,
+            raw={"mode": "cli"},
+        )
 
     def _call_with_fallback(
         self,
