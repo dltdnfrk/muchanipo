@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
+from src.governance.budget import BudgetExceeded
+
 
 @dataclass
 class ModelResult:
@@ -55,6 +57,28 @@ class ModelGateway:
         if self.budget is not None:
             estimated_usd = self.budget.estimate(stage=stage, prompt=prompt, provider=provider)
             reservation_id = self.budget.reserve(stage=stage, estimated_usd=estimated_usd)
+            if reservation_id is False:
+                if self.fallback_provider is None:
+                    raise BudgetExceeded("budget exceeded")
+                fallback_reason = "budget exceeded"
+                fallback_estimated_usd = self.budget.estimate(
+                    stage=stage,
+                    prompt=prompt,
+                    provider=self.fallback_provider,
+                )
+                reservation_id = self.budget.reserve(
+                    stage=stage,
+                    estimated_usd=fallback_estimated_usd,
+                )
+                if reservation_id is False:
+                    raise BudgetExceeded("budget exceeded")
+                result = self.dispatch(self.fallback_provider, stage=stage, prompt=prompt, **kwargs)
+                result.is_fallback = True
+                result.fallback_reason = fallback_reason
+                actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
+                self.budget.reconcile(reservation_id, actual_usd=actual_usd)
+                self._audit(stage, provider, result, actual_usd, fallback_reason)
+                return result
 
         fallback_reason = None
         try:
@@ -77,7 +101,7 @@ class ModelGateway:
         return result
 
     def dispatch(self, provider: Provider, *, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
-        if self.budget is not None:
+        if self.budget is not None and hasattr(self.budget, "dispatch"):
             return self.budget.dispatch(provider, stage=stage, prompt=prompt, **kwargs)
         return provider.call(stage=stage, prompt=prompt, **kwargs)
 

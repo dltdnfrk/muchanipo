@@ -1,4 +1,4 @@
-"""HITL gate adapter with markdown fallback and Plannotator stub."""
+"""HITL gate adapter with markdown fallback and Plannotator HTTP support."""
 from __future__ import annotations
 
 import json
@@ -32,8 +32,8 @@ class HITLAdapter:
 
     ``markdown`` mode writes a queue item and returns pending unless the file
     is approved within the configured timeout. ``auto_approve`` is for tests
-    and local mock-first pipelines. ``plannotator`` is a stable stub until the
-    HTTP API contract lands.
+    and local mock-first pipelines. ``plannotator`` delegates to the HTTP
+    client, which falls back to an offline mock when no API key is configured.
     """
 
     def __init__(
@@ -42,6 +42,7 @@ class HITLAdapter:
         queue_dir: Path = SIGNOFF_QUEUE,
         timeout_seconds: float = 0.0,
         poll_interval_seconds: float = 0.25,
+        client: Any | None = None,
     ) -> None:
         if mode not in {"markdown", "auto_approve", "plannotator"}:
             raise ValueError(f"unsupported HITL mode: {mode}")
@@ -49,6 +50,11 @@ class HITLAdapter:
         self.queue_dir = Path(queue_dir)
         self.timeout_seconds = max(0.0, float(timeout_seconds))
         self.poll_interval_seconds = max(0.01, float(poll_interval_seconds))
+        self.client = client
+        if self.mode == "plannotator" and self.client is None:
+            from src.hitl.plannotator_http import PlannotatorClient
+
+            self.client = PlannotatorClient()
 
     def gate(self, gate_name: str, payload: dict) -> HITLResult:
         if not gate_name.strip():
@@ -61,12 +67,28 @@ class HITLAdapter:
                 gate_id=f"{gate_name}-auto",
             )
         if self.mode == "plannotator":
-            return HITLResult(
-                status="pending",
-                comments=["plannotator API stub: no HTTP call performed"],
-                gate_id=f"{gate_name}-plannotator",
-            )
+            return self._plannotator_gate(gate_name, payload)
         return self._markdown_gate(gate_name, payload)
+
+    def _plannotator_gate(self, gate_name: str, payload: dict) -> HITLResult:
+        if self.client is None:
+            raise RuntimeError("plannotator mode requires a client")
+
+        session_id = self.client.create_session(
+            {
+                "gate": gate_name,
+                "payload": payload,
+            }
+        )
+        status = self.client.poll_until_decision(
+            session_id,
+            timeout_sec=self.timeout_seconds or 86400,
+        )
+        annotations = self.client.fetch_annotations(session_id)
+        result = self.client.to_hitl_result(annotations, status)
+        result.gate_id = session_id
+        result.path = f"plannotator://sessions/{session_id}"
+        return result
 
     def gate_brief(self, brief: Any) -> HITLResult:
         return self.gate("brief", {"brief": _jsonable(brief)})

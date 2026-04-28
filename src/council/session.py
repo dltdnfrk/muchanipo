@@ -7,7 +7,83 @@ from typing import Any
 
 from src.agents.generator import DebateAgentSpec
 from src.agents.mirofish import debate_agent_to_council_persona
+from src.council.parsers import RoundResult, parse_council_response
+from src.council.prompts import build_round_prompt
+from src.council.round_layers import RoundLayer
+from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway
+
+
+@dataclass
+class PlateauDetector:
+    """Detect confidence plateaus across structured council rounds."""
+
+    window: int = 3
+    tolerance: float = 0.05
+
+    def should_stop(self, rounds: list[RoundResult]) -> tuple[bool, str]:
+        if len(rounds) < self.window:
+            return False, f"plateau check skipped: only {len(rounds)} rounds"
+
+        recent = rounds[-self.window :]
+        confidences = [round_result.confidence_score for round_result in recent]
+        spread = max(confidences) - min(confidences)
+        round_ids = [round_result.layer_id for round_result in recent]
+        if spread <= self.tolerance:
+            return True, (
+                f"plateau detected over {round_ids}: confidence spread "
+                f"{spread:.3f} <= {self.tolerance:.2f}"
+            )
+        return False, (
+            f"no plateau over {round_ids}: confidence spread "
+            f"{spread:.3f} > {self.tolerance:.2f}"
+        )
+
+
+class Session:
+    """Run the 10-layer council through GatewayV2 and parse structured results."""
+
+    def __init__(
+        self,
+        gateway: GatewayV2,
+        layers: list[RoundLayer],
+        personas: list[Any],
+        plateau: PlateauDetector,
+    ) -> None:
+        self.gateway = gateway
+        self.layers = list(layers)
+        self.personas = list(personas)
+        self.plateau = plateau
+        self.rounds: list[RoundResult] = []
+        self.stopped = False
+        self.stop_reason: str | None = None
+
+    def run_one_round(self, round_no: int) -> RoundResult:
+        if round_no < 1:
+            raise ValueError("round_no must be >= 1")
+        if round_no > len(self.layers):
+            raise ValueError(f"round_no {round_no} exceeds configured layers ({len(self.layers)})")
+
+        layer = self.layers[round_no - 1]
+        prompt = build_round_prompt(layer, self.personas, self.rounds)
+        result = self.gateway.call("council", prompt)
+        text = getattr(result, "text", str(result))
+        round_result = parse_council_response(text, layer)
+        self.rounds.append(round_result)
+
+        plateau, reason = self.plateau.should_stop(self.rounds)
+        self.stop_reason = reason
+        if plateau:
+            self.stopped = True
+        return round_result
+
+    def run_all(self) -> list[RoundResult]:
+        max_rounds = min(10, len(self.layers))
+        for round_no in range(1, max_rounds + 1):
+            if self.stopped:
+                break
+            self.run_one_round(round_no)
+        return list(self.rounds)
 
 
 @dataclass

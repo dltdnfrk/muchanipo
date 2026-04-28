@@ -12,8 +12,8 @@ def test_model_gateway_uses_mock_provider_without_router_package():
     assert result.provider == "mock"
 
 
-def test_run_budget_reserve_reconcile_log():
-    budget = RunBudget(limit_usd=1.0)
+def test_run_budget_reserve_reconcile_log(tmp_path):
+    budget = RunBudget(limit_usd=1.0, cost_log_path=tmp_path / "cost-log.jsonl")
     rid = budget.reserve(stage="report", estimated_usd=0.25)
     budget.reconcile(rid, actual_usd=0.10)
     assert budget.total_actual_usd == 0.10
