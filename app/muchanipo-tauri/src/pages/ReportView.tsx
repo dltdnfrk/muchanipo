@@ -4,7 +4,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChapterCard from "../components/ChapterCard";
 import { parseChapterMarkdown } from "../lib/parseChapterMarkdown";
-import type { Chapter } from "../lib/tauriClient";
+import {
+  getBufferedEvents,
+  onBackendEvent,
+  type BackendEvent,
+  type Chapter,
+} from "../lib/tauriClient";
 
 export default function ReportView() {
   const { runId } = useParams<{ runId: string }>();
@@ -15,14 +20,56 @@ export default function ReportView() {
 
   useEffect(() => {
     if (!runId) return;
-    try {
-      const md = localStorage.getItem(`run:${runId}:report`) || "";
+    let mounted = true;
+    let unlisten: (() => void) | undefined;
+    const applyMarkdown = (md: string) => {
+      if (!mounted) return;
       setMarkdown(md);
       setChapters(parseChapterMarkdown(md));
+    };
+    const handleEvent = (event: BackendEvent) => {
+      if (!runId) return;
+      if (event.event === "final_report") {
+        const md = String(event.markdown ?? "");
+        if (md) {
+          localStorage.setItem(`run:${runId}:report`, md);
+          applyMarkdown(md);
+        }
+        return;
+      }
+      if (event.event === "report_chunk") {
+        const chunk = String(event.markdown ?? event.delta ?? "");
+        if (!chunk) return;
+        const current = localStorage.getItem(`run:${runId}:report`) || "";
+        const next = `${current}${current ? "\n\n" : ""}${chunk}`;
+        localStorage.setItem(`run:${runId}:report`, next);
+        applyMarkdown(next);
+      }
+    };
+    try {
+      const md = localStorage.getItem(`run:${runId}:report`) || "";
+      applyMarkdown(md);
       setTopic(localStorage.getItem(`run:${runId}:topic`) || "");
     } catch {
       /* ignore */
     }
+    onBackendEvent(handleEvent).then(async (cleanup) => {
+      if (!mounted) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+      try {
+        const history = await getBufferedEvents();
+        for (const event of history) handleEvent(event);
+      } catch {
+        /* non-fatal */
+      }
+    });
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
   }, [runId]);
 
   const exportMarkdown = () => {

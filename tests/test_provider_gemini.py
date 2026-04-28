@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -135,3 +136,91 @@ class TestGeminiProviderRealCall:
         result = p.call("stage", "prompt")
         assert result.text == "parsed"
         assert result.cost_usd > 0
+
+
+class TestGeminiProviderCli:
+    @patch("subprocess.run")
+    def test_cli_mode_passes_prompt_via_stdin_not_argv(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("MUCHANIPO_USE_CLI", "1")
+        prompt = "secret prompt body"
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"ok\n",
+            stderr=b"",
+        )
+
+        provider = GeminiProvider(
+            offline=False,
+            use_cli=True,
+            gemini_bin="/usr/local/bin/gemini",
+        )
+        result = provider.call("intake", prompt, timeout=12)
+
+        assert result.text == "ok"
+        args = mock_run.call_args.args[0]
+        assert args == [
+            "/usr/local/bin/gemini",
+            "-p",
+            "Follow the instructions provided on stdin.",
+            "-m",
+            "gemini-2.5-flash",
+        ]
+        assert prompt not in args
+        assert mock_run.call_args.kwargs["input"] == prompt.encode("utf-8")
+        assert mock_run.call_args.kwargs["timeout"] == 12
+
+    @patch("subprocess.run")
+    def test_cli_nonzero_without_api_key_raises(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"auth failed",
+        )
+        provider = GeminiProvider(
+            api_key=None,
+            offline=False,
+            use_cli=True,
+            gemini_bin="/usr/local/bin/gemini",
+        )
+
+        with pytest.raises(RuntimeError, match="auth failed"):
+            provider.call("intake", "prompt")
+
+    @patch("urllib.request.urlopen")
+    @patch("urllib.request.Request")
+    @patch("subprocess.run")
+    def test_cli_failure_falls_back_to_rest_when_api_key_exists(
+        self,
+        mock_run,
+        mock_request,
+        mock_urlopen,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"cli failed",
+        )
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "candidates": [{"content": {"parts": [{"text": "rest ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        provider = GeminiProvider(
+            api_key="g-test",
+            offline=False,
+            use_cli=True,
+            gemini_bin="/usr/local/bin/gemini",
+        )
+
+        result = provider.call("intake", "prompt", search_grounding=False)
+
+        assert result.text == "rest ok"
+        assert mock_request.called

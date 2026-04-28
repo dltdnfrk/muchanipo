@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { checkCliStatus, type CliStatus } from "../lib/tauriClient";
+import {
+  checkCliSmoke,
+  checkCliStatus,
+  openCliAuth,
+  type CliSmokeResult,
+  type CliStatus,
+} from "../lib/tauriClient";
 
 interface KeyForm {
   label: string;
@@ -28,7 +34,7 @@ const CLI_STAGE_MAP: Record<string, string> = {
   claude: "Anthropic — Council / Interview / Report",
   codex: "OpenAI — Eval / Critic",
   gemini: "Google — Intake / Research / Evidence",
-  kimi: "Moonshot — Evidence (참고용)",
+  kimi: "Moonshot — Evidence",
 };
 
 export default function Settings() {
@@ -39,6 +45,10 @@ export default function Settings() {
   const [cliStatuses, setCliStatuses] = useState<CliStatus[]>([]);
   const [cliLoading, setCliLoading] = useState(false);
   const [cliError, setCliError] = useState<string | null>(null);
+  const [smokeResults, setSmokeResults] = useState<Record<string, CliSmokeResult>>({});
+  const [smokeLoading, setSmokeLoading] = useState<Record<string, boolean>>({});
+  const [authLoading, setAuthLoading] = useState<Record<string, boolean>>({});
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const loaded: Record<string, string> = {};
@@ -51,6 +61,7 @@ export default function Settings() {
   async function refreshCliStatus() {
     setCliLoading(true);
     setCliError(null);
+    setSmokeResults({});
     try {
       const out = await checkCliStatus();
       setCliStatuses(out);
@@ -58,6 +69,50 @@ export default function Settings() {
       setCliError(err instanceof Error ? err.message : String(err));
     } finally {
       setCliLoading(false);
+    }
+  }
+
+  async function runSmoke(name: string) {
+    setSmokeLoading((prev) => ({ ...prev, [name]: true }));
+    setSmokeResults((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+    try {
+      const out = await checkCliSmoke(name);
+      setSmokeResults((prev) => ({ ...prev, [name]: out }));
+    } catch (err) {
+      setSmokeResults((prev) => ({
+        ...prev,
+        [name]: {
+          name,
+          ok: false,
+          output: null,
+          error: err instanceof Error ? err.message : String(err),
+          timed_out: false,
+        },
+      }));
+    } finally {
+      setSmokeLoading((prev) => ({ ...prev, [name]: false }));
+    }
+  }
+
+  async function connectCli(name: string) {
+    setAuthLoading((prev) => ({ ...prev, [name]: true }));
+    setAuthMessage(null);
+    try {
+      await openCliAuth(name);
+      setAuthMessage(
+        `${name} 로그인 창을 열었습니다. 완료 후 다시 확인 또는 실호출 테스트를 눌러주세요.`,
+      );
+      window.setTimeout(() => {
+        refreshCliStatus();
+      }, 1000);
+    } catch (err) {
+      setAuthMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthLoading((prev) => ({ ...prev, [name]: false }));
     }
   }
 
@@ -138,6 +193,11 @@ export default function Settings() {
                 {cliError}
               </p>
             )}
+            {authMessage && (
+              <p className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-secondary">
+                {authMessage}
+              </p>
+            )}
             <div className="overflow-hidden rounded-xl border border-white/5">
               {cliStatuses.length === 0 && !cliLoading && !cliError && (
                 <p className="bg-white/[0.02] px-4 py-6 text-center text-xs text-tertiary">
@@ -145,55 +205,97 @@ export default function Settings() {
                 </p>
               )}
               {cliStatuses.map((s, idx) => {
-                const ok = s.installed && !s.error;
+                const ok = s.installed && !s.error && !s.version_timed_out;
+                const smoke = smokeResults[s.name];
+                const canSmoke = Boolean(s.installed && s.smoke_supported);
                 return (
                   <div
                     key={s.name}
-                    className={`flex items-start gap-3 bg-white/[0.02] px-4 py-3 ${
+                    className={`flex flex-col gap-3 bg-white/[0.02] px-4 py-3 sm:flex-row sm:items-start ${
                       idx > 0 ? "border-t border-white/5" : ""
                     }`}
                   >
-                    <span
-                      className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-mono ${
-                        ok
-                          ? "bg-emerald-500/20 text-emerald-300"
-                          : "bg-red-500/20 text-red-300"
-                      }`}
-                    >
-                      {ok ? "✓" : "✗"}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <span className="font-mono text-sm text-white">{s.name}</span>
-                        {s.version && (
-                          <span className="shrink-0 truncate font-mono text-[10px] text-tertiary">
-                            {s.version}
-                          </span>
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <span
+                        className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-mono ${
+                          ok
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-red-500/20 text-red-300"
+                        }`}
+                      >
+                        {ok ? "✓" : "✗"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+                          <span className="font-mono text-sm text-white">{s.name}</span>
+                          {s.version && (
+                            <span className="min-w-0 truncate font-mono text-[10px] text-tertiary sm:text-right">
+                              {s.version}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-secondary">
+                          {CLI_STAGE_MAP[s.name] || ""}
+                        </p>
+                        {!ok && (
+                          <p className="mt-1 text-[11px] text-tertiary">
+                            {s.error
+                              ? s.error.split("\n")[0]
+                              : `설치되지 않음 — ${CLI_HINTS[s.name] || ""}`}
+                          </p>
+                        )}
+                        {ok && s.path && (
+                          <p className="mt-0.5 truncate font-mono text-[10px] text-tertiary">
+                            {s.path}
+                          </p>
+                        )}
+                        {s.diagnosis && (
+                          <p className="mt-1 text-[11px] text-tertiary">{s.diagnosis}</p>
+                        )}
+                        {!s.pipeline_supported && (
+                          <p className="mt-1 text-[11px] text-amber-300">
+                            파이프라인 자동 호출 미지원 — API 키 또는 mock fallback 사용
+                          </p>
+                        )}
+                        {smoke && (
+                          <p
+                            className={`mt-2 break-all rounded-lg border px-3 py-2 text-[11px] ${
+                              smoke.ok
+                                ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
+                                : "border-red-500/20 bg-red-500/5 text-red-300"
+                            }`}
+                          >
+                            {smoke.ok
+                              ? `실호출 OK${smoke.output ? ` — ${smoke.output.slice(0, 160)}` : ""}`
+                              : smoke.error || "실호출 실패"}
+                          </p>
                         )}
                       </div>
-                      <p className="mt-0.5 text-[11px] text-secondary">
-                        {CLI_STAGE_MAP[s.name] || ""}
-                      </p>
-                      {!ok && (
-                        <p className="mt-1 text-[11px] text-tertiary">
-                          {s.error
-                            ? s.error.split("\n")[0]
-                            : `설치되지 않음 — ${CLI_HINTS[s.name] || ""}`}
-                        </p>
-                      )}
-                      {ok && s.path && (
-                        <p className="mt-0.5 truncate font-mono text-[10px] text-tertiary">
-                          {s.path}
-                        </p>
-                      )}
+                    </div>
+                    <div className="ml-8 flex shrink-0 gap-2 sm:ml-0 sm:flex-col sm:items-end">
+                      <button
+                        type="button"
+                        onClick={() => connectCli(s.name)}
+                        disabled={!s.installed || authLoading[s.name]}
+                        className="w-fit whitespace-nowrap rounded-full border border-white/10 px-3 py-1 text-[11px] text-secondary transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {authLoading[s.name] ? "여는 중" : "연결"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => runSmoke(s.name)}
+                        disabled={!canSmoke || smokeLoading[s.name]}
+                        className="w-fit whitespace-nowrap rounded-full border border-white/10 px-3 py-1 text-[11px] text-secondary transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {smokeLoading[s.name] ? "테스트 중" : "실호출 테스트"}
+                      </button>
                     </div>
                   </div>
                 );
               })}
             </div>
             <p className="mt-3 text-[11px] text-tertiary">
-              Kimi CLI는 conversational 전용이라 파이프라인이 자동 프롬프트를 보내진 못합니다 —
-              로그인 상태만 확인하고, Evidence 단계에서 실제 호출이 필요하면 API 모드에서 키를 입력하세요.
+              "실호출 테스트"는 각 CLI에 짧은 실제 모델 호출을 보내므로 provider 정책에 따라 소량 과금될 수 있습니다.
             </p>
           </section>
         )}

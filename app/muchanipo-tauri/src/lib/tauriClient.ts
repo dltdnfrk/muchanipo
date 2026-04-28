@@ -23,12 +23,27 @@ export interface BackendEvent {
   // final_report
   report_path?: string;
   chapter_count?: number;
+  // interview_question
+  q_id?: string;
+  question_id?: string;
+  text?: string;
+  prompt?: string;
+  options?: unknown[];
+  allow_other?: boolean;
   // catch-all
   [key: string]: unknown;
 }
 
 export type BackendAction =
-  | { action: "interview_answer"; choice: string }
+  | {
+      action: "interview_answer";
+      choice?: string;
+      q_id?: string;
+      question_id?: string;
+      answer?: string;
+      selected?: string;
+      other_text?: string;
+    }
   | { action: "approve_designdoc" }
   | { action: "abort" };
 
@@ -98,11 +113,38 @@ export interface CliStatus {
   path?: string | null;
   version?: string | null;
   error?: string | null;
+  version_timed_out?: boolean;
+  pipeline_supported?: boolean;
+  smoke_supported?: boolean;
+  diagnosis?: string | null;
+}
+
+export interface CliSmokeResult {
+  name: string;
+  ok: boolean;
+  output?: string | null;
+  error?: string | null;
+  timed_out: boolean;
+}
+
+export interface CliAuthLaunch {
+  name: string;
+  command: string;
 }
 
 /** Probe local CLIs (claude / codex / gemini) for availability. */
 export async function checkCliStatus(): Promise<CliStatus[]> {
   return invoke<CliStatus[]>("check_cli_status");
+}
+
+/** Execute a tiny real CLI prompt to verify auth + native runtime health. */
+export async function checkCliSmoke(name: string): Promise<CliSmokeResult> {
+  return invoke<CliSmokeResult>("check_cli_smoke", { name });
+}
+
+/** Open the provider's interactive CLI auth flow in Terminal. */
+export async function openCliAuth(name: string): Promise<CliAuthLaunch> {
+  return invoke<CliAuthLaunch>("open_cli_auth", { name });
 }
 
 /**

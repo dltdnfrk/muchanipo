@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.error
 
 import pytest
 
@@ -71,13 +72,20 @@ def test_gemini_real_call_returns_non_mock_text():
     from src.execution.providers.gemini import GeminiProvider
 
     os.environ.pop("GEMINI_OFFLINE", None)
+    os.environ.pop("GEMINI_USE_CLI", None)
+    os.environ.pop("MUCHANIPO_USE_CLI", None)
 
     provider = GeminiProvider(offline=False)
-    result = provider.call(
-        stage="research",
-        prompt="Reply with exactly the single word: pong",
-        max_tokens=16,
-    )
+    try:
+        result = provider.call(
+            stage="research",
+            prompt="Reply with exactly the single word: pong",
+            max_tokens=16,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            pytest.skip("Gemini live API is rate-limited (HTTP 429)")
+        raise
     text = (result.text or "").strip().lower()
     assert text
     assert "[mock-" not in text

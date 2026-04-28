@@ -124,9 +124,16 @@ class GeminiProvider:
         **kwargs: Any,
     ) -> ModelResult:  # pragma: no cover - subprocess path
         timeout = int(kwargs.pop("timeout", 300))
-        # gemini -p reads `--prompt` arg; we send the body via stdin and pass
-        # an empty -p to switch into headless mode.
-        args = [self.gemini_bin, "-p", "", "-m", model, "-o", "text"]
+        # Keep user prompt content off argv (`ps`/Activity Monitor can expose
+        # command arguments). Gemini CLI accepts stdin appended to a non-empty
+        # headless prompt; `-p ""` hangs on some versions.
+        args = [
+            self.gemini_bin,
+            "-p",
+            "Follow the instructions provided on stdin.",
+            "-m",
+            model,
+        ]
         proc = subprocess.run(
             args,
             input=prompt.encode("utf-8"),

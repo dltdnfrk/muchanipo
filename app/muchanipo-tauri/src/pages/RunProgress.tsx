@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getBufferedEvents, onBackendEvent, submitIdea, type BackendEvent, type PipelineMode } from "../lib/tauriClient";
+import {
+  getBufferedEvents,
+  onBackendEvent,
+  sendAction,
+  submitIdea,
+  type BackendEvent,
+  type PipelineMode,
+} from "../lib/tauriClient";
 import { markRunDone } from "../lib/runsIndex";
 
 function readEnvsFromSettings(): Record<string, string> {
@@ -49,6 +56,13 @@ interface TokenCard {
   round?: number;
 }
 
+interface InterviewPrompt {
+  id: string;
+  text: string;
+  options: { key: string; label: string; value: string }[];
+  allowOther: boolean;
+}
+
 const STAGES: Stage[] = [
   "intake",
   "interview",
@@ -71,10 +85,55 @@ const STAGE_LABEL: Record<Stage, string> = {
   finalize: "완료",
 };
 
+const PHASE_TO_STAGE: Record<string, Stage> = {
+  STARTUP: "intake",
+  INTERVIEW: "interview",
+  COUNCIL: "council",
+  REPORT: "report",
+};
+
 function initialState(): Record<Stage, StageState> {
   const init: Record<Stage, StageState> = {} as Record<Stage, StageState>;
   for (const s of STAGES) init[s] = { status: "pending", message: "" };
   return init;
+}
+
+function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
+  const data =
+    event.data && typeof event.data === "object"
+      ? (event.data as Record<string, unknown>)
+      : {};
+  const id = String(event.q_id ?? event.question_id ?? data.q_id ?? data.question_id ?? "Q1");
+  const text = String(event.text ?? event.prompt ?? data.text ?? data.prompt ?? "").trim();
+  if (!text) return null;
+
+  const rawOptions = Array.isArray(event.options)
+    ? event.options
+    : Array.isArray(data.options)
+    ? data.options
+    : [];
+  const options = rawOptions.map((raw, idx) => {
+    if (raw && typeof raw === "object") {
+      const item = raw as Record<string, unknown>;
+      const key = String(item.key ?? String.fromCharCode(65 + idx));
+      const label = String(item.label ?? item.text ?? item.value ?? key);
+      return { key, label, value: String(item.value ?? label) };
+    }
+    const value = String(raw);
+    const match = value.match(/^([A-D])[\).\s-]+(.+)$/i);
+    if (match) {
+      return { key: match[1].toUpperCase(), label: match[2], value };
+    }
+    const key = String.fromCharCode(65 + idx);
+    return { key, label: value, value };
+  });
+
+  return {
+    id,
+    text,
+    options,
+    allowOther: event.allow_other !== false && data.allow_other !== false,
+  };
 }
 
 export default function RunProgress() {
@@ -85,6 +144,13 @@ export default function RunProgress() {
   const [topic, setTopic] = useState<string>("");
   const [tokenCards, setTokenCards] = useState<TokenCard[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+  const runErrorRef = useRef<string | null>(null);
+  const [reportPreview, setReportPreview] = useState("");
+  const [interviewPrompt, setInterviewPrompt] = useState<InterviewPrompt | null>(null);
+  const [interviewAnswer, setInterviewAnswer] = useState("");
+  const [interviewSubmitting, setInterviewSubmitting] = useState(false);
+  const [interviewError, setInterviewError] = useState<string | null>(null);
+  const [aborting, setAborting] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -102,7 +168,46 @@ export default function RunProgress() {
       if (!mounted) return;
 
       if (event.event === "error") {
-        setRunError((event.message as string) || "오류가 발생했어요.");
+        const message = (event.message as string) || "오류가 발생했어요.";
+        runErrorRef.current = message;
+        setRunError(message);
+        return;
+      }
+
+      if (event.event === "interview_question") {
+        const prompt = normalizeInterviewPrompt(event);
+        if (prompt) {
+          setInterviewPrompt(prompt);
+          setInterviewAnswer("");
+          setInterviewError(null);
+        }
+        return;
+      }
+
+      if (event.event === "phase_change" && typeof event.phase === "string") {
+        const stage = PHASE_TO_STAGE[event.phase.toUpperCase()];
+        if (!stage) return;
+        setStages((prev) => {
+          const next = { ...prev };
+          const currentIndex = STAGES.indexOf(stage);
+          STAGES.forEach((candidate, idx) => {
+            if (idx < currentIndex && next[candidate].status !== "completed") {
+              next[candidate] = {
+                ...next[candidate],
+                status: "completed",
+                completedAt: Date.now(),
+                message: "완료",
+              };
+            }
+          });
+          next[stage] = {
+            ...next[stage],
+            status: "active",
+            startedAt: next[stage].startedAt ?? Date.now(),
+            message: "진행 중",
+          };
+          return next;
+        });
         return;
       }
 
@@ -151,6 +256,21 @@ export default function RunProgress() {
         return;
       }
 
+      if (event.event === "report_chunk" && runId) {
+        const chunk = String(event.markdown ?? event.delta ?? "");
+        if (!chunk) return;
+        setReportPreview((prev) => {
+          const next = `${prev}${prev ? "\n\n" : ""}${chunk}`;
+          try {
+            localStorage.setItem(`run:${runId}:report`, next);
+          } catch {
+            /* ignore */
+          }
+          return next;
+        });
+        return;
+      }
+
       if (event.event === "final_report" && runId) {
         const markdown = (event.markdown as string) || "";
         const reportPath = (event.report_path as string) || "";
@@ -162,11 +282,32 @@ export default function RunProgress() {
         } catch {
           /* ignore */
         }
+        setReportPreview(markdown);
         return;
       }
 
-      if (event.event === "done" && runId && !runError) {
+      if (event.event === "done" && runId && !runErrorRef.current) {
         markRunDone(runId);
+        setStages((prev) => {
+          const next = { ...prev };
+          for (const stage of STAGES) {
+            if (next[stage].status === "active" || stage === "finalize") {
+              next[stage] = {
+                ...next[stage],
+                status: "completed",
+                completedAt: Date.now(),
+                message: "완료",
+              };
+            }
+          }
+          return next;
+        });
+        if (event.aborted) {
+          setTimeout(() => {
+            if (mounted) navigate("/");
+          }, 300);
+          return;
+        }
         setTimeout(() => {
           if (mounted) navigate(`/report/${runId}`);
         }, 600);
@@ -218,20 +359,73 @@ export default function RunProgress() {
       mounted = false;
       if (unlistenRef.current) unlistenRef.current();
     };
-  }, [runId, navigate, runError]);
+  }, [runId, navigate]);
 
   const completedCount = STAGES.filter((s) => stages[s].status === "completed").length;
   const totalProgress = (completedCount / STAGES.length) * 100;
+
+  async function submitInterviewAnswer(answer: string, selected?: string, isOther = false) {
+    if (!interviewPrompt || interviewSubmitting) return;
+    const trimmed = answer.trim();
+    if (!trimmed) {
+      setInterviewError("답변을 입력하거나 선택하세요.");
+      return;
+    }
+    setInterviewSubmitting(true);
+    setInterviewError(null);
+    try {
+      await sendAction({
+        action: "interview_answer",
+        q_id: interviewPrompt.id,
+        answer: trimmed,
+        choice: selected ?? trimmed,
+        selected: selected ?? trimmed,
+        other_text: isOther ? trimmed : undefined,
+      });
+      setInterviewPrompt(null);
+      setInterviewAnswer("");
+    } catch (err) {
+      setInterviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInterviewSubmitting(false);
+    }
+  }
+
+  async function abortRun() {
+    if (aborting) return;
+    setAborting(true);
+    try {
+      await sendAction({ action: "abort" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      runErrorRef.current = message;
+      setRunError(message);
+    } finally {
+      setAborting(false);
+    }
+  }
 
   return (
     <div className="min-h-screen px-6 py-10">
       <div className="mx-auto max-w-3xl">
         {/* Header */}
         <div className="fade-in mb-8">
-          <h1 className="text-xl font-semibold tracking-tight text-white">
-            {topic || "(주제 없음)"}
-          </h1>
-          <p className="mt-1 text-xs text-tertiary">{runId}</p>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-semibold tracking-tight text-white">
+                {topic || "(주제 없음)"}
+              </h1>
+              <p className="mt-1 text-xs text-tertiary">{runId}</p>
+            </div>
+            <button
+              type="button"
+              onClick={abortRun}
+              disabled={aborting}
+              className="shrink-0 rounded-full border border-red-400/20 px-3 py-1.5 text-xs text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {aborting ? "중단 중" : "중단"}
+            </button>
+          </div>
         </div>
 
         {/* Progress meter */}
@@ -257,6 +451,67 @@ export default function RunProgress() {
             >
               처음으로
             </button>
+          </div>
+        )}
+
+        {/* Inline HITL/interview answer card */}
+        {interviewPrompt && (
+          <div className="fade-in mb-6 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                  Interview input required
+                </p>
+                <h2 className="mt-1 text-sm font-medium text-white">{interviewPrompt.text}</h2>
+              </div>
+              <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] text-amber-200">
+                대기 중
+              </span>
+            </div>
+
+            {interviewPrompt.options.length > 0 && (
+              <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                {interviewPrompt.options.map((option) => (
+                  <button
+                    key={`${option.key}:${option.value}`}
+                    type="button"
+                    disabled={interviewSubmitting}
+                    onClick={() => submitInterviewAnswer(option.value, option.key)}
+                    className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-left text-xs text-secondary transition hover:border-white/25 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="mr-2 font-mono text-white">{option.key}</span>
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {interviewPrompt.allowOther && (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={interviewAnswer}
+                  disabled={interviewSubmitting}
+                  onChange={(event) => setInterviewAnswer(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submitInterviewAnswer(interviewAnswer, "OTHER", true);
+                  }}
+                  placeholder="직접 답변 입력"
+                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white placeholder-tertiary outline-none transition focus:border-white/30 focus:bg-black/30"
+                />
+                <button
+                  type="button"
+                  disabled={interviewSubmitting}
+                  onClick={() => submitInterviewAnswer(interviewAnswer, "OTHER", true)}
+                  className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {interviewSubmitting ? "전송 중" : "답변 전송"}
+                </button>
+              </div>
+            )}
+
+            {interviewError && (
+              <p className="mt-2 break-all text-xs text-red-300">{interviewError}</p>
+            )}
           </div>
         )}
 
@@ -321,6 +576,18 @@ export default function RunProgress() {
             );
           })}
         </ul>
+
+        {/* Live report preview */}
+        {reportPreview && (
+          <div className="fade-in mt-8 rounded-xl border border-white/5 bg-white/[0.02] p-4">
+            <p className="mb-3 text-[11px] uppercase tracking-wider text-tertiary">
+              Live report preview
+            </p>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-secondary">
+              {reportPreview}
+            </pre>
+          </div>
+        )}
 
         {/* Streaming token cards (minimal monochrome) */}
         {tokenCards.length > 0 && (

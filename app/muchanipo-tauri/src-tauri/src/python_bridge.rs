@@ -1,10 +1,11 @@
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use tauri::{AppHandle, Emitter, State};
@@ -78,16 +79,20 @@ pub async fn start_pipeline(
 
     // Resolve python3 — try common locations explicitly so .app launches
     // (which start with a minimal PATH) can find it.
-    let python_bin = ["/usr/local/bin/python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "python3".to_string());
+    let python_bin = [
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3",
+    ]
+    .iter()
+    .find(|p| std::path::Path::new(p).exists())
+    .map(|p| p.to_string())
+    .unwrap_or_else(|| "python3".to_string());
 
     let mut command = Command::new(&python_bin);
     command
         .args([
-            "-u",  // unbuffered stdout (so events flush immediately)
+            "-u", // unbuffered stdout (so events flush immediately)
             "-m",
             "muchanipo",
             "serve",
@@ -95,30 +100,20 @@ pub async fn start_pipeline(
             &topic,
             "--pipeline",
             pipeline_mode,
-            "--no-wait",
         ])
         .current_dir(workspace_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if pipeline_mode == "full" {
+        command.arg("--no-wait");
+    }
     // GUI .app launches inherit a minimal PATH that won't include
     // ~/.npm-global/bin or ~/.local/bin where the user's CLIs live.
     // Pre-resolve each CLI and inject both PATH extensions and explicit
     // <NAME>_BIN env vars so the Python providers can find them no matter
     // what the parent environment looks like.
-    let mut extra_path_dirs: Vec<String> = Vec::new();
-    for d in candidate_user_bin_dirs() {
-        if std::path::Path::new(&d).exists() {
-            extra_path_dirs.push(d);
-        }
-    }
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let merged_path = if current_path.is_empty() {
-        extra_path_dirs.join(":")
-    } else {
-        format!("{}:{}", extra_path_dirs.join(":"), current_path)
-    };
-    command.env("PATH", merged_path);
+    command.env("PATH", merged_cli_path());
 
     for (cli_name, env_var) in [
         ("claude", "CLAUDE_BIN"),
@@ -132,10 +127,7 @@ pub async fn start_pipeline(
     }
 
     if let Some(envs) = envs {
-        command.envs(
-            envs.into_iter()
-                .filter(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty()),
-        );
+        command.envs(sanitize_renderer_envs(envs)?);
     }
 
     let mut child = command
@@ -190,7 +182,11 @@ pub async fn start_pipeline(
     thread::spawn(move || {
         use std::io::Write;
         let log_path = std::env::temp_dir().join("muchanipo-python-stderr.log");
-        let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
         if let Some(ref mut f) = log {
             let _ = writeln!(f, "--- new run @ {:?} ---", std::time::SystemTime::now());
         }
@@ -227,7 +223,9 @@ pub async fn start_pipeline(
                         ),
                         Err(error) => emit_backend_event(
                             &wait_app,
-                            BackendEvent::error(format!("failed to wait for python pipeline: {error}")),
+                            BackendEvent::error(format!(
+                                "failed to wait for python pipeline: {error}"
+                            )),
                         ),
                     }
                 }
@@ -242,10 +240,44 @@ pub async fn start_pipeline(
     Ok(())
 }
 
+fn sanitize_renderer_envs(envs: HashMap<String, String>) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for (key, value) in envs {
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        if !is_allowed_renderer_env(&key) {
+            return Err(format!("unsupported pipeline env from renderer: {key}"));
+        }
+        if key == "MUCHANIPO_USE_CLI" && !is_boolean_env_value(&value) {
+            return Err("MUCHANIPO_USE_CLI must be a boolean-like value".to_string());
+        }
+        out.push((key, value));
+    }
+    Ok(out)
+}
+
+fn is_allowed_renderer_env(key: &str) -> bool {
+    matches!(
+        key,
+        "MUCHANIPO_USE_CLI"
+            | "ANTHROPIC_API_KEY"
+            | "GEMINI_API_KEY"
+            | "KIMI_API_KEY"
+            | "OPENAI_API_KEY"
+            | "OPENALEX_EMAIL"
+            | "PLANNOTATOR_API_KEY"
+    )
+}
+
+fn is_boolean_env_value(value: &str) -> bool {
+    matches!(value, "1" | "0" | "true" | "false" | "yes" | "no")
+}
+
 #[tauri::command]
-pub async fn get_buffered_events(
-    bridge: State<'_, PythonBridge>,
-) -> Result<Vec<String>, String> {
+pub async fn get_buffered_events(bridge: State<'_, PythonBridge>) -> Result<Vec<String>, String> {
     let buf = bridge.event_buffer.lock().map_err(lock_error)?;
     Ok(buf.clone())
 }
@@ -257,6 +289,25 @@ pub struct CliStatus {
     pub path: Option<String>,
     pub version: Option<String>,
     pub error: Option<String>,
+    pub version_timed_out: bool,
+    pub pipeline_supported: bool,
+    pub smoke_supported: bool,
+    pub diagnosis: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CliSmokeResult {
+    pub name: String,
+    pub ok: bool,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub timed_out: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct CliAuthLaunch {
+    pub name: String,
+    pub command: String,
 }
 
 #[tauri::command]
@@ -276,21 +327,33 @@ pub async fn check_cli_status() -> Result<Vec<CliStatus>, String> {
             path: path.clone(),
             version: None,
             error: None,
+            version_timed_out: false,
+            pipeline_supported: true,
+            smoke_supported: true,
+            diagnosis: cli_diagnosis(name).map(str::to_string),
         };
         if let Some(bin) = path {
-            match Command::new(&bin).args(args).output() {
-                Ok(o) if o.status.success() => {
-                    let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    status.version = Some(if v.is_empty() {
-                        String::from_utf8_lossy(&o.stderr).trim().to_string()
-                    } else {
-                        v
-                    });
+            match run_command_with_timeout(&bin, args, None, Duration::from_secs(8)) {
+                Ok(o) if o.timed_out => {
+                    status.version_timed_out = true;
+                    status.error = Some("version check timed out".to_string());
                 }
                 Ok(o) => {
-                    status.error = Some(
-                        String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                    );
+                    let stdout = o.stdout.trim();
+                    let stderr = o.stderr.trim();
+                    if o.success {
+                        status.version = Some(if stdout.is_empty() {
+                            stderr.to_string()
+                        } else {
+                            stdout.to_string()
+                        });
+                    } else {
+                        status.error = Some(if stderr.is_empty() {
+                            format!("version check exited with {:?}", o.code)
+                        } else {
+                            stderr.to_string()
+                        });
+                    }
                 }
                 Err(e) => status.error = Some(e.to_string()),
             }
@@ -298,6 +361,115 @@ pub async fn check_cli_status() -> Result<Vec<CliStatus>, String> {
         out.push(status);
     }
     Ok(out)
+}
+
+#[tauri::command]
+pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
+    let name = name.trim().to_lowercase();
+    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi") {
+        return Err(format!("unsupported CLI: {name}"));
+    }
+    let Some(bin) = which_binary(&name) else {
+        return Ok(CliSmokeResult {
+            name,
+            ok: false,
+            output: None,
+            error: Some("binary not found".to_string()),
+            timed_out: false,
+        });
+    };
+    let (args, input): (Vec<&str>, Option<&str>) = match name.as_str() {
+        "claude" => (
+            vec!["-p", "--output-format", "text", "Reply with OK only."],
+            None,
+        ),
+        "codex" => (
+            vec![
+                "exec",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "Reply with OK only.",
+            ],
+            None,
+        ),
+        "gemini" => (
+            vec!["-p", "Reply with OK only.", "-m", "gemini-2.5-flash"],
+            None,
+        ),
+        "kimi" => (
+            vec![
+                "--work-dir",
+                ".",
+                "--print",
+                "--final-message-only",
+                "--input-format",
+                "text",
+            ],
+            Some("Reply with OK only."),
+        ),
+        _ => unreachable!(),
+    };
+    let output = run_command_with_timeout(&bin, &args, input, Duration::from_secs(45))
+        .map_err(|error| error.to_string())?;
+    let stdout = output.stdout.trim().to_string();
+    let stderr = output.stderr.trim().to_string();
+    let error = if output.timed_out {
+        Some("smoke test timed out".to_string())
+    } else if !output.success {
+        Some(if stderr.is_empty() {
+            format!("smoke test exited with {:?}", output.code)
+        } else {
+            stderr
+        })
+    } else {
+        None
+    };
+    Ok(CliSmokeResult {
+        name,
+        ok: output.success && !output.timed_out,
+        output: if stdout.is_empty() {
+            None
+        } else {
+            Some(strip_kimi_resume_hint(&stdout))
+        },
+        error,
+        timed_out: output.timed_out,
+    })
+}
+
+#[tauri::command]
+pub async fn open_cli_auth(name: String) -> Result<CliAuthLaunch, String> {
+    let name = name.trim().to_lowercase();
+    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi") {
+        return Err(format!("unsupported CLI: {name}"));
+    }
+    if which_binary(&name).is_none() {
+        return Err(format!("{name} CLI is not installed or not on PATH"));
+    }
+
+    let login_command = cli_login_command(&name);
+    let command = terminal_login_script(&name, login_command);
+    let osa = format!(
+        "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
+        escape_applescript_string(&command)
+    );
+    let output = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(osa)
+        .output()
+        .map_err(|error| format!("failed to open Terminal: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("osascript exited with {:?}", output.status.code())
+        } else {
+            stderr
+        });
+    }
+
+    Ok(CliAuthLaunch { name, command })
 }
 
 fn which_binary(name: &str) -> Option<String> {
@@ -317,12 +489,151 @@ fn which_binary(name: &str) -> Option<String> {
         }
     }
     // PATH-based fallback via `command -v`.
-    let out = Command::new("/bin/sh").arg("-c").arg(format!("command -v {}", name)).output().ok()?;
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("command -v {}", name))
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn cli_login_command(name: &str) -> &'static str {
+    match name {
+        "claude" => "claude auth",
+        "codex" => "codex login",
+        "gemini" => "gemini /auth",
+        "kimi" => "kimi login",
+        _ => unreachable!("validated by open_cli_auth"),
+    }
+}
+
+fn terminal_login_script(name: &str, login_command: &str) -> String {
+    format!(
+        "cd {}; export PATH={}; clear; echo {}; echo {}; {}; echo; echo {}",
+        shell_quote(&workspace_root().to_string_lossy()),
+        shell_quote(&merged_cli_path()),
+        shell_quote(&format!("Muchanipo: connecting {name} CLI")),
+        shell_quote("Complete the login flow in this Terminal window."),
+        login_command,
+        shell_quote("When finished, return to Muchanipo and click 다시 확인 or 실호출 테스트.")
+    )
+}
+
+fn shell_quote(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "'\\''"))
+}
+
+fn escape_applescript_string(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+struct CapturedCommand {
+    success: bool,
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+fn run_command_with_timeout(
+    bin: &str,
+    args: &[&str],
+    input: Option<&str>,
+    timeout: Duration,
+) -> Result<CapturedCommand, std::io::Error> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .current_dir(workspace_root())
+        .env("PATH", merged_cli_path())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout_reader = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut out = String::new();
+            let _ = pipe.read_to_string(&mut out);
+            out
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut out = String::new();
+            let _ = pipe.read_to_string(&mut out);
+            out
+        })
+    });
+
+    if let Some(body) = input {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(body.as_bytes()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+    }
+
+    let started = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            timed_out = true;
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = stdout_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    Ok(CapturedCommand {
+        success: status.success() && !timed_out,
+        code: status.code(),
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+fn cli_diagnosis(name: &str) -> Option<&'static str> {
+    match name {
+        "claude" => Some("Pipeline uses `claude -p`; run the smoke test to verify OAuth/auth."),
+        "codex" => Some("Pipeline uses `codex exec`; version success does not prove native module/auth health."),
+        "gemini" => Some("Pipeline uses `gemini -p`; smoke test may expose OAuth, rate-limit, or CLI flag issues."),
+        "kimi" => Some("Pipeline uses `kimi --print`; run the smoke test to verify local Kimi auth."),
+        _ => None,
+    }
+}
+
+fn strip_kimi_resume_hint(raw: &str) -> String {
+    raw.lines()
+        .filter(|line| !line.trim().starts_with("To resume this session:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn candidate_user_bin_dirs() -> Vec<String> {
@@ -334,6 +645,33 @@ fn candidate_user_bin_dirs() -> Vec<String> {
         dirs.push(p2.to_string_lossy().to_string());
     }
     dirs
+}
+
+fn merged_cli_path() -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    for d in candidate_user_bin_dirs() {
+        if std::path::Path::new(&d).exists() {
+            dirs.push(d);
+        }
+    }
+    for d in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ] {
+        if std::path::Path::new(d).exists() && !dirs.iter().any(|item| item == d) {
+            dirs.push(d.to_string());
+        }
+    }
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    if current_path.is_empty() {
+        dirs.join(":")
+    } else {
+        format!("{}:{}", dirs.join(":"), current_path)
+    }
 }
 
 #[tauri::command]
@@ -387,7 +725,11 @@ fn workspace_root() -> PathBuf {
     // from cwd and finally to cwd.
     if let Some(ref root) = candidate {
         if root.join("muchanipo").join("__init__.py").exists()
-            || root.join("src").join("muchanipo").join("__init__.py").exists()
+            || root
+                .join("src")
+                .join("muchanipo")
+                .join("__init__.py")
+                .exists()
         {
             return root.clone();
         }
@@ -409,4 +751,91 @@ fn workspace_root() -> PathBuf {
 
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
     format!("python bridge state lock poisoned: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_allows_only_expected_app_keys() {
+        let sanitized = sanitize_renderer_envs(env_map(&[
+            ("MUCHANIPO_USE_CLI", "1"),
+            ("ANTHROPIC_API_KEY", "sk-ant"),
+            ("GEMINI_API_KEY", "g-key"),
+            ("KIMI_API_KEY", "k-key"),
+            ("OPENAI_API_KEY", "sk-openai"),
+            ("OPENALEX_EMAIL", "dev@example.com"),
+            ("PLANNOTATOR_API_KEY", "p-key"),
+        ]))
+        .expect("expected allowlisted envs");
+
+        assert_eq!(sanitized.len(), 7);
+        assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_USE_CLI"));
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_rejects_execution_affecting_keys() {
+        for key in [
+            "PATH",
+            "PYTHONPATH",
+            "CLAUDE_BIN",
+            "CODEX_BIN",
+            "GEMINI_BIN",
+            "GEMINI_ENDPOINT_TEMPLATE",
+            "HTTPS_PROXY",
+        ] {
+            let err = sanitize_renderer_envs(env_map(&[(key, "evil")])).unwrap_err();
+            assert!(err.contains("unsupported pipeline env"));
+        }
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_rejects_invalid_cli_flag_values() {
+        let err = sanitize_renderer_envs(env_map(&[("MUCHANIPO_USE_CLI", "maybe")])).unwrap_err();
+        assert!(err.contains("MUCHANIPO_USE_CLI"));
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_skips_empty_entries() {
+        let sanitized = sanitize_renderer_envs(env_map(&[
+            ("ANTHROPIC_API_KEY", ""),
+            ("", "value"),
+            ("GEMINI_API_KEY", "g-key"),
+        ]))
+        .expect("expected empty entries to be ignored");
+
+        assert_eq!(
+            sanitized,
+            vec![("GEMINI_API_KEY".to_string(), "g-key".to_string())]
+        );
+    }
+
+    #[test]
+    fn shell_quote_handles_single_quotes() {
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn applescript_escape_handles_quotes_and_backslashes() {
+        assert_eq!(
+            escape_applescript_string("say \"hi\" \\ done"),
+            "say \\\"hi\\\" \\\\ done"
+        );
+    }
+
+    #[test]
+    fn cli_login_commands_are_known() {
+        assert_eq!(cli_login_command("claude"), "claude auth");
+        assert_eq!(cli_login_command("codex"), "codex login");
+        assert_eq!(cli_login_command("gemini"), "gemini /auth");
+        assert_eq!(cli_login_command("kimi"), "kimi login");
+    }
 }
