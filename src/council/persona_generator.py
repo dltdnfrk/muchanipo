@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """HACHIMI 스타일 페르소나 생성 파이프라인.
 
-외부 LLM 호출 없이 Propose -> Validate -> Revise 단계를 재현한다.
-온톨로지는 단순 mapping으로 받아 테스트와 야간 자동화에서 안전하게 쓸 수
-있도록 stdlib만 사용한다.
+기본값은 외부 LLM 호출 없이 Propose -> Validate -> Revise 단계를 재현한다.
+GatewayV2가 주입되면 Stage 1 propose와 Stage 2 deep validate에 LLM 모드를
+추가로 사용하고, 실패 시 기존 휴리스틱 경로로 폴백한다.
 
 PRD-v2 §5.2 Neuro-Symbolic Validator 추가:
     - Fast Validator (규칙 기반, 즉시 실행) — ontology / denied_terms /
       value_axes / lockdown / AUP risk
-    - Deep Validator (LLM 기반은 stub; 키워드 오버랩으로 대체) — 토픽
-      관련성 + 다양성 (MAP-Elites) + 한국어 실명 타겟팅 추가 차단
+    - Deep Validator — 기본 키워드 오버랩 + 선택적 LLM judge + 다양성
+      (MAP-Elites) + 한국어 실명 타겟팅 추가 차단
 
 PRD-v2 §5.5 EvoAgentX MAP-Elites 통합:
     - generate() 메서드가 DiversityMap을 받아 Final 단계에서 셀 점유 강제
@@ -31,6 +31,14 @@ try:
     from src.council.diversity_mapper import DiversityMap
 except Exception:  # pragma: no cover - 순환 import 회피
     DiversityMap = None  # type: ignore[assignment]
+
+from src.council.persona_prompts import (
+    build_persona_deep_validate_prompt,
+    build_persona_propose_prompt,
+    parse_persona_proposal_response,
+    parse_persona_validation_response,
+)
+from src.execution.gateway_v2 import GatewayV2
 
 
 # ---- Korean real-name targeting guard --------------------------------------
@@ -120,7 +128,15 @@ class PersonaGenerator:
     - denied_terms / high_risk_terms: 안전 차단 용어
     """
 
-    def __init__(self, risk_threshold: float = 0.45) -> None:
+    def __init__(
+        self,
+        gateway: GatewayV2 | None = None,
+        risk_threshold: float = 0.45,
+    ) -> None:
+        if isinstance(gateway, (int, float)) and risk_threshold == 0.45:
+            risk_threshold = float(gateway)
+            gateway = None
+        self.gateway = gateway
         self.risk_threshold = float(risk_threshold)
 
     def propose(
@@ -187,6 +203,80 @@ class PersonaGenerator:
                     allowed_tools=allowed_tools,
                     required_outputs=required_outputs,
                     value_axes=dict(base_axes),
+                    manifest=manifest_extra,
+                )
+            )
+        return drafts
+
+    def propose_with_llm(
+        self,
+        ontology: Mapping[str, Any],
+        target_count: int,
+        topic: str,
+    ) -> List[Draft]:
+        """Use GatewayV2 to propose Drafts, falling back to heuristic propose on failure."""
+
+        if target_count < 1:
+            return []
+        if self.gateway is None:
+            return self.propose(ontology, target_count=target_count)
+
+        prompt = build_persona_propose_prompt(ontology, target_count, topic)
+        try:
+            result = self.gateway.call("council", prompt)
+            raw_personas = parse_persona_proposal_response(result.text)
+            drafts = self._drafts_from_llm_specs(raw_personas, ontology, target_count)
+        except Exception:
+            return self.propose(ontology, target_count=target_count)
+        if len(drafts) < target_count:
+            fallback = self.propose(ontology, target_count=target_count)
+            used_ids = {draft.persona_id for draft in drafts}
+            for draft in fallback:
+                if len(drafts) >= target_count:
+                    break
+                if draft.persona_id not in used_ids:
+                    drafts.append(draft)
+        return drafts[:target_count]
+
+    def _drafts_from_llm_specs(
+        self,
+        specs: Sequence[Mapping[str, Any]],
+        ontology: Mapping[str, Any],
+        target_count: int,
+    ) -> List[Draft]:
+        roles = _string_list(ontology.get("roles")) or ["evidence_reviewer"]
+        allowed_tools_default = _string_list(ontology.get("allowed_tools")) or ["read_file"]
+        outputs_default = _string_list(ontology.get("required_outputs")) or ["report"]
+        axes_default = _value_axes(ontology.get("value_axes"))
+
+        drafts: List[Draft] = []
+        for index, spec in enumerate(specs[:target_count]):
+            role = _clean_text(spec.get("role")) or roles[index % len(roles)]
+            intent = (
+                _clean_text(spec.get("intent"))
+                or _clean_text(spec.get("purpose"))
+                or "Summarize grounded evidence and report uncertainty."
+            )
+            persona_id = _clean_text(spec.get("persona_id")) or f"persona-{index + 1:03d}"
+            name = _clean_text(spec.get("name")) or f"{role.replace('_', ' ').title()} {index + 1}"
+            allowed_tools = _string_list(spec.get("allowed_tools")) or allowed_tools_default
+            required_outputs = _string_list(spec.get("required_outputs")) or outputs_default
+            value_axes = _value_axes(spec.get("value_axes") or axes_default)
+            manifest = spec.get("manifest")
+            manifest_extra = dict(manifest) if isinstance(manifest, Mapping) else {}
+            for key in ("topic_fit", "decision_criteria", "failure_mode"):
+                if key in spec and key not in manifest_extra:
+                    manifest_extra[key] = spec[key]
+
+            drafts.append(
+                Draft(
+                    persona_id=persona_id,
+                    name=name,
+                    role=role,
+                    intent=intent,
+                    allowed_tools=allowed_tools,
+                    required_outputs=required_outputs,
+                    value_axes=value_axes,
                     manifest=manifest_extra,
                 )
             )
@@ -343,6 +433,11 @@ class PersonaGenerator:
                         )
                     )
 
+            if self.gateway is not None:
+                persona_issues.extend(
+                    self._deep_validate_llm(draft, ontology, topic_keywords)
+                )
+
             # MAP-Elites 다양성 — 점유된 셀이면 reject (admit는 generate에서 별도 호출)
             if diversity_map is not None:
                 axes = draft.to_manifest().get("value_axes") or {}
@@ -361,6 +456,28 @@ class PersonaGenerator:
                 valid_ids.append(draft.persona_id)
 
         return ValidationReport(valid_ids=valid_ids, issues=issues)
+
+    def _deep_validate_llm(
+        self,
+        draft: Draft,
+        ontology: Mapping[str, Any],
+        topic_keywords: Optional[Sequence[str]] = None,
+    ) -> List[ValidationIssue]:
+        """Ask the LLM judge whether a draft is topic-relevant."""
+
+        if self.gateway is None:
+            return []
+        topic = _topic_from_keywords(topic_keywords, ontology)
+        prompt = build_persona_deep_validate_prompt(draft, ontology, topic)
+        try:
+            result = self.gateway.call("council", prompt)
+            score, reason, issues = parse_persona_validation_response(result.text)
+        except Exception:
+            return []
+        if score < 0.3:
+            detail = reason or "; ".join(issues) or f"LLM relevance {score:.2f} < 0.3"
+            return [_issue(draft, "deep.llm_topic_relevance", detail)]
+        return []
 
     # ------------------------------------------------------------------
     # HACHIMI 3-iter Revise Loop (PRD-v2 §5.2 Stage 3)
@@ -446,6 +563,7 @@ class PersonaGenerator:
         max_revisions: int = 3,
         diversity_map: Any = None,
         topic_keywords: Optional[Sequence[str]] = None,
+        topic: Optional[str] = None,
     ) -> Tuple[List[FinalPersona], Dict[str, Any]]:
         """propose → fast validate → (revise → re-validate) ×3 → deep validate → MAP-Elites → finalize.
 
@@ -462,7 +580,14 @@ class PersonaGenerator:
             "coverage_after_admit": 0.0,
         }
 
-        drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
+        if self.gateway is not None and not seed_personas:
+            drafts = self.propose_with_llm(
+                ontology,
+                target_count=target_count,
+                topic=topic or _topic_from_keywords(topic_keywords, ontology),
+            )
+        else:
+            drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
 
         # Fast loop with up to max_revisions iterations
         for iteration in range(max_revisions):
@@ -576,6 +701,23 @@ def _string_list(value: Any) -> List[str]:
     if isinstance(value, Iterable):
         return [str(item) for item in value if str(item)]
     return []
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _topic_from_keywords(
+    topic_keywords: Optional[Sequence[str]],
+    ontology: Mapping[str, Any],
+) -> str:
+    ontology_topic = _clean_text(ontology.get("topic") or ontology.get("research_question"))
+    if ontology_topic:
+        return ontology_topic
+    keywords = [str(keyword).strip() for keyword in (topic_keywords or []) if str(keyword).strip()]
+    return ", ".join(keywords) if keywords else "general research topic"
 
 
 def _value_axes(value: Any) -> Dict[str, Any]:
