@@ -52,7 +52,18 @@ def _persona() -> FinalPersona:
 
 
 def test_session_run_all_calls_gateway_v2_for_ten_structured_rounds():
-    provider = SequenceProvider([0.10, 0.20, 0.30, 0.45, 0.55, 0.66, 0.74, 0.82, 0.89, 0.95])
+    provider = SequenceProvider([
+        0.10, 0.10, 0.10,
+        0.20, 0.20, 0.20,
+        0.30, 0.30, 0.30,
+        0.45, 0.45, 0.45,
+        0.55, 0.55, 0.55,
+        0.66, 0.66, 0.66,
+        0.74, 0.74, 0.74,
+        0.82, 0.82, 0.82,
+        0.89, 0.89, 0.89,
+        0.95, 0.95, 0.95,
+    ])
     session = Session(
         gateway=_gateway(provider),
         layers=list(DEFAULT_LAYERS),
@@ -63,19 +74,25 @@ def test_session_run_all_calls_gateway_v2_for_ten_structured_rounds():
     results = session.run_all()
 
     assert len(results) == 10
+    assert len(provider.calls) == 30
     assert all(call["stage"] == "council" for call in provider.calls)
-    assert results[0].key_claim == "round 1 chairman synthesis"
+    assert results[0].key_claim == "round 3 chairman synthesis"
     assert results[-1].confidence_score == 0.95
     assert "시장 규모 + 컨텍스트" in provider.calls[0]["prompt"]
     assert DEFAULT_LAYERS[0].focus_question in provider.calls[0]["prompt"]
     assert ", ".join(DEFAULT_LAYERS[0].emphasis_roles) in provider.calls[0]["prompt"]
-    assert "Individual" in provider.calls[0]["prompt"]
-    assert "Peer review" in provider.calls[0]["prompt"]
-    assert "Chairman" in provider.calls[0]["prompt"]
+    assert "Individual Analysis" in provider.calls[0]["prompt"]
+    assert "Anonymous Peer Review" in provider.calls[1]["prompt"]
+    assert "Chairman Synthesis" in provider.calls[2]["prompt"]
 
 
 def test_session_run_all_stops_early_on_confidence_plateau():
-    provider = SequenceProvider([0.70, 0.71, 0.72, 0.90])
+    provider = SequenceProvider([
+        0.70, 0.70, 0.70,
+        0.71, 0.71, 0.71,
+        0.72, 0.72, 0.72,
+        0.90, 0.90, 0.90,
+    ])
     session = Session(
         gateway=_gateway(provider),
         layers=list(DEFAULT_LAYERS),
@@ -88,7 +105,7 @@ def test_session_run_all_stops_early_on_confidence_plateau():
     assert len(results) == 3
     assert session.stopped is True
     assert "plateau detected" in (session.stop_reason or "")
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 9
 
 
 def test_round_prompt_includes_layer_framework_guidance():

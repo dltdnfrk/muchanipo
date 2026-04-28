@@ -30,7 +30,10 @@ Rubric integration:
 """
 
 import argparse
+import hashlib
 import json
+import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -112,6 +115,19 @@ _CRITICAL_PATTERNS = [
     re.compile(r"(?:must|반드시|필수|critical|치명|핵심)", re.IGNORECASE),
 ]
 _NUMBER_RE = re.compile(r"\d+(?:[\.,]\d+)?")
+_EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+_EMBEDDING_THRESHOLD = 0.85
+_HASH_BAG_DIM = 256
+_EMBEDDING_MODEL: Any = None
+_EMBEDDING_MODEL_ATTEMPTED = False
+_SOURCE_EMBEDDING_CACHE: Dict[Tuple[str, str], Tuple[float, ...]] = {}
+_TEXT_EMBEDDING_CACHE: Dict[Tuple[str, str], Tuple[float, ...]] = {}
+_EMBEDDING_CACHE_STATS = {
+    "source_hits": 0,
+    "source_misses": 0,
+    "text_hits": 0,
+    "text_misses": 0,
+}
 
 
 def _tokenize(text: str) -> List[str]:
@@ -297,23 +313,151 @@ def _has_conflicting_numbers(quote: str, source_text: str) -> bool:
     return bool(quote_numbers and source_numbers and not quote_numbers <= source_numbers)
 
 
+def _reset_embedding_cache() -> None:
+    """Test helper: clear embedding caches without touching model state."""
+    _SOURCE_EMBEDDING_CACHE.clear()
+    _TEXT_EMBEDDING_CACHE.clear()
+    for key in _EMBEDDING_CACHE_STATS:
+        _EMBEDDING_CACHE_STATS[key] = 0
+
+
+def _embedding_backend_name() -> str:
+    return "hash" if _load_embedding_model() is None else f"st:{_EMBEDDING_MODEL_NAME}"
+
+
+def _load_embedding_model() -> Any:
+    global _EMBEDDING_MODEL_ATTEMPTED, _EMBEDDING_MODEL
+    if os.environ.get("EMBEDDING_OFFLINE") == "1":
+        return None
+    if _EMBEDDING_MODEL_ATTEMPTED:
+        return _EMBEDDING_MODEL
+    _EMBEDDING_MODEL_ATTEMPTED = True
+    try:  # pragma: no cover - depends on optional local package/model cache
+        from sentence_transformers import SentenceTransformer
+
+        _EMBEDDING_MODEL = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+    except Exception:  # noqa: BLE001
+        _EMBEDDING_MODEL = None
+    return _EMBEDDING_MODEL
+
+
+def _embedding_similarity(quote: str, source_text: str) -> float:
+    """Cosine similarity from sentence-transformers or stdlib hash-bag fallback."""
+    if not quote or not source_text:
+        return 0.0
+    # Very short toy strings are better handled by substring/trigram. Skipping
+    # embeddings here preserves the lexical threshold boundary behavior.
+    if min(len(_content_terms(quote)), len(_content_terms(source_text))) < 4:
+        return 0.0
+
+    backend = _embedding_backend_name()
+    quote_vec = _embedding_for_text(quote, backend=backend, source=False)
+    source_vec = _embedding_for_text(source_text, backend=backend, source=True)
+    return round(_cosine(quote_vec, source_vec), 3)
+
+
+def _embedding_for_text(text: str, *, backend: str, source: bool) -> Tuple[float, ...]:
+    cache = _SOURCE_EMBEDDING_CACHE if source else _TEXT_EMBEDDING_CACHE
+    hit_key = "source_hits" if source else "text_hits"
+    miss_key = "source_misses" if source else "text_misses"
+    key = (backend, text)
+    if key in cache:
+        _EMBEDDING_CACHE_STATS[hit_key] += 1
+        return cache[key]
+    _EMBEDDING_CACHE_STATS[miss_key] += 1
+    model = _load_embedding_model() if backend.startswith("st:") else None
+    if model is None:
+        vector = _hash_bag_embedding(text)
+    else:  # pragma: no cover - optional dependency path
+        encoded = model.encode([text], normalize_embeddings=True)[0]
+        vector = tuple(float(x) for x in encoded)
+    cache[key] = vector
+    return vector
+
+
+def _hash_bag_embedding(text: str) -> Tuple[float, ...]:
+    vec = [0.0] * _HASH_BAG_DIM
+    features = _embedding_features(text)
+    if not features:
+        return tuple(vec)
+    for feature in features:
+        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, "big")
+        idx = value % _HASH_BAG_DIM
+        sign = 1.0 if value & 1 else -1.0
+        vec[idx] += sign
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm == 0.0:
+        return tuple(vec)
+    return tuple(v / norm for v in vec)
+
+
+def _embedding_features(text: str) -> List[str]:
+    tokens = _tokenize(text)
+    features: List[str] = []
+    features.extend(f"tok:{tok}" for tok in tokens)
+    features.extend(f"syn:{syn}" for tok in tokens for syn in _semantic_aliases(tok))
+    features.extend(f"bi:{left}_{right}" for left, right in zip(tokens, tokens[1:]))
+    compact = re.sub(r"\s+", "", str(text).lower())
+    features.extend(f"tri:{tri}" for tri in _ngrams(compact, 3))
+    return features
+
+
+def _semantic_aliases(token: str) -> Tuple[str, ...]:
+    aliases = {
+        "suggests": ("indicates", "implies", "signals"),
+        "suggest": ("indicate", "imply", "signal"),
+        "implies": ("suggests", "indicates", "signals"),
+        "indicates": ("suggests", "implies", "signals"),
+        "states": ("says", "reports", "describes"),
+        "stated": ("said", "reported", "described"),
+        "explicitly": ("directly", "clearly"),
+        "purchase": ("buy", "adopt", "procure"),
+        "buyers": ("customers", "users", "operators"),
+        "customers": ("buyers", "users", "operators"),
+        "risk": ("threat", "concern", "downside"),
+        "risks": ("threats", "concerns", "downsides"),
+        "reduced": ("lowered", "cut", "decreased"),
+        "reduces": ("lowers", "cuts", "decreases"),
+        "시사한다": ("암시한다", "보여준다", "나타낸다"),
+        "명시한다": ("밝힌다", "설명한다", "말한다"),
+        "구매자": ("고객", "사용자", "수요자"),
+        "위험": ("리스크", "우려", "문제"),
+    }
+    return aliases.get(token, ())
+
+
+def _cosine(left: Tuple[float, ...], right: Tuple[float, ...]) -> float:
+    if not left or not right:
+        return 0.0
+    limit = min(len(left), len(right))
+    numerator = sum(left[idx] * right[idx] for idx in range(limit))
+    left_norm = math.sqrt(sum(v * v for v in left))
+    right_norm = math.sqrt(sum(v * v for v in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, numerator / (left_norm * right_norm)))
+
+
 def semantic_match(quote: str, source_text: str, threshold: float = 0.6) -> Tuple[bool, float, Dict[str, Any]]:
     """Return whether quote is semantically present in source_text.
 
     This is a stdlib-only lexical semantic fallback. Substring remains the
-    fast path; otherwise the best token-window Jaccard or character trigram
-    overlap score is used.
+    fast path; otherwise the best token-window Jaccard, character trigram
+    overlap, or embedding cosine score is used.
     """
     details: Dict[str, Any] = {
         "method": "none",
         "jaccard": 0.0,
         "trigram": 0.0,
+        "embedding_cosine": 0.0,
+        "embedding_threshold": _EMBEDDING_THRESHOLD,
         "threshold": threshold,
     }
     if not quote or not source_text:
         return False, 0.0, details
     if _is_substring_quote(quote, source_text):
-        details.update({"method": "substring", "jaccard": 1.0, "trigram": 1.0})
+        details.update({"method": "substring", "jaccard": 1.0, "trigram": 1.0, "embedding_cosine": 1.0})
         return True, 1.0, details
     if _has_conflicting_numbers(quote, source_text):
         details.update({"method": "numeric_mismatch"})
@@ -321,7 +465,15 @@ def semantic_match(quote: str, source_text: str, threshold: float = 0.6) -> Tupl
 
     score, best = _score_semantic_window(quote, source_text)
     details.update(best)
-    return score >= threshold, round(score, 3), details
+    if score >= threshold:
+        return True, round(score, 3), details
+
+    embedding = _embedding_similarity(quote, source_text)
+    details["embedding_cosine"] = embedding
+    if embedding >= _EMBEDDING_THRESHOLD:
+        details["method"] = "embedding"
+        return True, embedding, details
+    return False, round(max(score, embedding), 3), details
 
 
 def _is_substring_quote(claim: str, evidence_text: str) -> bool:
