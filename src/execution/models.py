@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from src.governance.budget import BudgetExceeded
+from src.governance.budget import BudgetExceeded, provider_name, resolve_model
 
 
 @dataclass
@@ -56,7 +56,12 @@ class ModelGateway:
         estimated_usd = 0.0
         if self.budget is not None:
             estimated_usd = self.budget.estimate(stage=stage, prompt=prompt, provider=provider)
-            reservation_id = self.budget.reserve(stage=stage, estimated_usd=estimated_usd)
+            reservation_id = self.budget.reserve(
+                stage=stage,
+                estimated_usd=estimated_usd,
+                provider=provider_name(provider),
+                model=resolve_model(stage=stage, provider=provider),
+            )
             if reservation_id is False:
                 if self.fallback_provider is None:
                     raise BudgetExceeded("budget exceeded")
@@ -69,6 +74,8 @@ class ModelGateway:
                 reservation_id = self.budget.reserve(
                     stage=stage,
                     estimated_usd=fallback_estimated_usd,
+                    provider=provider_name(self.fallback_provider),
+                    model=resolve_model(stage=stage, provider=self.fallback_provider),
                 )
                 if reservation_id is False:
                     raise BudgetExceeded("budget exceeded")
@@ -77,7 +84,13 @@ class ModelGateway:
                 result.fallback_reason = fallback_reason
                 actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
                 self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-                self._audit(stage, provider, result, actual_usd, fallback_reason)
+                self._audit(
+                    stage,
+                    self._provider_from_result(result, self.fallback_provider),
+                    result,
+                    actual_usd,
+                    fallback_reason,
+                )
                 return result
 
         fallback_reason = None
@@ -90,6 +103,21 @@ class ModelGateway:
                 self._audit(stage, provider, None, estimated_usd, str(exc))
                 raise
             fallback_reason = str(exc)
+            if reservation_id and self.budget is not None:
+                self.budget.reconcile(reservation_id, actual_usd=0.0)
+                fallback_estimated_usd = self.budget.estimate(
+                    stage=stage,
+                    prompt=prompt,
+                    provider=self.fallback_provider,
+                )
+                reservation_id = self.budget.reserve(
+                    stage=stage,
+                    estimated_usd=fallback_estimated_usd,
+                    provider=provider_name(self.fallback_provider),
+                    model=resolve_model(stage=stage, provider=self.fallback_provider),
+                )
+                if reservation_id is False:
+                    raise BudgetExceeded("budget exceeded")
             result = self.dispatch(self.fallback_provider, stage=stage, prompt=prompt, **kwargs)
             result.is_fallback = True
             result.fallback_reason = fallback_reason
@@ -97,7 +125,8 @@ class ModelGateway:
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
         if reservation_id and self.budget is not None:
             self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-        self._audit(stage, provider, result, actual_usd, fallback_reason)
+        actual_provider = self._provider_from_result(result, self.fallback_provider or provider)
+        self._audit(stage, actual_provider, result, actual_usd, fallback_reason)
         return result
 
     def dispatch(self, provider: Provider, *, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
@@ -135,3 +164,9 @@ class ModelGateway:
             cost_usd=cost_usd,
             fallback_reason=fallback_reason,
         )
+
+    def _provider_from_result(self, result: ModelResult, default: Provider) -> Provider:
+        result_provider = getattr(result, "provider", None)
+        if isinstance(result_provider, str):
+            return self.providers.get(result_provider, default)
+        return default

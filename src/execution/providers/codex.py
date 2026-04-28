@@ -98,8 +98,9 @@ class CodexProvider:
     def _call_openai(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:  # pragma: no cover
         import urllib.request
 
+        model = kwargs.pop("model", self.model)
         body = json.dumps({
-            "model": kwargs.pop("model", self.model),
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": int(kwargs.pop("max_tokens", 1024)),
         }).encode("utf-8")
@@ -119,7 +120,7 @@ class CodexProvider:
             text = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             text = json.dumps(payload)
-        return ModelResult(text=text, provider=self.name, model=self.model, raw=payload)
+        return ModelResult(text=text, provider=self.name, model=model, raw=payload)
 
 
 def _strip_codex_noise(raw: str) -> str:

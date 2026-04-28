@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
-from src.governance.budget import BudgetExceeded
+from src.governance.budget import BudgetExceeded, provider_name, resolve_model
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -200,7 +200,12 @@ class GatewayV2(ModelGateway):
             first_fallback_reason: str | None = None
             for i, provider in enumerate(chain_providers):
                 estimated_usd = self.budget.estimate(stage=stage, prompt=prompt, provider=provider)
-                reservation_id = self.budget.reserve(stage=stage, estimated_usd=estimated_usd)
+                reservation_id = self.budget.reserve(
+                    stage=stage,
+                    estimated_usd=estimated_usd,
+                    provider=provider_name(provider),
+                    model=resolve_model(stage=stage, provider=provider),
+                )
                 if reservation_id is False:
                     error = BudgetExceeded("budget exceeded")
                     self._record_fallback(stage, provider, error)

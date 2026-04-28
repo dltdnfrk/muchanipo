@@ -122,8 +122,9 @@ class KimiProvider:
     def _call_real(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:  # pragma: no cover - 네트워크
         if not _HAVE_URLLIB:
             raise RuntimeError("urllib not available for kimi provider")
+        model = kwargs.pop("model", self.model)
         body = json.dumps({
-            "model": kwargs.pop("model", self.model),
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": int(kwargs.pop("max_tokens", 1024)),
             "temperature": float(kwargs.pop("temperature", 0.6)),
@@ -149,7 +150,7 @@ class KimiProvider:
         return ModelResult(
             text=text,
             provider=self.name,
-            model=self.model,
+            model=model,
             cost_usd=cost,
             raw=payload,
         )

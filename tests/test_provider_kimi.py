@@ -97,6 +97,20 @@ class TestKimiProviderCli:
         assert result.text == "api ok"
         assert mock_request.called
 
+    @patch("urllib.request.urlopen")
+    @patch("urllib.request.Request")
+    def test_api_result_reports_actual_model_override(self, mock_request, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"choices":[{"message":{"content":"api ok"}}],"usage":{}}'
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        provider = KimiProvider(api_key="k-test", offline=False, use_cli=False)
+
+        result = provider.call("evidence", "prompt", model="kimi-custom")
+
+        assert result.model == "kimi-custom"
+        request_body = mock_request.call_args.kwargs["data"].decode("utf-8")
+        assert '"model": "kimi-custom"' in request_body
+
 
 def test_strip_kimi_cli_noise_removes_resume_hint():
     assert _strip_kimi_cli_noise("OK\n\nTo resume this session: kimi -r abc\n") == "OK"

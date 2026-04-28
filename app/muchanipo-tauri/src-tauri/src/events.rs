@@ -22,6 +22,16 @@ impl BackendEvent {
             fields,
         }
     }
+
+    pub fn warning(message: impl Into<String>) -> Self {
+        let mut fields = Map::new();
+        fields.insert("message".to_string(), Value::String(message.into()));
+
+        Self {
+            event: "warning".to_string(),
+            fields,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -226,9 +226,15 @@ class _BudgetTracker:
     def estimate(self, stage, prompt, provider):
         return 0.01
 
-    def reserve(self, stage, estimated_usd):
+    def reserve(self, stage, estimated_usd, **metadata):
         self.next_id += 1
-        self.calls.append({"action": "reserve", "stage": stage, "usd": estimated_usd, "id": self.next_id})
+        self.calls.append({
+            "action": "reserve",
+            "stage": stage,
+            "usd": estimated_usd,
+            "id": self.next_id,
+            **metadata,
+        })
         return self.next_id
 
     def reconcile(self, reservation_id, actual_usd):
@@ -246,6 +252,22 @@ def test_gateway_v2_calls_budget_reserve_and_reconcile():
     gw.call("x", "prompt")
     actions = [c["action"] for c in tracker.calls]
     assert actions == ["reserve", "reconcile"]
+
+
+def test_gateway_v2_reserve_records_provider_and_model_metadata():
+    tracker = _BudgetTracker()
+    gw = GatewayV2(
+        providers={"codex": _SuccessProvider("codex")},
+        stage_routes={"eval": "codex"},
+        fallback_chain={"eval": ["codex"]},
+        budget=tracker,
+    )
+
+    gw.call("eval", "prompt")
+
+    reserve = next(c for c in tracker.calls if c["action"] == "reserve")
+    assert reserve["provider"] == "codex"
+    assert reserve["model"] == "gpt-5.5"
 
 
 def test_gateway_v2_budget_audit_records_actual_fallback_provider():

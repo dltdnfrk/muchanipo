@@ -32,10 +32,11 @@ class OpenAIProvider:
             if OpenAI is None:
                 raise RuntimeError("openai package is not installed")
             client = OpenAI(api_key=self.api_key)
+        model = kwargs.pop("model", self.model)
         response = client.responses.create(
-            model=kwargs.pop("model", self.model),
+            model=model,
             input=prompt,
             **kwargs,
         )
         text = getattr(response, "output_text", "") or str(response)
-        return ModelResult(text=text, provider=self.name, model=self.model, raw=response)
+        return ModelResult(text=text, provider=self.name, model=model, raw=response)

@@ -201,7 +201,7 @@ pub async fn start_pipeline(
                     }
                     emit_backend_event(
                         &stderr_app,
-                        BackendEvent::error(format!("python stderr: {line}")),
+                        BackendEvent::warning(format!("python stderr: {line}")),
                     );
                 }
                 Err(error) => emit_backend_event(
@@ -712,7 +712,7 @@ fn emit_backend_line(app: &AppHandle, line: &str) {
         Ok(event) => emit_backend_event(app, event),
         Err(error) => emit_backend_event(
             app,
-            BackendEvent::error(format!("invalid backend event JSON: {error}; line={line}")),
+            BackendEvent::warning(format!("invalid backend event JSON: {error}; line={line}")),
         ),
     }
 }
@@ -861,5 +861,16 @@ mod tests {
         assert!(should_buffer_backend_line(
             r#"{"event":"final_report","markdown":"done"}"#
         ));
+    }
+
+    #[test]
+    fn backend_warning_event_shape_is_non_fatal() {
+        let event = BackendEvent::warning("heads up");
+
+        assert_eq!(event.event, "warning");
+        assert_eq!(
+            event.fields.get("message").and_then(|value| value.as_str()),
+            Some("heads up")
+        );
     }
 }

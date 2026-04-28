@@ -9,6 +9,7 @@ export type BackendEventName =
   | "council_round_done"
   | "report_chunk"
   | "done"
+  | "warning"
   | "error";
 
 export interface BackendEvent {

@@ -145,6 +145,7 @@ export default function RunProgress() {
   const [tokenCards, setTokenCards] = useState<TokenCard[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const runErrorRef = useRef<string | null>(null);
+  const [runWarnings, setRunWarnings] = useState<string[]>([]);
   const [reportPreview, setReportPreview] = useState("");
   const [interviewPrompt, setInterviewPrompt] = useState<InterviewPrompt | null>(null);
   const [interviewAnswer, setInterviewAnswer] = useState("");
@@ -175,6 +176,12 @@ export default function RunProgress() {
         const message = (event.message as string) || "오류가 발생했어요.";
         runErrorRef.current = message;
         setRunError(message);
+        return;
+      }
+
+      if (event.event === "warning") {
+        const message = (event.message as string) || "경고가 발생했어요.";
+        setRunWarnings((prev) => [message, ...prev.filter((item) => item !== message)].slice(0, 3));
         return;
       }
 
@@ -349,6 +356,9 @@ export default function RunProgress() {
         const pending = localStorage.getItem(`run:${runId}:pending`);
         if (pending !== "1") return;
         localStorage.removeItem(`run:${runId}:pending`);
+        runErrorRef.current = null;
+        setRunError(null);
+        setRunWarnings([]);
         const topic = localStorage.getItem(`run:${runId}:topic`) || "";
         if (!topic) {
           setRunError("주제 정보가 없습니다.");
@@ -360,6 +370,7 @@ export default function RunProgress() {
         await submitIdea(topic, pipelineMode, envs);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        runErrorRef.current = msg;
         setRunError(msg);
       }
     });
@@ -460,6 +471,19 @@ export default function RunProgress() {
             >
               처음으로
             </button>
+          </div>
+        )}
+
+        {runWarnings.length > 0 && !runError && (
+          <div className="fade-in mb-6 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3">
+            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-amber-200">
+              실행 경고
+            </p>
+            {runWarnings.map((warning) => (
+              <p key={warning} className="break-all text-sm text-amber-100/80">
+                {warning}
+              </p>
+            ))}
           </div>
         )}
 
