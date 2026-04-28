@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
+from src.governance.budget import BudgetExceeded
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -189,11 +190,40 @@ class GatewayV2(ModelGateway):
             raise KeyError(f"stage {stage!r} fallback chain has no resolvable providers")
 
         reservation_id = None
-        estimated_usd = 0.0
         primary = chain_providers[0]
         if self.budget is not None:
-            estimated_usd = self.budget.estimate(stage=stage, prompt=prompt, provider=primary)
-            reservation_id = self.budget.reserve(stage=stage, estimated_usd=estimated_usd)
+            last_error: Exception | None = None
+            first_fallback_reason: str | None = None
+            for i, provider in enumerate(chain_providers):
+                estimated_usd = self.budget.estimate(stage=stage, prompt=prompt, provider=provider)
+                reservation_id = self.budget.reserve(stage=stage, estimated_usd=estimated_usd)
+                if reservation_id is False:
+                    error = BudgetExceeded("budget exceeded")
+                    self._record_fallback(stage, provider, error)
+                    last_error = error
+                    if first_fallback_reason is None:
+                        first_fallback_reason = f"primary {primary.name} failed: budget exceeded"
+                    continue
+                try:
+                    result = self.dispatch(provider, stage=stage, prompt=prompt, **kwargs)
+                except Exception as exc:
+                    last_error = exc
+                    self.budget.reconcile(reservation_id, actual_usd=0.0)
+                    self._record_fallback(stage, provider, exc)
+                    if first_fallback_reason is None:
+                        first_fallback_reason = f"primary {primary.name} failed: {exc}"
+                    continue
+
+                if i > 0 or provider is not primary:
+                    result.is_fallback = True
+                    result.fallback_reason = first_fallback_reason
+                actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
+                self.budget.reconcile(reservation_id, actual_usd=actual_usd)
+                self._audit(stage, primary, result, actual_usd, result.fallback_reason)
+                return result
+            raise RuntimeError(
+                f"FallbackChain {stage} exhausted ({len(chain_providers)} providers) — last: {last_error}"
+            ) from last_error
 
         chain = FallbackChain(
             name=stage,
