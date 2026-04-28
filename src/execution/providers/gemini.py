@@ -1,8 +1,4 @@
-"""Google Gemini provider — offline-safe stub.
-
-REST API form. Returns deterministic mock when GEMINI_API_KEY missing or
-GEMINI_OFFLINE=1.
-"""
+"""Google Gemini provider — search grounding, model routing, offline-safe."""
 
 from __future__ import annotations
 
@@ -12,8 +8,24 @@ from typing import Any
 
 from src.execution.models import ModelResult
 
-
 _DEFAULT_MODEL = "gemini-2.5-flash"
+_RESEARCH_MODEL = "gemini-2.5-pro"
+
+# Stage → model mapping (PRD-v2 §8.1)
+_STAGE_MODELS: dict[str, str] = {
+    "intake": _DEFAULT_MODEL,
+    "interview": _DEFAULT_MODEL,
+    "research": _RESEARCH_MODEL,
+    "evidence": _RESEARCH_MODEL,
+    "council": _RESEARCH_MODEL,
+    "report": _DEFAULT_MODEL,
+    "consensus": _RESEARCH_MODEL,
+    "eval": _DEFAULT_MODEL,
+}
+
+
+def _resolve_api_key() -> str | None:
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
 class GeminiProvider:
@@ -27,7 +39,7 @@ class GeminiProvider:
         offline: bool | None = None,
     ) -> None:
         self.model = model
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self.api_key = api_key or _resolve_api_key()
         self.endpoint_template = endpoint_template
         if offline is None:
             offline = bool(os.environ.get("GEMINI_OFFLINE")) or self.api_key is None
@@ -36,34 +48,81 @@ class GeminiProvider:
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
         if self.offline:
             return _mock_result(stage, prompt, model=self.model, provider=self.name)
-        return self._call_real(stage, prompt, **kwargs)
 
-    def _call_real(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:  # pragma: no cover
+        model = kwargs.pop("model", _STAGE_MODELS.get(stage, self.model))
+        search_grounding = kwargs.pop("search_grounding", stage in ("research", "evidence", "intake"))
+
+        return self._call_real(
+            stage=stage,
+            prompt=prompt,
+            model=model,
+            search_grounding=search_grounding,
+            **kwargs,
+        )
+
+    def _call_real(
+        self,
+        stage: str,
+        prompt: str,
+        model: str,
+        search_grounding: bool,
+        **kwargs: Any,
+    ) -> ModelResult:  # pragma: no cover
         import urllib.request
 
-        url = self.endpoint_template.format(model=self.model) + f"?key={self.api_key}"
-        body = json.dumps({
+        url = self.endpoint_template.format(model=model) + f"?key={self.api_key}"
+        body: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "maxOutputTokens": int(kwargs.pop("max_tokens", 1024)),
                 "temperature": float(kwargs.pop("temperature", 0.6)),
             },
-        }).encode("utf-8")
+        }
+        if search_grounding:
+            body["tools"] = [{"google_search": {}}]
+
         req = urllib.request.Request(
             url,
-            data=body,
+            data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+
         text = ""
         try:
             parts = payload["candidates"][0]["content"]["parts"]
             text = "".join(p.get("text", "") for p in parts)
         except (KeyError, IndexError, TypeError):
             text = json.dumps(payload)
-        return ModelResult(text=text, provider=self.name, model=self.model, raw=payload)
+
+        cost = _estimate_cost(model, payload)
+        return ModelResult(
+            text=text,
+            provider=self.name,
+            model=model,
+            cost_usd=cost,
+            raw=payload,
+        )
+
+
+def _estimate_cost(model: str, payload: dict[str, Any]) -> float:
+    """Estimate cost. Google AI Studio free tier is $0 for supported models."""
+    usage = payload.get("usageMetadata", {}) or {}
+    input_tokens = int(usage.get("promptTokenCount", 0) or 0)
+    output_tokens = int(usage.get("candidatesTokenCount", 0) or 0)
+
+    # Paid tier approximate pricing per 1M tokens (input / output)
+    # Gemini 2.5 Pro: $1.25 / $10, Flash: $0.15 / $0.60 (as of mid-2025)
+    pricing = {
+        "gemini-2.5-pro": (1.25, 10.0),
+        "gemini-2.5-flash": (0.15, 0.60),
+    }.get(model, (0.15, 0.60))
+
+    return round(
+        (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000, 6
+    )
 
 
 def _mock_result(stage: str, prompt: str, *, model: str, provider: str) -> ModelResult:
