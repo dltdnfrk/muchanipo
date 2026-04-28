@@ -9,6 +9,7 @@ export type BackendEventName =
   | "council_round_done"
   | "report_chunk"
   | "done"
+  | "warning"
   | "error";
 
 export interface BackendEvent {
@@ -27,8 +28,12 @@ export interface BackendAction {
   [key: string]: unknown;
 }
 
-export function startPipeline(topic: string): Promise<void> {
-  return invoke("start_pipeline", { topic });
+export function startPipeline(
+  topic: string,
+  pipeline: "stub" | "full" = "full",
+  envs: Record<string, string> = {},
+): Promise<void> {
+  return invoke("start_pipeline", { topic, pipeline, envs });
 }
 
 export function sendAction(action: BackendAction): Promise<void> {

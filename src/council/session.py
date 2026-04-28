@@ -7,7 +7,182 @@ from typing import Any
 
 from src.agents.generator import DebateAgentSpec
 from src.agents.mirofish import debate_agent_to_council_persona
+from src.council.karpathy_prompts import (
+    build_chairman_prompt,
+    build_individual_prompt,
+    build_peer_review_prompt,
+)
+from src.council.parsers import RoundResult, parse_council_response
+from src.council.round_layers import RoundLayer
+from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway
+
+
+@dataclass(frozen=True)
+class IndividualOpinion:
+    persona_id: str
+    key_claim: str
+    body_claims: list[str] = field(default_factory=list)
+    evidence_ref_ids: list[str] = field(default_factory=list)
+    confidence_score: float = 0.0
+    raw_response: str = ""
+
+
+@dataclass(frozen=True)
+class PeerComment:
+    reviewer_id: str
+    text: str
+    stance: str = ""
+    confidence_score: float = 0.0
+    raw_response: str = ""
+
+
+@dataclass
+class PlateauDetector:
+    """Detect confidence plateaus across structured council rounds."""
+
+    window: int = 3
+    tolerance: float = 0.05
+
+    def should_stop(self, rounds: list[RoundResult]) -> tuple[bool, str]:
+        if len(rounds) < self.window:
+            return False, f"plateau check skipped: only {len(rounds)} rounds"
+
+        recent = rounds[-self.window :]
+        round_ids = [round_result.layer_id for round_result in recent]
+        if len(set(round_ids)) != 1:
+            return False, (
+                f"plateau check skipped across mandatory layers {round_ids}: "
+                "only repeated deliberation of the same layer can stop early"
+            )
+
+        confidences = [round_result.confidence_score for round_result in recent]
+        spread = max(confidences) - min(confidences)
+        if spread <= self.tolerance:
+            return True, (
+                f"plateau detected over {round_ids}: confidence spread "
+                f"{spread:.3f} <= {self.tolerance:.2f}"
+            )
+        return False, (
+            f"no plateau over {round_ids}: confidence spread "
+            f"{spread:.3f} > {self.tolerance:.2f}"
+        )
+
+
+class Session:
+    """Run the 10-layer council through GatewayV2 and parse structured results."""
+
+    def __init__(
+        self,
+        gateway: GatewayV2,
+        layers: list[RoundLayer],
+        personas: list[Any],
+        plateau: PlateauDetector | None = None,
+    ) -> None:
+        self.gateway = gateway
+        self.layers = list(layers)
+        self.personas = list(personas)
+        self.plateau = plateau or PlateauDetector(window=11, tolerance=0.05)
+        self.rounds: list[RoundResult] = []
+        self.stopped = False
+        self.stop_reason: str | None = None
+
+    def run_one_round(self, round_no: int) -> RoundResult:
+        if round_no < 1:
+            raise ValueError("round_no must be >= 1")
+        if round_no > len(self.layers):
+            raise ValueError(f"round_no {round_no} exceeds configured layers ({len(self.layers)})")
+
+        layer = self.layers[round_no - 1]
+        individuals = self._individual_stage(layer, self.personas)
+        peer_reviews = self._peer_review_stage(individuals, layer)
+        round_result = self._chairman_synthesis(individuals, peer_reviews, layer)
+        self.rounds.append(round_result)
+
+        plateau, reason = self.plateau.should_stop(self.rounds)
+        self.stop_reason = reason
+        if plateau:
+            self.stopped = True
+        return round_result
+
+    def run_all(self, allow_early_stop: bool = False) -> list[RoundResult]:
+        max_rounds = min(10, len(self.layers))
+        for round_no in range(1, max_rounds + 1):
+            if allow_early_stop and self.stopped:
+                break
+            self.run_one_round(round_no)
+        return list(self.rounds)
+
+    def _individual_stage(
+        self,
+        layer: RoundLayer,
+        personas: list[Any],
+    ) -> dict[str, IndividualOpinion]:
+        prev_summary = _previous_summary(self.rounds)
+        opinions: dict[str, IndividualOpinion] = {}
+        for idx, persona in enumerate(personas, start=1):
+            persona_id = _persona_id(persona, idx)
+            prompt = build_individual_prompt(persona, layer, prev_summary)
+            result = self.gateway.call("council", prompt, council_stage="individual", layer_id=layer.layer_id)
+            parsed = parse_council_response(getattr(result, "text", str(result)), layer)
+            opinions[persona_id] = IndividualOpinion(
+                persona_id=persona_id,
+                key_claim=parsed.key_claim,
+                body_claims=list(parsed.body_claims),
+                evidence_ref_ids=list(parsed.evidence_ref_ids),
+                confidence_score=parsed.confidence_score,
+                raw_response=getattr(result, "text", str(result)),
+            )
+        return opinions
+
+    def _peer_review_stage(
+        self,
+        individuals: dict[str, IndividualOpinion],
+        layer: RoundLayer,
+    ) -> dict[str, list[PeerComment]]:
+        reviews: dict[str, list[PeerComment]] = {}
+        for idx, persona in enumerate(self.personas, start=1):
+            persona_id = _persona_id(persona, idx)
+            blinded = [
+                {
+                    "key_claim": opinion.key_claim,
+                    "body_claims": list(opinion.body_claims),
+                    "confidence_score": opinion.confidence_score,
+                }
+                for other_id, opinion in individuals.items()
+                if other_id != persona_id
+            ]
+            prompt = build_peer_review_prompt(persona, blinded, layer)
+            result = self.gateway.call("council", prompt, council_stage="peer_review", layer_id=layer.layer_id)
+            text = getattr(result, "text", str(result))
+            reviews[persona_id] = [_parse_peer_comment(persona_id, text)]
+        return reviews
+
+    def _chairman_synthesis(
+        self,
+        individuals: dict[str, IndividualOpinion],
+        peer_reviews: dict[str, list[PeerComment]],
+        layer: RoundLayer,
+    ) -> RoundResult:
+        prompt = build_chairman_prompt(individuals, peer_reviews, layer)
+        result = self.gateway.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
+        text = getattr(result, "text", str(result)) if result else _fallback_chairman_json(individuals, peer_reviews)
+        parsed = parse_council_response(text, layer)
+        if not parsed.disagreements:
+            parsed = RoundResult(
+                layer_id=parsed.layer_id,
+                chapter_title=parsed.chapter_title,
+                key_claim=parsed.key_claim,
+                body_claims=list(parsed.body_claims),
+                evidence_ref_ids=list(parsed.evidence_ref_ids),
+                confidence_score=parsed.confidence_score,
+                framework=parsed.framework,
+                disagreements=_derive_disagreements(peer_reviews),
+                next_actions=list(parsed.next_actions),
+                raw_response=parsed.raw_response,
+                framework_output=parsed.framework_output,
+            )
+        return parsed
 
 
 @dataclass
@@ -177,3 +352,90 @@ def _write_round_result(
     persona_slug = persona["name"].replace(" ", "_")
     path = council_dir / f"round-{round_num}-{persona_slug}.json"
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _persona_id(persona: Any, idx: int) -> str:
+    if isinstance(persona, dict):
+        return str(persona.get("persona_id") or persona.get("name") or f"persona-{idx}")
+    return str(
+        getattr(persona, "persona_id", None)
+        or getattr(persona, "name", None)
+        or f"persona-{idx}"
+    )
+
+
+def _previous_summary(rounds: list[RoundResult]) -> str:
+    if not rounds:
+        return ""
+    return "\n".join(
+        f"- {round_result.layer_id}: {round_result.key_claim}"
+        for round_result in rounds[-3:]
+    )
+
+
+def _parse_peer_comment(reviewer_id: str, text: str) -> PeerComment:
+    import json
+
+    stripped = text.strip()
+    payload: Any = None
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            payload = None
+    if isinstance(payload, dict):
+        critiques = payload.get("critiques") or payload.get("critique") or payload.get("suggested_revision")
+        if isinstance(critiques, list):
+            comment_text = "; ".join(str(item) for item in critiques if item)
+        else:
+            comment_text = str(critiques or payload.get("stance") or stripped)
+        return PeerComment(
+            reviewer_id=reviewer_id,
+            text=comment_text,
+            stance=str(payload.get("stance") or ""),
+            confidence_score=_coerce_float(payload.get("confidence_score"), default=0.0),
+            raw_response=text,
+        )
+    return PeerComment(reviewer_id=reviewer_id, text=stripped, raw_response=text)
+
+
+def _derive_disagreements(peer_reviews: dict[str, list[PeerComment]]) -> list[str]:
+    disagreements = [
+        comment.text
+        for comments in peer_reviews.values()
+        for comment in comments
+        if any(token in comment.text.lower() for token in ("disagree", "불일치", "risk", "리스크", "critique"))
+    ]
+    return disagreements or ["chairman synthesis found no explicit disagreement"]
+
+
+def _fallback_chairman_json(
+    individuals: dict[str, IndividualOpinion],
+    peer_reviews: dict[str, list[PeerComment]],
+) -> str:
+    import json
+
+    claims = [opinion.key_claim for opinion in individuals.values() if opinion.key_claim]
+    comments = [
+        comment.text
+        for values in peer_reviews.values()
+        for comment in values
+        if comment.text
+    ]
+    return json.dumps(
+        {
+            "key_claim": claims[0] if claims else "Chairman synthesis unavailable",
+            "body_claims": claims[1:] + comments,
+            "confidence_score": 0.5,
+            "disagreements": comments[:3],
+            "next_actions": ["verify chairman synthesis with evidence"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

@@ -50,9 +50,27 @@ KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-# Ollama generation defaults
+# Endpoint overrides (hardcoded defaults are fallbacks)
+KIMI_API_ENDPOINT = os.environ.get(
+    "KIMI_API_ENDPOINT", "https://api.moonshot.cn/v1/chat/completions"
+)
+MINIMAX_API_ENDPOINT = os.environ.get(
+    "MINIMAX_API_ENDPOINT", "https://api.minimaxi.chat/v1/text/chatcompletion_v2"
+)
+OPENROUTER_API_ENDPOINT = os.environ.get(
+    "OPENROUTER_API_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions"
+)
+OPENROUTER_REFERER = os.environ.get("OPENROUTER_REFERER", "https://muchanipo.local")
+
+# Timeout overrides (hardcoded defaults are fallbacks)
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "120"))
 CODEX_TIMEOUT = int(os.environ.get("CODEX_TIMEOUT", "180"))
+OLLAMA_HEALTH_TIMEOUT = int(os.environ.get("OLLAMA_HEALTH_TIMEOUT", "5"))
+CODEX_CHECK_TIMEOUT = int(os.environ.get("CODEX_CHECK_TIMEOUT", "10"))
+OLLAMA_EMBED_TIMEOUT = int(os.environ.get("OLLAMA_EMBED_TIMEOUT", "30"))
+KIMI_TIMEOUT = int(os.environ.get("KIMI_TIMEOUT", "120"))
+MINIMAX_TIMEOUT = int(os.environ.get("MINIMAX_TIMEOUT", "120"))
+OPENROUTER_TIMEOUT = int(os.environ.get("OPENROUTER_TIMEOUT", "120"))
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +120,7 @@ def _ollama_available(host: str = OLLAMA_HOST) -> bool:
     url = f"{host}/api/tags"
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=OLLAMA_HEALTH_TIMEOUT) as resp:
             return resp.status == 200
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         logger.warning("ollama health check failed: %s", exc)
@@ -114,7 +132,7 @@ def _ollama_models(host: str = OLLAMA_HOST) -> list[str]:
     url = f"{host}/api/tags"
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=OLLAMA_HEALTH_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return [m["name"] for m in data.get("models", [])]
     except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
@@ -127,7 +145,7 @@ def _codex_available() -> bool:
     try:
         result = subprocess.run(
             ["codex", "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=CODEX_CHECK_TIMEOUT,
             env={**os.environ, "no_proxy": "*"},
         )
         return result.returncode == 0
@@ -140,7 +158,7 @@ def _codex_version() -> str:
     try:
         result = subprocess.run(
             ["codex", "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=CODEX_CHECK_TIMEOUT,
             env={**os.environ, "no_proxy": "*"},
         )
         return result.stdout.strip() if result.returncode == 0 else "unknown"
@@ -237,7 +255,7 @@ class ModelRouter:
             }
 
         # 4. Codex 모델
-        if model in ("o3", "gpt-5.4-codex"):
+        if model in ("o3", "gpt-5.5"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -325,7 +343,7 @@ class ModelRouter:
                 "note": f"fallback → {model}",
                 "is_fallback": True,
             }
-        if model in ("o3", "gpt-5.4-codex"):
+        if model in ("o3", "gpt-5.5"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -549,7 +567,7 @@ class ModelRouter:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=OLLAMA_EMBED_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             embeddings = body.get("embeddings", [])
             if embeddings:
@@ -677,8 +695,7 @@ class ModelRouter:
                 "Kimi 구독 후 설정하세요."
             )
 
-        # Kimi API endpoint (placeholder — 실제 엔드포인트로 교체 필요)
-        url = "https://api.moonshot.cn/v1/chat/completions"
+        url = KIMI_API_ENDPOINT
 
         messages: list[dict[str, str]] = []
         if system:
@@ -703,7 +720,7 @@ class ModelRouter:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=KIMI_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             choices = body.get("choices", [])
             if choices:
@@ -730,8 +747,7 @@ class ModelRouter:
                 "MiniMax 구독 후 설정하세요."
             )
 
-        # MiniMax API endpoint (placeholder — 실제 엔드포인트로 교체 필요)
-        url = "https://api.minimaxi.chat/v1/text/chatcompletion_v2"
+        url = MINIMAX_API_ENDPOINT
 
         messages: list[dict[str, str]] = []
         if system:
@@ -756,7 +772,7 @@ class ModelRouter:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=MINIMAX_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             choices = body.get("choices", [])
             if choices:
@@ -780,7 +796,7 @@ class ModelRouter:
         if not OPENROUTER_API_KEY:
             raise RuntimeError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다.")
 
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = OPENROUTER_API_ENDPOINT
 
         messages: list[dict[str, str]] = []
         if system:
@@ -799,14 +815,14 @@ class ModelRouter:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "HTTP-Referer": "https://muchanipo.local",
+                "HTTP-Referer": OPENROUTER_REFERER,
                 "X-Title": "MuchaNipo",
             },
             method="POST",
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=OPENROUTER_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             choices = body.get("choices", [])
             if choices:
@@ -904,7 +920,7 @@ class ModelRouter:
                     "response": None,
                     "note": "Claude Agent tool로 실행 필요",
                 }
-            elif model in ("o3", "gpt-5.4-codex"):
+            elif model in ("o3", "gpt-5.5"):
                 response = self.call_codex(model, prompt)
                 provider = "codex"
             elif model.startswith("kimi"):
@@ -1020,7 +1036,7 @@ class ModelRouter:
             },
             "codex": {
                 "o3": {"input_per_1k": 0.010, "output_per_1k": 0.040},
-                "gpt-5.4-codex": {"input_per_1k": 0.002, "output_per_1k": 0.008},
+                "gpt-5.5": {"input_per_1k": 0.002, "output_per_1k": 0.008},
             },
         }
 

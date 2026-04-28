@@ -16,7 +16,12 @@ except ImportError:  # pragma: no cover
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self, model: str = "gpt-5.4", api_key: str | None = None, client: Any = None) -> None:
+    def __init__(
+        self,
+        model: str = os.environ.get("MUCHANIPO_OPENAI_MODEL", "gpt-5.5"),
+        api_key: str | None = None,
+        client: Any = None,
+    ) -> None:
         self.model = model
         self.client = client
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -27,10 +32,11 @@ class OpenAIProvider:
             if OpenAI is None:
                 raise RuntimeError("openai package is not installed")
             client = OpenAI(api_key=self.api_key)
+        model = kwargs.pop("model", self.model)
         response = client.responses.create(
-            model=kwargs.pop("model", self.model),
+            model=model,
             input=prompt,
             **kwargs,
         )
         text = getattr(response, "output_text", "") or str(response)
-        return ModelResult(text=text, provider=self.name, model=self.model, raw=response)
+        return ModelResult(text=text, provider=self.name, model=model, raw=response)

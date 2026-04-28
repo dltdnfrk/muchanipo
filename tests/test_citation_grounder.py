@@ -31,11 +31,18 @@ def test_ground_claims_prefers_substring_support(sample_evidence):
     assert verdict["supporting_evidence_ids"] == ["E1"]
 
 
-def test_ground_claims_allows_korean_token_overlap(sample_evidence):
+def test_ground_claims_allows_korean_token_overlap():
     """narrow C1: substring 미일치 시 overlap 만으로는 'partial' 까지만 인정."""
+    evidence = [
+        {
+            "id": "E1",
+            "source": "ops-note",
+            "quote": "한국어 토큰 중첩 검증은 근거 문장과 핵심 주장을 비교한다.",
+        }
+    ]
     result = grounder.ground_claims(
         consensus="한국어 토큰 중첩 검증은 핵심 주장을 비교한다.",
-        evidence=sample_evidence,
+        evidence=evidence,
         overlap_threshold=0.5,
     )
 
@@ -111,6 +118,7 @@ def test_substring_match_under_12_chars_now_supported():
             "id": "E1",
             "source": "ops-note",
             "quote": "오늘 검증 패스 가동된다 보고 받음.",
+            "source_text": "오늘 검증 패스 가동된다 보고 받음.",
         }
     ]
 
@@ -164,7 +172,7 @@ def test_redact_applied_to_per_claim_verdict_when_pii_present():
 
 
 def test_lockdown_optional_import_failure_graceful(monkeypatch):
-    """lockdown 모듈이 None 이어도 ground_claims 가 정상 동작."""
+    """lockdown 모듈이 None 이어도 source_text 기반 ground_claims 가 정상 동작."""
     monkeypatch.setattr(grounder, "_lockdown", None)
 
     result = grounder.ground_claims(
@@ -174,6 +182,7 @@ def test_lockdown_optional_import_failure_graceful(monkeypatch):
                 "id": "E1",
                 "source": "market-brief",
                 "quote": "MuchaNipo replay harness reduces manual regression review by 25% in 2026.",
+                "source_text": "MuchaNipo replay harness reduces manual regression review by 25% in 2026.",
             }
         ],
     )
@@ -209,3 +218,22 @@ def test_fabricated_quote_with_high_overlap_blocked():
     verdict = result["per_claim_verdict"][0]
     assert verdict["status"] != "supported"
     assert result["supported"] == 0
+
+
+def test_quote_only_direct_match_capped_to_partial():
+    claim = "MuchaNipo replay harness reduces manual regression review by 25% in 2026."
+    result = grounder.ground_claims(
+        consensus=claim,
+        evidence=[
+            {
+                "id": "E1",
+                "source": "market-brief",
+                "quote": claim,
+            }
+        ],
+    )
+
+    verdict = result["per_claim_verdict"][0]
+    assert verdict["status"] == "partial"
+    assert result["supported"] == 0
+    assert result["partial"] == 1

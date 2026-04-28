@@ -1,21 +1,51 @@
 #!/usr/bin/env python3
 """HACHIMI 스타일 페르소나 생성 파이프라인.
 
-외부 LLM 호출 없이 Propose -> Validate -> Revise 단계를 재현한다.
-온톨로지는 단순 mapping으로 받아 테스트와 야간 자동화에서 안전하게 쓸 수
-있도록 stdlib만 사용한다.
+기본값은 외부 LLM 호출 없이 Propose -> Validate -> Revise 단계를 재현한다.
+GatewayV2가 주입되면 Stage 1 propose와 Stage 2 deep validate에 LLM 모드를
+추가로 사용하고, 실패 시 기존 휴리스틱 경로로 폴백한다.
+
+PRD-v2 §5.2 Neuro-Symbolic Validator 추가:
+    - Fast Validator (규칙 기반, 즉시 실행) — ontology / denied_terms /
+      value_axes / lockdown / AUP risk
+    - Deep Validator — 기본 키워드 오버랩 + 선택적 LLM judge + 다양성
+      (MAP-Elites) + 한국어 실명 타겟팅 추가 차단
+
+PRD-v2 §5.5 EvoAgentX MAP-Elites 통합:
+    - generate() 메서드가 DiversityMap을 받아 Final 단계에서 셀 점유 강제
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+import re
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 try:  # 안전 모듈이 없는 독립 실행 환경에서도 fail-closed 검증 결과를 제공한다.
     from src.safety.lockdown import aup_risk, validate_persona_manifest
 except Exception:  # pragma: no cover - repo 외부 재사용 fallback
     aup_risk = None  # type: ignore[assignment]
     validate_persona_manifest = None  # type: ignore[assignment]
+
+try:
+    from src.council.diversity_mapper import DiversityMap
+except Exception:  # pragma: no cover - 순환 import 회피
+    DiversityMap = None  # type: ignore[assignment]
+
+from src.council.persona_prompts import (
+    build_persona_deep_validate_prompt,
+    build_persona_propose_prompt,
+    parse_persona_proposal_response,
+    parse_persona_validation_response,
+)
+from src.execution.gateway_v2 import GatewayV2
+
+
+# ---- Korean real-name targeting guard --------------------------------------
+# 한국어 풀네임(2~4글자 한글 성+이름)을 광범위하게 매칭. 실명 + 직책/관계
+# 토큰이 함께 오면 위험 신호로 판단.
+_KOREAN_NAME_RX = re.compile(r"[가-힣]{2,4}\s*(?:대표|회장|사장|이사|장관|총장|교수)")
+_KOREAN_DOXX_TOKENS = ("주민등록", "거주지", "주소", "휴대폰번호", "전화번호")
 
 
 DEFAULT_VALUE_AXES: Dict[str, Any] = {
@@ -98,7 +128,15 @@ class PersonaGenerator:
     - denied_terms / high_risk_terms: 안전 차단 용어
     """
 
-    def __init__(self, risk_threshold: float = 0.45) -> None:
+    def __init__(
+        self,
+        gateway: GatewayV2 | None = None,
+        risk_threshold: float = 0.45,
+    ) -> None:
+        if isinstance(gateway, (int, float)) and risk_threshold == 0.45:
+            risk_threshold = float(gateway)
+            gateway = None
+        self.gateway = gateway
         self.risk_threshold = float(risk_threshold)
 
     def propose(
@@ -165,6 +203,80 @@ class PersonaGenerator:
                     allowed_tools=allowed_tools,
                     required_outputs=required_outputs,
                     value_axes=dict(base_axes),
+                    manifest=manifest_extra,
+                )
+            )
+        return drafts
+
+    def propose_with_llm(
+        self,
+        ontology: Mapping[str, Any],
+        target_count: int,
+        topic: str,
+    ) -> List[Draft]:
+        """Use GatewayV2 to propose Drafts, falling back to heuristic propose on failure."""
+
+        if target_count < 1:
+            return []
+        if self.gateway is None:
+            return self.propose(ontology, target_count=target_count)
+
+        prompt = build_persona_propose_prompt(ontology, target_count, topic)
+        try:
+            result = self.gateway.call("council", prompt)
+            raw_personas = parse_persona_proposal_response(result.text)
+            drafts = self._drafts_from_llm_specs(raw_personas, ontology, target_count)
+        except Exception:
+            return self.propose(ontology, target_count=target_count)
+        if len(drafts) < target_count:
+            fallback = self.propose(ontology, target_count=target_count)
+            used_ids = {draft.persona_id for draft in drafts}
+            for draft in fallback:
+                if len(drafts) >= target_count:
+                    break
+                if draft.persona_id not in used_ids:
+                    drafts.append(draft)
+        return drafts[:target_count]
+
+    def _drafts_from_llm_specs(
+        self,
+        specs: Sequence[Mapping[str, Any]],
+        ontology: Mapping[str, Any],
+        target_count: int,
+    ) -> List[Draft]:
+        roles = _string_list(ontology.get("roles")) or ["evidence_reviewer"]
+        allowed_tools_default = _string_list(ontology.get("allowed_tools")) or ["read_file"]
+        outputs_default = _string_list(ontology.get("required_outputs")) or ["report"]
+        axes_default = _value_axes(ontology.get("value_axes"))
+
+        drafts: List[Draft] = []
+        for index, spec in enumerate(specs[:target_count]):
+            role = _clean_text(spec.get("role")) or roles[index % len(roles)]
+            intent = (
+                _clean_text(spec.get("intent"))
+                or _clean_text(spec.get("purpose"))
+                or "Summarize grounded evidence and report uncertainty."
+            )
+            persona_id = _clean_text(spec.get("persona_id")) or f"persona-{index + 1:03d}"
+            name = _clean_text(spec.get("name")) or f"{role.replace('_', ' ').title()} {index + 1}"
+            allowed_tools = _string_list(spec.get("allowed_tools")) or allowed_tools_default
+            required_outputs = _string_list(spec.get("required_outputs")) or outputs_default
+            value_axes = _value_axes(spec.get("value_axes") or axes_default)
+            manifest = spec.get("manifest")
+            manifest_extra = dict(manifest) if isinstance(manifest, Mapping) else {}
+            for key in ("topic_fit", "decision_criteria", "failure_mode"):
+                if key in spec and key not in manifest_extra:
+                    manifest_extra[key] = spec[key]
+
+            drafts.append(
+                Draft(
+                    persona_id=persona_id,
+                    name=name,
+                    role=role,
+                    intent=intent,
+                    allowed_tools=allowed_tools,
+                    required_outputs=required_outputs,
+                    value_axes=value_axes,
                     manifest=manifest_extra,
                 )
             )
@@ -271,6 +383,321 @@ class PersonaGenerator:
 
         return issues
 
+    # ------------------------------------------------------------------
+    # HACHIMI Neuro-Symbolic Deep Validator (PRD-v2 §5.2)
+    # ------------------------------------------------------------------
+
+    def deep_validate(
+        self,
+        drafts: Sequence[Draft],
+        ontology: Mapping[str, Any],
+        topic_keywords: Optional[Sequence[str]] = None,
+        diversity_map: Any = None,
+        topic: Optional[str] = None,
+    ) -> ValidationReport:
+        """Fast 통과한 페르소나에만 적용되는 깊은 검증.
+
+        - Korean real-name targeting (실명 + 직책 패턴) 차단
+        - 토픽 관련성 (keyword overlap, 0.3 미만이면 reject)
+        - MAP-Elites 다양성 (셀 점유 충돌이면 reject)
+
+        LLM 호출 없이 stdlib만으로 동작 — Phase 2에서 LLM judge 추가 가능.
+        """
+        issues: List[ValidationIssue] = []
+        valid_ids: List[str] = []
+        topic_set = {str(k).strip().lower() for k in (topic_keywords or []) if str(k).strip()}
+        resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+
+        for draft in drafts:
+            persona_issues: List[ValidationIssue] = []
+            text_lower = _manifest_text(draft.to_manifest()).lower()
+
+            # Korean real-name + 직책 패턴 차단
+            if _KOREAN_NAME_RX.search(text_lower) or _KOREAN_NAME_RX.search(text_lower.replace(" ", " ")):
+                persona_issues.append(
+                    _issue(draft, "deep.korean_real_name", "Korean real-name targeting suspected")
+                )
+            for tok in _KOREAN_DOXX_TOKENS:
+                if tok in text_lower:
+                    persona_issues.append(
+                        _issue(draft, "deep.pii_token", f"PII-style token present: {tok}")
+                    )
+
+            # 토픽 관련성 (keyword overlap)
+            if topic_set:
+                relevance = _topic_relevance(text_lower, topic_set)
+                if relevance < 0.3:
+                    persona_issues.append(
+                        _issue(
+                            draft,
+                            "deep.topic_relevance",
+                            f"topic relevance {relevance:.2f} < 0.3",
+                        )
+                    )
+
+            if self.gateway is not None:
+                persona_issues.extend(
+                    self._deep_validate_llm(draft, ontology, resolved_topic)
+                )
+
+            # MAP-Elites 다양성 — 점유된 셀이면 reject (admit는 generate에서 별도 호출)
+            if diversity_map is not None:
+                axes = draft.to_manifest().get("value_axes") or {}
+                if hasattr(diversity_map, "is_occupied") and diversity_map.is_occupied(axes):
+                    persona_issues.append(
+                        _issue(
+                            draft,
+                            "deep.diversity_collision",
+                            "diversity cell already occupied",
+                        )
+                    )
+
+            if persona_issues:
+                issues.extend(persona_issues)
+            else:
+                valid_ids.append(draft.persona_id)
+
+        return ValidationReport(valid_ids=valid_ids, issues=issues)
+
+    def _deep_validate_llm(
+        self,
+        draft: Draft,
+        ontology: Mapping[str, Any],
+        topic: str,
+    ) -> List[ValidationIssue]:
+        """Ask the LLM judge whether a draft is topic-relevant."""
+
+        if self.gateway is None:
+            return []
+        prompt = build_persona_deep_validate_prompt(draft, ontology, topic)
+        try:
+            result = self.gateway.call("council", prompt)
+            score, reason, issues = parse_persona_validation_response(result.text)
+        except Exception:
+            return []
+        if score < 0.3:
+            detail = reason or "; ".join(issues) or f"LLM relevance {score:.2f} < 0.3"
+            return [_issue(draft, "deep.llm_topic_relevance", detail)]
+        return []
+
+    # ------------------------------------------------------------------
+    # HACHIMI 3-iter Revise Loop (PRD-v2 §5.2 Stage 3)
+    # ------------------------------------------------------------------
+
+    def revise_drafts(
+        self,
+        drafts: Sequence[Draft],
+        report: ValidationReport,
+        ontology: Mapping[str, Any],
+    ) -> List[Draft]:
+        """검증 실패 Draft를 수정해 새 Draft 시퀀스 반환.
+
+        실패 코드별 자동 수정 전략:
+            - ontology.tools     -> 허용 도구만 남김
+            - ontology.outputs   -> 누락 산출물 추가
+            - ontology.role      -> 첫 허용 role로 교체
+            - aup.denied_term    -> intent에서 해당 term 제거
+            - aup.risk           -> intent를 안전 템플릿으로 강등
+            - lockdown           -> intent를 안전 템플릿으로 강등
+            - value_axes         -> 기본 값으로 재초기화
+
+        deep.* 코드는 propose 단계에서 처리 — 여기서는 fast 코드만 다룸.
+        """
+        allowed_tools = set(_string_list(ontology.get("allowed_tools")))
+        required_outputs = _string_list(ontology.get("required_outputs"))
+        roles = _string_list(ontology.get("roles"))
+
+        new_drafts: List[Draft] = []
+        for draft in drafts:
+            persona_issues = report.issues_for(draft.persona_id)
+            if not persona_issues:
+                new_drafts.append(draft)
+                continue
+
+            codes = {issue.code for issue in persona_issues}
+            new_intent = draft.intent
+            new_tools = list(draft.allowed_tools)
+            new_outputs = list(draft.required_outputs)
+            new_role = draft.role
+            new_axes = dict(draft.value_axes)
+
+            if "ontology.tools" in codes and allowed_tools:
+                new_tools = [t for t in new_tools if t in allowed_tools]
+                if not new_tools:
+                    new_tools = sorted(allowed_tools)[:1]
+
+            if "ontology.outputs" in codes and required_outputs:
+                for out in required_outputs:
+                    if out not in new_outputs:
+                        new_outputs.append(out)
+
+            if "ontology.role" in codes and roles:
+                new_role = roles[0]
+
+            if {"aup.denied_term", "aup.risk", "lockdown"} & codes:
+                new_intent = _SAFE_FALLBACK_INTENT
+
+            if "value_axes" in codes:
+                new_axes = dict(DEFAULT_VALUE_AXES)
+
+            new_drafts.append(
+                replace(
+                    draft,
+                    intent=new_intent,
+                    allowed_tools=new_tools,
+                    required_outputs=new_outputs,
+                    role=new_role,
+                    value_axes=new_axes,
+                )
+            )
+        return new_drafts
+
+    # ------------------------------------------------------------------
+    # End-to-end HACHIMI generator
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        ontology: Mapping[str, Any],
+        target_count: int,
+        seed_personas: Optional[Sequence[Mapping[str, Any]]] = None,
+        max_revisions: int = 3,
+        diversity_map: Any = None,
+        topic_keywords: Optional[Sequence[str]] = None,
+        topic: Optional[str] = None,
+    ) -> Tuple[List[FinalPersona], Dict[str, Any]]:
+        """propose → fast validate → (revise → re-validate) ×3 → deep validate → MAP-Elites → finalize.
+
+        Returns:
+            (finals, telemetry) — telemetry 키:
+                ``revisions_used``, ``fast_failed_ids``, ``deep_failed_ids``,
+                ``fallbacks_used``, ``coverage_after_admit``
+        """
+        telemetry: Dict[str, Any] = {
+            "revisions_used": 0,
+            "fast_failed_ids": [],
+            "deep_failed_ids": [],
+            "fallbacks_used": 0,
+            "coverage_after_admit": 0.0,
+        }
+
+        if self.gateway is not None and not seed_personas:
+            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+            drafts = self.propose_with_llm(
+                ontology,
+                target_count=target_count,
+                topic=resolved_topic,
+            )
+        else:
+            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+            drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
+
+        # Fast loop with up to max_revisions iterations
+        for iteration in range(max_revisions):
+            report = self.validate(drafts, ontology, value_axes_required=True)
+            if report.ok:
+                break
+            telemetry["revisions_used"] = iteration + 1
+            drafts = self.revise_drafts(drafts, report, ontology)
+
+        final_fast = self.validate(drafts, ontology, value_axes_required=True)
+        telemetry["fast_failed_ids"] = [
+            d.persona_id for d in drafts if d.persona_id not in final_fast.valid_ids
+        ]
+        survivors = [d for d in drafts if d.persona_id in final_fast.valid_ids]
+
+        # Deep validation
+        deep_report = self.deep_validate(
+            survivors,
+            ontology,
+            topic_keywords=topic_keywords,
+            diversity_map=diversity_map,
+            topic=resolved_topic,
+        )
+        telemetry["deep_failed_ids"] = [
+            d.persona_id for d in survivors if d.persona_id not in deep_report.valid_ids
+        ]
+        deep_survivors = [d for d in survivors if d.persona_id in deep_report.valid_ids]
+
+        # MAP-Elites admit (selected ones go to map)
+        admitted: List[Draft] = []
+        if diversity_map is not None and hasattr(diversity_map, "admit"):
+            for draft in deep_survivors:
+                axes = draft.to_manifest().get("value_axes") or {}
+                if diversity_map.admit(draft.persona_id, axes, fitness=1.0):
+                    admitted.append(draft)
+            telemetry["coverage_after_admit"] = float(diversity_map.coverage())
+        else:
+            admitted = deep_survivors
+
+        # Build finals from admitted set
+        finals: List[FinalPersona] = []
+        for draft in admitted:
+            manifest = draft.to_manifest()
+            manifest.setdefault("value_axes", dict(DEFAULT_VALUE_AXES))
+            finals.append(
+                FinalPersona(
+                    persona_id=draft.persona_id,
+                    name=draft.name,
+                    role=draft.role,
+                    manifest=manifest,
+                    revision_notes=[
+                        "validated_against_ontology",
+                        "lockdown_checked",
+                        "deep_validated",
+                    ],
+                )
+            )
+
+        # Fallback fill — under target_count → safe preset
+        shortage = target_count - len(finals)
+        if shortage > 0:
+            for i in range(shortage):
+                fb = _build_fallback_persona(ontology, len(finals) + 1)
+                finals.append(fb)
+            telemetry["fallbacks_used"] = shortage
+
+        return finals, telemetry
+
+
+# ---------- module-level helpers --------------------------------------------
+
+
+_SAFE_FALLBACK_INTENT = "Summarize grounded evidence and report uncertainty without suggesting risky actions."
+
+
+def _topic_relevance(text_lower: str, topic_set: set) -> float:
+    """간단한 keyword overlap 기반 0~1 관련성 점수."""
+    if not topic_set:
+        return 1.0
+    hits = sum(1 for kw in topic_set if kw in text_lower)
+    return hits / max(len(topic_set), 1)
+
+
+def _build_fallback_persona(ontology: Mapping[str, Any], index: int) -> FinalPersona:
+    """모든 검증을 통과하는 안전 프리셋 페르소나."""
+    roles = _string_list(ontology.get("roles")) or ["evidence_reviewer"]
+    allowed_tools = _string_list(ontology.get("allowed_tools")) or ["read_file"]
+    required_outputs = _string_list(ontology.get("required_outputs")) or ["report"]
+
+    persona_id = f"persona-fallback-{index:03d}"
+    role = roles[0]
+    manifest = {
+        "intent": _SAFE_FALLBACK_INTENT,
+        "allowed_tools": list(allowed_tools[:1]),
+        "required_outputs": list(required_outputs),
+        "role": role,
+        "value_axes": dict(DEFAULT_VALUE_AXES),
+        "fallback": True,
+    }
+    return FinalPersona(
+        persona_id=persona_id,
+        name=f"Fallback {role.replace('_', ' ').title()} {index}",
+        role=role,
+        manifest=manifest,
+        revision_notes=["fallback_safe_preset"],
+    )
+
 
 def _string_list(value: Any) -> List[str]:
     if isinstance(value, str):
@@ -278,6 +705,23 @@ def _string_list(value: Any) -> List[str]:
     if isinstance(value, Iterable):
         return [str(item) for item in value if str(item)]
     return []
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _topic_from_keywords(
+    topic_keywords: Optional[Sequence[str]],
+    ontology: Mapping[str, Any],
+) -> str:
+    ontology_topic = _clean_text(ontology.get("topic") or ontology.get("research_question"))
+    if ontology_topic:
+        return ontology_topic
+    keywords = [str(keyword).strip() for keyword in (topic_keywords or []) if str(keyword).strip()]
+    return ", ".join(keywords) if keywords else "general research topic"
 
 
 def _value_axes(value: Any) -> Dict[str, Any]:

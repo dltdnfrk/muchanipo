@@ -6,11 +6,12 @@ MuchaNipo Citation Grounder — claim ↔ evidence 1:1 검증 패스 (narrow sco
 Council Report의 consensus / recommendations / dissent 텍스트에서 원자적 claim을
 뽑고, 각 claim을 evidence 풀에 대조해 supported / partial / unsupported 판정.
 
-이 모듈은 entailment verifier가 아닌 **citation presence + substring checker**다.
+이 모듈은 entailment verifier가 아닌 **citation presence + semantic overlap checker**다.
 atomic claim decomposition은 NLI 모델이 필요하므로 stdlib 구현은 보수적인
-substring 우선 + overlap secondary 정책을 따른다. 즉:
-  - substring 직접 인용이 유일한 'supported' 판정 경로
-  - keyword overlap 만으로는 'partial' 까지만 (citation laundering 차단)
+substring 우선 + semantic fallback 정책을 따른다. 즉:
+  - substring 직접 인용은 fast-path supported
+  - substring 실패 시 token Jaccard / trigram overlap 이 threshold 이상이면 supported
+  - 낮은 keyword overlap 은 'partial' 까지만 (citation laundering 차단)
 
 stdlib only. eval-agent.py가 import해서 사용하거나 CLI로 단독 실행 가능.
 
@@ -29,7 +30,10 @@ Rubric integration:
 """
 
 import argparse
+import hashlib
 import json
+import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -51,16 +55,16 @@ def _lockdown_validate_provenance(evidence: List[Dict[str, Any]]) -> Dict[str, b
     lockdown.validate_evidence_provenance 는 전체 리스트에 대한 (ok, errors)를
     반환하지만 여기서는 per-evidence boolean 매핑이 필요하므로 evidence를
     하나씩 호출하여 source_text 누락/quote 미포함 케이스를 잡는다.
+    source_text/content/text 없이 quote만 있는 evidence는 supported 후보에서
+    제외한다. quote-only evidence는 ground_claims에서 partial 후보로만 쓴다.
     """
-    if _lockdown is None:
-        return {ev.get("id", str(idx)): True for idx, ev in enumerate(evidence)}
-
     flags: Dict[str, bool] = {}
     for idx, ev in enumerate(evidence):
         ev_id = str(ev.get("id") or f"E{idx + 1}")
-        # source_text 가 없으면 quote 자체를 source 로 보고 통과 처리하여
-        # 기존 fixture(text-only quote) 호환성을 유지한다.
-        if not ev.get("source_text") and not ev.get("content") and not ev.get("text"):
+        if not ev.get("source_text"):
+            flags[ev_id] = False
+            continue
+        if _lockdown is None:
             flags[ev_id] = True
             continue
         try:
@@ -110,6 +114,20 @@ _CRITICAL_PATTERNS = [
     re.compile(r"\b\d{4}\s?년"),
     re.compile(r"(?:must|반드시|필수|critical|치명|핵심)", re.IGNORECASE),
 ]
+_NUMBER_RE = re.compile(r"\d+(?:[\.,]\d+)?")
+_EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+_EMBEDDING_THRESHOLD = 0.85
+_HASH_BAG_DIM = 256
+_EMBEDDING_MODEL: Any = None
+_EMBEDDING_MODEL_ATTEMPTED = False
+_SOURCE_EMBEDDING_CACHE: Dict[Tuple[str, str], Tuple[float, ...]] = {}
+_TEXT_EMBEDDING_CACHE: Dict[Tuple[str, str], Tuple[float, ...]] = {}
+_EMBEDDING_CACHE_STATS = {
+    "source_hits": 0,
+    "source_misses": 0,
+    "text_hits": 0,
+    "text_misses": 0,
+}
 
 
 def _tokenize(text: str) -> List[str]:
@@ -158,6 +176,7 @@ def _normalize_evidence(evidence: Iterable[Any]) -> List[Dict[str, Any]]:
                 "source_text": str(
                     item.get("source_text")
                     or item.get("content")
+                    or item.get("text")
                     or ""
                 ),
             })
@@ -223,6 +242,241 @@ def _overlap_ratio(claim: str, evidence_text: str) -> float:
     return len(claim_terms & ev_terms) / len(claim_terms)
 
 
+def _ngrams(text: str, n: int = 3) -> set:
+    compact = re.sub(r"\s+", "", str(text).lower())
+    if len(compact) < n:
+        return {compact} if compact else set()
+    return {compact[idx : idx + n] for idx in range(len(compact) - n + 1)}
+
+
+def _jaccard(left: set, right: set) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _token_windows(tokens: List[str], size: int) -> Iterable[List[str]]:
+    if not tokens:
+        return []
+    if size <= 0 or len(tokens) <= size:
+        return [tokens]
+    return (tokens[idx : idx + size] for idx in range(0, len(tokens) - size + 1))
+
+
+def _score_semantic_window(quote: str, candidate: str) -> Tuple[float, Dict[str, Any]]:
+    quote_tokens = _tokenize(quote)
+    candidate_tokens = _tokenize(candidate)
+    quote_terms = set(quote_tokens)
+    quote_trigrams = _ngrams(quote)
+    best = {"score": 0.0, "method": "none", "jaccard": 0.0, "trigram": 0.0}
+
+    window_sizes = sorted({
+        max(1, len(quote_tokens) - 2),
+        max(1, len(quote_tokens)),
+        max(1, len(quote_tokens) + 2),
+    })
+    windows: Iterable[List[str]]
+    if candidate_tokens:
+        collected: List[List[str]] = []
+        for size in window_sizes:
+            collected.extend(list(_token_windows(candidate_tokens, size)))
+        windows = collected or [candidate_tokens]
+    else:
+        windows = []
+
+    for window in windows:
+        window_text = " ".join(window)
+        jaccard = _jaccard(quote_terms, set(window))
+        trigram = _jaccard(quote_trigrams, _ngrams(window_text))
+        if max(jaccard, trigram) > float(best["score"]):
+            method = "jaccard" if jaccard >= trigram else "trigram"
+            best = {
+                "score": max(jaccard, trigram),
+                "method": method,
+                "jaccard": jaccard,
+                "trigram": trigram,
+            }
+
+    if not windows:
+        trigram = _jaccard(quote_trigrams, _ngrams(candidate))
+        best = {"score": trigram, "method": "trigram" if trigram else "none", "jaccard": 0.0, "trigram": trigram}
+
+    return float(best["score"]), best
+
+
+def _number_tokens(text: str) -> set:
+    return set(_NUMBER_RE.findall(text or ""))
+
+
+def _has_conflicting_numbers(quote: str, source_text: str) -> bool:
+    quote_numbers = _number_tokens(quote)
+    source_numbers = _number_tokens(source_text)
+    return bool(quote_numbers and source_numbers and not quote_numbers <= source_numbers)
+
+
+def _reset_embedding_cache() -> None:
+    """Test helper: clear embedding caches without touching model state."""
+    _SOURCE_EMBEDDING_CACHE.clear()
+    _TEXT_EMBEDDING_CACHE.clear()
+    for key in _EMBEDDING_CACHE_STATS:
+        _EMBEDDING_CACHE_STATS[key] = 0
+
+
+def _embedding_backend_name() -> str:
+    return "hash" if _load_embedding_model() is None else f"st:{_EMBEDDING_MODEL_NAME}"
+
+
+def _load_embedding_model() -> Any:
+    global _EMBEDDING_MODEL_ATTEMPTED, _EMBEDDING_MODEL
+    if os.environ.get("EMBEDDING_OFFLINE") == "1":
+        return None
+    if _EMBEDDING_MODEL_ATTEMPTED:
+        return _EMBEDDING_MODEL
+    _EMBEDDING_MODEL_ATTEMPTED = True
+    try:  # pragma: no cover - depends on optional local package/model cache
+        from sentence_transformers import SentenceTransformer
+
+        _EMBEDDING_MODEL = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+    except Exception:  # noqa: BLE001
+        _EMBEDDING_MODEL = None
+    return _EMBEDDING_MODEL
+
+
+def _embedding_similarity(quote: str, source_text: str) -> float:
+    """Cosine similarity from sentence-transformers or stdlib hash-bag fallback."""
+    if not quote or not source_text:
+        return 0.0
+    # Very short toy strings are better handled by substring/trigram. Skipping
+    # embeddings here preserves the lexical threshold boundary behavior.
+    if min(len(_content_terms(quote)), len(_content_terms(source_text))) < 4:
+        return 0.0
+
+    backend = _embedding_backend_name()
+    quote_vec = _embedding_for_text(quote, backend=backend, source=False)
+    source_vec = _embedding_for_text(source_text, backend=backend, source=True)
+    return round(_cosine(quote_vec, source_vec), 3)
+
+
+def _embedding_for_text(text: str, *, backend: str, source: bool) -> Tuple[float, ...]:
+    cache = _SOURCE_EMBEDDING_CACHE if source else _TEXT_EMBEDDING_CACHE
+    hit_key = "source_hits" if source else "text_hits"
+    miss_key = "source_misses" if source else "text_misses"
+    key = (backend, text)
+    if key in cache:
+        _EMBEDDING_CACHE_STATS[hit_key] += 1
+        return cache[key]
+    _EMBEDDING_CACHE_STATS[miss_key] += 1
+    model = _load_embedding_model() if backend.startswith("st:") else None
+    if model is None:
+        vector = _hash_bag_embedding(text)
+    else:  # pragma: no cover - optional dependency path
+        encoded = model.encode([text], normalize_embeddings=True)[0]
+        vector = tuple(float(x) for x in encoded)
+    cache[key] = vector
+    return vector
+
+
+def _hash_bag_embedding(text: str) -> Tuple[float, ...]:
+    vec = [0.0] * _HASH_BAG_DIM
+    features = _embedding_features(text)
+    if not features:
+        return tuple(vec)
+    for feature in features:
+        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, "big")
+        idx = value % _HASH_BAG_DIM
+        sign = 1.0 if value & 1 else -1.0
+        vec[idx] += sign
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm == 0.0:
+        return tuple(vec)
+    return tuple(v / norm for v in vec)
+
+
+def _embedding_features(text: str) -> List[str]:
+    tokens = _tokenize(text)
+    features: List[str] = []
+    features.extend(f"tok:{tok}" for tok in tokens)
+    features.extend(f"syn:{syn}" for tok in tokens for syn in _semantic_aliases(tok))
+    features.extend(f"bi:{left}_{right}" for left, right in zip(tokens, tokens[1:]))
+    compact = re.sub(r"\s+", "", str(text).lower())
+    features.extend(f"tri:{tri}" for tri in _ngrams(compact, 3))
+    return features
+
+
+def _semantic_aliases(token: str) -> Tuple[str, ...]:
+    aliases = {
+        "suggests": ("indicates", "implies", "signals"),
+        "suggest": ("indicate", "imply", "signal"),
+        "implies": ("suggests", "indicates", "signals"),
+        "indicates": ("suggests", "implies", "signals"),
+        "states": ("says", "reports", "describes"),
+        "stated": ("said", "reported", "described"),
+        "explicitly": ("directly", "clearly"),
+        "purchase": ("buy", "adopt", "procure"),
+        "buyers": ("customers", "users", "operators"),
+        "customers": ("buyers", "users", "operators"),
+        "risk": ("threat", "concern", "downside"),
+        "risks": ("threats", "concerns", "downsides"),
+        "reduced": ("lowered", "cut", "decreased"),
+        "reduces": ("lowers", "cuts", "decreases"),
+        "시사한다": ("암시한다", "보여준다", "나타낸다"),
+        "명시한다": ("밝힌다", "설명한다", "말한다"),
+        "구매자": ("고객", "사용자", "수요자"),
+        "위험": ("리스크", "우려", "문제"),
+    }
+    return aliases.get(token, ())
+
+
+def _cosine(left: Tuple[float, ...], right: Tuple[float, ...]) -> float:
+    if not left or not right:
+        return 0.0
+    limit = min(len(left), len(right))
+    numerator = sum(left[idx] * right[idx] for idx in range(limit))
+    left_norm = math.sqrt(sum(v * v for v in left))
+    right_norm = math.sqrt(sum(v * v for v in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, numerator / (left_norm * right_norm)))
+
+
+def semantic_match(quote: str, source_text: str, threshold: float = 0.6) -> Tuple[bool, float, Dict[str, Any]]:
+    """Return whether quote is semantically present in source_text.
+
+    This is a stdlib-only lexical semantic fallback. Substring remains the
+    fast path; otherwise the best token-window Jaccard, character trigram
+    overlap, or embedding cosine score is used.
+    """
+    details: Dict[str, Any] = {
+        "method": "none",
+        "jaccard": 0.0,
+        "trigram": 0.0,
+        "embedding_cosine": 0.0,
+        "embedding_threshold": _EMBEDDING_THRESHOLD,
+        "threshold": threshold,
+    }
+    if not quote or not source_text:
+        return False, 0.0, details
+    if _is_substring_quote(quote, source_text):
+        details.update({"method": "substring", "jaccard": 1.0, "trigram": 1.0, "embedding_cosine": 1.0})
+        return True, 1.0, details
+    if _has_conflicting_numbers(quote, source_text):
+        details.update({"method": "numeric_mismatch"})
+        return False, 0.0, details
+
+    score, best = _score_semantic_window(quote, source_text)
+    details.update(best)
+    if score >= threshold:
+        return True, round(score, 3), details
+
+    embedding = _embedding_similarity(quote, source_text)
+    details["embedding_cosine"] = embedding
+    if embedding >= _EMBEDDING_THRESHOLD:
+        details["method"] = "embedding"
+        return True, embedding, details
+    return False, round(max(score, embedding), 3), details
+
+
 def _is_substring_quote(claim: str, evidence_text: str) -> bool:
     """claim이 evidence 안에 의미 있는 길이로 직접 인용된 경우 즉시 supported.
 
@@ -245,6 +499,7 @@ def ground_claims(
     dissent: str = "",
     overlap_threshold: float = 0.7,
     partial_threshold: float = 0.4,
+    semantic_threshold: float = 0.6,
 ) -> Dict[str, Any]:
     """Council 결과의 claim들을 evidence 풀에 대조 (narrow C1 정책).
 
@@ -275,9 +530,16 @@ def ground_claims(
 
     provenance_flags = _lockdown_validate_provenance(norm_evidence)
     provenance_failures = sum(1 for ok in provenance_flags.values() if not ok)
-    # provenance 통과 evidence 만 supported 후보로 사용
-    trusted_evidence = [
+    # provenance 통과 evidence 만 supported 후보로 사용한다.
+    # source_text 없는 quote-only evidence는 partial 후보까지만 유지하고,
+    # source_text가 있는데 provenance 실패한 evidence는 fabricated quote 위험이
+    # 있어 matching pool에서 제외한다.
+    support_evidence = [
         ev for ev in norm_evidence if provenance_flags.get(ev["id"], True)
+    ]
+    partial_evidence = [
+        ev for ev in norm_evidence
+        if provenance_flags.get(ev["id"], True) or not ev.get("source_text")
     ]
 
     per_claim: List[Dict[str, Any]] = []
@@ -289,10 +551,13 @@ def ground_claims(
         best_ratio = 0.0
         best_ids: List[str] = []
         substring_hit: Optional[str] = None
+        semantic_hit: Optional[Tuple[str, float, Dict[str, Any]]] = None
+        match_method = "none"
+        match_details: Dict[str, Any] = {}
 
         # 1) substring 직접 인용 — 유일한 'supported' 경로
-        for ev in trusted_evidence:
-            if _is_substring_quote(claim, ev["quote"]):
+        for ev in support_evidence:
+            if _is_substring_quote(claim, ev["source_text"]):
                 substring_hit = ev["id"]
                 break
 
@@ -300,10 +565,40 @@ def ground_claims(
             best_ratio = 1.0
             best_ids = [substring_hit]
             status = "supported"
+            match_method = "substring"
+            match_details = {"method": "substring", "threshold": semantic_threshold}
             supported += 1
         else:
-            # 2) keyword overlap (secondary signal — partial 까지만)
-            for ev in trusted_evidence:
+            # 2) semantic fallback — paraphrase/near-quote supported if strong enough
+            for ev in support_evidence:
+                if not ev["source_text"]:
+                    continue
+                candidate_text = ev["source_text"]
+                ok, score, details = semantic_match(claim, candidate_text, threshold=semantic_threshold)
+                if ok and (semantic_hit is None or score > semantic_hit[1]):
+                    semantic_hit = (ev["id"], score, details)
+
+            if semantic_hit is not None:
+                best_ids = [semantic_hit[0]]
+                best_ratio = semantic_hit[1]
+                status = "supported"
+                match_method = str(semantic_hit[2].get("method") or "semantic")
+                match_details = semantic_hit[2]
+                supported += 1
+                redacted_claim = _lockdown_redact(claim)
+                per_claim.append({
+                    "claim": redacted_claim,
+                    "status": status,
+                    "overlap_ratio": round(best_ratio, 3),
+                    "match_method": match_method,
+                    "match_details": match_details,
+                    "supporting_evidence_ids": best_ids,
+                    "critical": critical,
+                })
+                continue
+
+            # 3) keyword overlap (secondary signal — partial 까지만)
+            for ev in partial_evidence:
                 ratio = _overlap_ratio(claim, ev["quote"])
                 if ratio > best_ratio + 1e-9:
                     best_ratio = ratio
@@ -314,9 +609,13 @@ def ground_claims(
             if best_ratio >= partial_threshold:
                 # overlap_threshold 도달해도 substring 미검증이면 partial 로만 인정
                 status = "partial"
+                match_method = "overlap"
+                match_details = {"method": "overlap", "threshold": partial_threshold}
                 partial += 1
             else:
                 status = "unsupported"
+                match_method = "none"
+                match_details = {"method": "none", "threshold": semantic_threshold}
                 unsupported += 1
                 if critical:
                     critical_unsupported += 1
@@ -326,6 +625,8 @@ def ground_claims(
             "claim": redacted_claim,
             "status": status,
             "overlap_ratio": round(best_ratio, 3),
+            "match_method": match_method,
+            "match_details": match_details,
             "supporting_evidence_ids": best_ids if status != "unsupported" else [],
             "critical": critical,
         })

@@ -4,7 +4,10 @@
 mod events;
 mod python_bridge;
 
-use python_bridge::{send_action, start_pipeline, PythonBridge};
+use python_bridge::{
+    check_cli_smoke, check_cli_status, get_buffered_events, open_cli_auth, send_action,
+    start_pipeline, PythonBridge,
+};
 
 #[tauri::command]
 fn ping() -> &'static str {
@@ -14,7 +17,15 @@ fn ping() -> &'static str {
 fn main() {
     tauri::Builder::default()
         .manage(PythonBridge::default())
-        .invoke_handler(tauri::generate_handler![ping, start_pipeline, send_action])
+        .invoke_handler(tauri::generate_handler![
+            ping,
+            start_pipeline,
+            send_action,
+            check_cli_status,
+            check_cli_smoke,
+            open_cli_auth,
+            get_buffered_events
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Muchanipo Tauri app");
 }

@@ -1,0 +1,2 @@
+# Optional real-provider / semantic-eval extras.
+sentence-transformers>=2.7.0

@@ -57,19 +57,50 @@ def test_gateway_budget_and_audit_hooks(tmp_path):
     assert result.cost_usd == 0.02
     assert budget.total_actual_usd == 0.02
     assert "report" in (tmp_path / "audit-log.jsonl").read_text(encoding="utf-8")
+    cost_log = (tmp_path / "cost-log.jsonl").read_text(encoding="utf-8")
+    assert '"provider": "mock"' in cost_log
+    assert '"model": "mock"' in cost_log
+
+
+def test_gateway_fallback_budget_records_actual_provider_metadata(tmp_path):
+    class BrokenProvider:
+        name = "broken"
+
+        def call(self, stage, prompt, **kwargs):
+            raise RuntimeError("primary failed")
+
+    budget = RunBudget(limit_usd=1.0, cost_log_path=tmp_path / "cost-log.jsonl")
+    gateway = ModelGateway(
+        provider=BrokenProvider(),
+        fallback_provider=MockProvider(response="fallback", cost_usd=0.01),
+        budget=budget,
+    )
+
+    result = gateway.call(stage="report", prompt="hello")
+
+    assert result.provider == "mock"
+    records = budget.records
+    assert records[0].provider == "broken"
+    assert records[0].status == "reconciled"
+    assert records[1].provider == "mock"
+    assert records[1].model == "mock"
 
 
 def test_openai_provider_uses_injected_client():
     class Responses:
         def create(self, **kwargs):
+            self.kwargs = kwargs
             return type("Response", (), {"output_text": "openai text"})()
 
-    client = type("Client", (), {"responses": Responses()})()
+    responses = Responses()
+    client = type("Client", (), {"responses": responses})()
 
-    result = OpenAIProvider(client=client).call(stage="research", prompt="question")
+    result = OpenAIProvider(client=client).call(stage="research", prompt="question", model="gpt-custom")
 
     assert result.text == "openai text"
     assert result.provider == "openai"
+    assert result.model == "gpt-custom"
+    assert responses.kwargs["model"] == "gpt-custom"
 
 
 def test_anthropic_provider_uses_injected_client():

@@ -35,14 +35,22 @@ class Alternative:
 
 @dataclass(frozen=True)
 class DesignDoc:
-    """6 forcing questions를 통과한 결과."""
+    """6 forcing questions (PRD-v2 §3.2)를 통과한 결과."""
     raw_input: str
-    pain_root: str            # Q1: 표면 요구 vs 실제 pain
-    contrary_framing: str     # Q2: 반대로 본다면?
-    implicit_capabilities: List[str]  # Q3: 암묵적으로 필요한 능력
-    challenged_premises: List[str]    # Q4: 도전된 전제
-    alternatives: List[Alternative]   # Q5: 대안 2-3개
-    effort_map_summary: str           # Q6: effort 종합
+    # Legacy fields kept for backward compatibility
+    pain_root: str = ""
+    contrary_framing: str = ""
+    implicit_capabilities: List[str] = field(default_factory=list)
+    challenged_premises: List[str] = field(default_factory=list)
+    alternatives: List[Alternative] = field(default_factory=list)
+    effort_map_summary: str = ""
+    # PRD-v2 §3.2 formalized 6 Forcing Questions
+    demand_reality: str = ""          # Q1
+    status_quo: str = ""              # Q2
+    desperate_specificity: str = ""   # Q3
+    narrowest_wedge: str = ""         # Q4
+    observation_surprise: str = ""    # Q5
+    future_fit: str = ""              # Q6
     aup_risk_score: float = 0.0
     redacted: bool = False
 
@@ -51,25 +59,46 @@ class DesignDoc:
         lines = [
             f"# Design Doc — {self.raw_input[:60]}",
             "",
-            f"## Pain Root",
-            self.pain_root,
+            "## Q1 Demand Reality",
+            self.demand_reality or self.pain_root or "(no signal)",
             "",
-            f"## Contrary Framing",
-            self.contrary_framing,
+            "## Q2 Status Quo",
+            self.status_quo or self.contrary_framing or "(no signal)",
             "",
-            f"## Implicit Capabilities ({len(self.implicit_capabilities)})",
+            "## Q3 Desperate Specificity",
+            self.desperate_specificity or "(no signal)",
+            "",
+            "## Q4 Narrowest Wedge",
+            self.narrowest_wedge or "(no signal)",
+            "",
+            "## Q5 Observation & Surprise",
+            self.observation_surprise or "(no signal)",
+            "",
+            "## Q6 Future-Fit",
+            self.future_fit or self.effort_map_summary or "(no signal)",
         ]
-        for cap in self.implicit_capabilities:
-            lines.append(f"- {cap}")
-        lines += ["", "## Challenged Premises"]
-        for p in self.challenged_premises:
-            lines.append(f"- {p}")
-        lines += ["", "## Alternatives"]
-        for alt in self.alternatives:
-            lines.append(
-                f"- **{alt.title}** (effort={alt.effort}, risk={alt.risk}): {alt.summary}"
-            )
-        lines += ["", f"## Effort Summary", self.effort_map_summary]
+        # 레거시 섹션 (PlanReview / interview_real_wire 호환).
+        # Q*와 의미 중복이 있더라도 명시적 섹션 헤딩이 필요한 호출자가 있어 유지.
+        if self.pain_root:
+            lines += ["", "## Pain Root", self.pain_root]
+        if self.contrary_framing:
+            lines += ["", "## Contrary Framing", self.contrary_framing]
+        if self.implicit_capabilities:
+            lines += ["", f"## Implicit Capabilities ({len(self.implicit_capabilities)})"]
+            for cap in self.implicit_capabilities:
+                lines.append(f"- {cap}")
+        if self.challenged_premises:
+            lines += ["", "## Challenged Premises"]
+            for p in self.challenged_premises:
+                lines.append(f"- {p}")
+        if self.alternatives:
+            lines += ["", "## Alternatives"]
+            for alt in self.alternatives:
+                lines.append(
+                    f"- **{alt.title}** (effort={alt.effort}, risk={alt.risk}): {alt.summary}"
+                )
+        if self.effort_map_summary:
+            lines += ["", "## Effort Summary", self.effort_map_summary]
         if self.aup_risk_score > 0.0:
             lines += ["", f"_AUP risk: {self.aup_risk_score:.2f}_"]
         return "\n".join(lines)
@@ -121,6 +150,14 @@ class OfficeHours:
 
         return DesignDoc(
             raw_input=raw,
+            # PRD-v2 §3.2 새 필드
+            demand_reality=self._q1_demand_reality(raw),
+            status_quo=self._q2_status_quo(raw),
+            desperate_specificity=self._q3_desperate_specificity(raw),
+            narrowest_wedge=self._q4_narrowest_wedge(raw),
+            observation_surprise=self._q5_observation_surprise(raw),
+            future_fit=self._q6_future_fit(raw),
+            # 레거시 필드 (PlanReview 등 기존 호출자 호환 유지)
             pain_root=self._q1_pain_root(raw),
             contrary_framing=self._q2_contrary(raw),
             implicit_capabilities=self._q3_implicit_capabilities(raw),
@@ -132,16 +169,128 @@ class OfficeHours:
         )
 
     # ------------------------------------------------------------------
-    # 6 forcing questions
+    # PRD-v2 §3.2 — 6 Forcing Questions (keyword-driven, stdlib only)
+    # Each question is applied at most once (method call is idempotent).
     # ------------------------------------------------------------------
+
+    # Q1 Demand Reality — keywords that signal existing demand
+    Q1_DEMAND_KEYWORDS = ("돈", "지불", "구매", "가격", "비용", "매출", "수익", "ROI", "pay", "buy", "cost", "revenue", "subscription", "유료")
+    # Q2 Status Quo — keywords about current state / existing solutions
+    Q2_STATUS_QUO_KEYWORDS = ("현재", "지금", "사용", "쓰고", "기존", "대안", "existing", "current", "today", "use", "using", "alternative")
+    # Q3 Desperate Specificity — keywords about target / persona / who
+    Q3_SPECIFICITY_KEYWORDS = ("누구", "사용자", "고객", "타겟", "persona", "who", "user", "customer", "client", "구매자")
+    # Q4 Narrowest Wedge — keywords about MVP / smallest / quick start
+    Q4_WEDGE_KEYWORDS = ("MVP", "최소", "작은", "빠르게", "prototype", " minimally", "smallest", "quick", "fast", "pilot", "시범")
+    # Q5 Observation & Surprise — keywords about learning / unexpected
+    Q5_OBSERVATION_KEYWORDS = ("발견", "놀랍", "예상", "관찰", "배움", "surprise", "unexpected", "learned", "observed", "insight", "revelation")
+    # Q6 Future-Fit — keywords about scope / exclusion / anti-roadmap
+    Q6_FUTURE_FIT_KEYWORDS = ("범위", "안 할", "제외", "out of scope", "exclude", "not", "won\'t", "anti", "미포함", "의도적")
+
+    def _q1_demand_reality(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q1_DEMAND_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"수요 신호 감지: {', '.join(hits[:3])}. "
+                "'이미 돈을 내거나 행동으로 증명한 사람이 있는가?' — "
+                "해당 키워드가 있으므로 이 토픽은 검증된 수요 영역일 가능성이 높음. "
+                "구체적 증거(거래액, 가입자 수, waitlist)를 council에서 보강해야."
+            )
+        return (
+            "수요 신호 미감지 — '이미 돈을 내거나 행동으로 증명한 사람이 있는가?' "
+            "입력에 금전/행동 증거가 없으므로 이는 추측 수요일 수 있음. "
+            "Council의 contrarian persona가 'nice-to-have vs must-have'를 검증해야."
+        )
+
+    def _q2_status_quo(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q2_STATUS_QUO_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"현재 상태 언급 감지: {', '.join(hits[:3])}. "
+                "'지금 이 문제를 어떻게 해결하고 있는가?' — "
+                "기존 솔루션의 존재를 인정하고 있으므로 차별화 포인트를 명시해야."
+            )
+        return (
+            "'지금 이 문제를 어떻게 해결하고 있는가?' — "
+            "현재 솔루션이 언급되지 않음. 진짜 경쟁자는 '현재의 행동'이다. "
+            "Council에서 status quo를 끌어내는 리서치가 필요."
+        )
+
+    def _q3_desperate_specificity(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q3_SPECIFICITY_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"타겟 언급 감지: {', '.join(hits[:3])}. "
+                "'이 문제로 절실하게 고통받는 한 사람의 이름을 댈 수 있는가?' — "
+                "구체 인물이나 페르소나가 언급되었으나, '이름까지' 좁혔는지 검증 필요."
+            )
+        return (
+            "'이 문제로 절실하게 고통받는 한 사람의 이름을 댈 수 있는가?' — "
+            "타겟이 일반화되어 있음. 인터뷰 또는 페르소나 생성(HACHIMI)으로 구체화해야."
+        )
+
+    def _q4_narrowest_wedge(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q4_WEDGE_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"빠른 실행 언급 감지: {', '.join(hits[:3])}. "
+                "'내일 출시할 수 있는 가장 작은 버전은 무엇인가?' — "
+                "MVP 성향이 보이나, 실제로 24시간 내 검증 가능한 범위인지 council에서 체크."
+            )
+        return (
+            "'내일 출시할 수 있는 가장 작은 버전은 무엇인가?' — "
+            "범위 축소 의지가 보이지 않음. Scope reduction branch를 고려하거나, "
+            "최소 검증 단위를 인터뷰에서 추가로 도출해야."
+        )
+
+    def _q5_observation_surprise(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q5_OBSERVATION_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"학습/발견 언급 감지: {', '.join(hits[:3])}. "
+                "'사용자를 관찰하면서 예상치 못하게 배운 것은?' — "
+                "실제 관찰 기반이 있으면 인용 근거로 삼고, 없으면 가설로 표시해야."
+            )
+        return (
+            "'사용자를 관찰하면서 예상치 못하게 배운 것은? 진짜 만들고 있는 건 뭔가?' — "
+            "빌더의 가정 vs 실제 사용자 행동 갭이 노출되지 않음. "
+            "Council에서 '가장 큰 가정'을 contrarian이 공격해야."
+        )
+
+    def _q6_future_fit(self, text: str) -> str:
+        lower = text.lower()
+        hits = [kw for kw in self.Q6_FUTURE_FIT_KEYWORDS if kw.lower() in lower]
+        if hits:
+            return (
+                f"범위 제한 언급 감지: {', '.join(hits[:3])}. "
+                "'의도적으로 하지 않을 것은?' — "
+                "anti-roadmap 요소가 보임. 이를 명시적으로 문서화하면 리서치 범위가 명확해짐."
+            )
+        return (
+            "'의도적으로 하지 않을 것은? 범위 밖에 두는 것은?' — "
+            "제품 경계가 불분명. 리서치가 산으로 갈 위험이 있으므로, "
+            "out-of-scope 리스트를 인터뷰 후속 질문으로 도출해야."
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy 6 questions (PlanReview / interview_real_wire 호환 유지).
+    # PRD-v2 §3.2의 새 메서드와 공존 — reframe()이 둘 다 호출.
+    # ------------------------------------------------------------------
+
     def _q1_pain_root(self, text: str) -> str:
         for kw, framing in self.SURFACE_PATTERNS:
             if kw in text:
                 return f"{framing} (트리거: '{kw}')"
-        # default: 가장 긴 noun phrase를 pain의 객체로 추정
         words = [w for w in text.replace("?", "").split() if len(w) >= 2]
         focus = max(words, key=len, default=text[:40])
-        return f"입력 텍스트에서 '{focus}'가 핵심 객체로 보임. 실제 pain은 이 객체의 _현재 부재로 인한 불편_ 또는 _존재로 인한 부작용_ 중 하나."
+        return (
+            f"입력 텍스트에서 '{focus}'가 핵심 객체로 보임. 실제 pain은 이 객체의 "
+            "_현재 부재로 인한 불편_ 또는 _존재로 인한 부작용_ 중 하나."
+        )
 
     def _q2_contrary(self, text: str) -> str:
         return (
@@ -168,25 +317,23 @@ class OfficeHours:
 
     def _q4_challenge_premises(self, text: str) -> List[str]:
         challenges: List[str] = []
-        # 단정적 표현 도전
         if any(k in text for k in ("반드시", "당연", "must", "분명")):
             challenges.append("단정적 어조 — 정말 그런가? 반례 1개 이상 council에서 검증.")
-        # 외부 권위 의존
         if any(k in text for k in ("다들", "everyone", "everybody", "전부")):
             challenges.append("'모두가 그렇다' 가정 — 표본 편향 가능. 누가 그렇지 않은가?")
-        # 시간성 가정
         if any(k in text for k in ("계속", "여전히", "아직도")):
             challenges.append("정적 가정 — 최근 N개월 변화는 반영했는가?")
         if not challenges:
-            challenges.append("명시적으로 도전할 전제가 입력에 보이지 않음 — council의 contrarian persona가 발견 책임.")
+            challenges.append(
+                "명시적으로 도전할 전제가 입력에 보이지 않음 — council의 contrarian persona가 발견 책임."
+            )
         return challenges
 
-    def _q5_alternatives(self, text: str) -> List[Alternative]:
-        # 휴리스틱 3가지: scope expansion / hold scope / scope reduction (gstack CEO 4 mode 단순화)
+    def _q5_alternatives(self, text: str) -> List["Alternative"]:
         return [
             Alternative(
                 title="좁게 가기 (Hold Scope)",
-                summary=f"입력 그대로 — 가장 빠르게 답을 얻고 후속 라운드에서 확장",
+                summary="입력 그대로 — 가장 빠르게 답을 얻고 후속 라운드에서 확장",
                 effort="S",
                 risk="low",
                 why_consider="Mode 2 첫 라운드 baseline. 후속 ratchet으로 score 증가 검증 가능.",
