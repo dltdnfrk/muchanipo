@@ -31,7 +31,23 @@ export default function IdeaSubmit() {
       } catch {
         /* private mode etc. — ignore */
       }
-      await submitIdea(trimmed, "full");
+
+      const envs: Record<string, string> = {};
+      const keyMap: Record<string, string> = {
+        anthropic_api_key: "ANTHROPIC_API_KEY",
+        gemini_api_key: "GEMINI_API_KEY",
+        kimi_api_key: "KIMI_API_KEY",
+        openalex_email: "MUCHANIPO_CONTACT_EMAIL",
+        plannotator_key: "PLANNOTATOR_API_KEY",
+      };
+      for (const [lsKey, envKey] of Object.entries(keyMap)) {
+        const v = localStorage.getItem(lsKey);
+        if (v) envs[envKey] = v;
+      }
+      const pipelineMode =
+        (localStorage.getItem("pipeline_mode") as "full" | "stub") || "full";
+
+      await submitIdea(trimmed, pipelineMode, envs);
       navigate(`/run/${runId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "제출 중 오류가 발생했습니다.");

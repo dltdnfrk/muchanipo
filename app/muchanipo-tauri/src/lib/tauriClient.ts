@@ -67,8 +67,9 @@ export interface FinalReport {
 export async function submitIdea(
   topic: string,
   pipeline: PipelineMode = "full",
+  envs?: Record<string, string>,
 ): Promise<void> {
-  return invoke("start_pipeline", { topic, pipeline });
+  return invoke("start_pipeline", { topic, pipeline, envs });
 }
 
 /**

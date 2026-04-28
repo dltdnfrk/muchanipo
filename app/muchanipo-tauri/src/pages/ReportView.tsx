@@ -34,7 +34,7 @@ export default function ReportView() {
     a.href = url;
     a.download = `${name}.md`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   if (!markdown) {
