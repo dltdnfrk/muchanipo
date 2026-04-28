@@ -16,6 +16,7 @@ SLEEP_SECONDS=${SLEEP_SECONDS:-600}
 RESULTS=${RESULTS:-"$ROOT/.omc/autoresearch/autofix-results.jsonl"}
 SUMMARY=${SUMMARY:-"$ROOT/.omc/autoresearch/autofix-summary.md"}
 LOG_DIR=${LOG_DIR:-"$ROOT/.omc/autoresearch/autofix-logs"}
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 CODEX_BIN=${CODEX_BIN:-codex}
 CLAUDE_BIN=${CLAUDE_BIN:-claude}
 KIMI_BIN=${KIMI_BIN:-kimi}
@@ -258,7 +259,7 @@ PY
 
 run_peer_reviews() {
   local iteration=$1
-  local peer_dir="$LOG_DIR/iteration-${iteration}-peers"
+  local peer_dir="$LOG_DIR/${RUN_ID}-iteration-${iteration}-peers"
   local context_file="$peer_dir/context.md"
 
   mkdir -p "$peer_dir"
@@ -279,8 +280,8 @@ echo "[autofix] max iterations: $MAX_ITERATIONS, sleep: ${SLEEP_SECONDS}s"
 
 no_change_count=0
 for ((i = 1; i <= MAX_ITERATIONS; i++)); do
-  log="$LOG_DIR/iteration-${i}.log"
-  last_message="$LOG_DIR/iteration-${i}.final.txt"
+  log="$LOG_DIR/${RUN_ID}-iteration-${i}.log"
+  last_message="$LOG_DIR/${RUN_ID}-iteration-${i}.final.txt"
   peer_dir=""
   head_before=$(current_head)
 
@@ -321,9 +322,9 @@ PY
 
   if [[ "$status" == "checks_failed" || "$status" == "failed" || "$status" == "dirty_after_pass" ]]; then
     if ! worktree_clean; then
-      patch="$LOG_DIR/iteration-${i}.failed.patch"
+      patch="$LOG_DIR/${RUN_ID}-iteration-${i}.failed.patch"
       git diff --binary >"$patch" || true
-      git status --short >"$LOG_DIR/iteration-${i}.failed-status.txt" || true
+      git status --short >"$LOG_DIR/${RUN_ID}-iteration-${i}.failed-status.txt" || true
       git stash push -u -m "autofix iteration $i failed $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log" 2>&1 || true
       status="stashed"
     fi
@@ -337,7 +338,7 @@ PY
     fi
   fi
 
-  json_append "{\"iteration\": $i, \"status\": \"$status\", \"head_before\": \"$head_before\", \"head_after\": \"$head_after\", \"log\": \"$log\", \"final_message\": \"$last_message\", \"peer_dir\": \"$peer_dir\"}"
+  json_append "{\"run_id\": \"$RUN_ID\", \"iteration\": $i, \"status\": \"$status\", \"head_before\": \"$head_before\", \"head_after\": \"$head_after\", \"log\": \"$log\", \"final_message\": \"$last_message\", \"peer_dir\": \"$peer_dir\"}"
   write_summary
   echo "[autofix] iteration $i status=$status head=$head_after"
 
