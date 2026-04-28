@@ -13,6 +13,7 @@ cd "$ROOT"
 
 MAX_ITERATIONS=${MAX_ITERATIONS:-24}
 SLEEP_SECONDS=${SLEEP_SECONDS:-600}
+MAX_RUNTIME_SECONDS=${MAX_RUNTIME_SECONDS:-0}
 RESULTS=${RESULTS:-"$ROOT/.omc/autoresearch/autofix-results.jsonl"}
 SUMMARY=${SUMMARY:-"$ROOT/.omc/autoresearch/autofix-summary.md"}
 LOG_DIR=${LOG_DIR:-"$ROOT/.omc/autoresearch/autofix-logs"}
@@ -276,10 +277,22 @@ run_peer_reviews() {
 }
 
 echo "[autofix] writing results to $RESULTS"
-echo "[autofix] max iterations: $MAX_ITERATIONS, sleep: ${SLEEP_SECONDS}s"
+if [[ "$MAX_RUNTIME_SECONDS" == "0" ]]; then
+  echo "[autofix] max iterations: $MAX_ITERATIONS, sleep: ${SLEEP_SECONDS}s, max runtime: unlimited"
+else
+  echo "[autofix] max iterations: $MAX_ITERATIONS, sleep: ${SLEEP_SECONDS}s, max runtime: ${MAX_RUNTIME_SECONDS}s"
+fi
 
+loop_started_at=$(date +%s)
+loop_deadline=$((loop_started_at + MAX_RUNTIME_SECONDS))
 no_change_count=0
 for ((i = 1; i <= MAX_ITERATIONS; i++)); do
+  now=$(date +%s)
+  if (( MAX_RUNTIME_SECONDS > 0 && now >= loop_deadline )); then
+    echo "[autofix] stopping before iteration $i: max runtime ${MAX_RUNTIME_SECONDS}s reached"
+    break
+  fi
+
   log="$LOG_DIR/${RUN_ID}-iteration-${i}.log"
   last_message="$LOG_DIR/${RUN_ID}-iteration-${i}.final.txt"
   peer_dir=""
@@ -358,6 +371,20 @@ PY
   fi
 
   if [[ "$i" -lt "$MAX_ITERATIONS" ]]; then
-    sleep "$SLEEP_SECONDS"
+    now=$(date +%s)
+    if (( MAX_RUNTIME_SECONDS == 0 )); then
+      sleep "$SLEEP_SECONDS"
+      continue
+    fi
+    remaining=$((loop_deadline - now))
+    if (( remaining <= 0 )); then
+      echo "[autofix] stopping after iteration $i: max runtime ${MAX_RUNTIME_SECONDS}s reached"
+      break
+    fi
+    sleep_for=$SLEEP_SECONDS
+    if (( sleep_for > remaining )); then
+      sleep_for=$remaining
+    fi
+    sleep "$sleep_for"
   fi
 done
