@@ -17,6 +17,8 @@ RESULTS=${RESULTS:-"$ROOT/.omc/autoresearch/autofix-results.jsonl"}
 SUMMARY=${SUMMARY:-"$ROOT/.omc/autoresearch/autofix-summary.md"}
 LOG_DIR=${LOG_DIR:-"$ROOT/.omc/autoresearch/autofix-logs"}
 CODEX_BIN=${CODEX_BIN:-codex}
+PUSH_REMOTE=${PUSH_REMOTE:-origin}
+PUSH_BRANCH=${PUSH_BRANCH:-$(git branch --show-current)}
 
 mkdir -p "$LOG_DIR" "$(dirname "$RESULTS")"
 
@@ -150,6 +152,14 @@ PY
       git status --short >"$LOG_DIR/iteration-${i}.failed-status.txt" || true
       git stash push -u -m "autofix iteration $i failed $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log" 2>&1 || true
       status="stashed"
+    fi
+  fi
+
+  if [[ "$status" == "committed" ]]; then
+    if git push "$PUSH_REMOTE" "HEAD:$PUSH_BRANCH" >>"$log" 2>&1; then
+      status="pushed"
+    else
+      status="push_failed"
     fi
   fi
 
