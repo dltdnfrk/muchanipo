@@ -746,22 +746,37 @@ fn workspace_root() -> PathBuf {
         .and_then(|p| p.parent()) // <root>
         .map(PathBuf::from);
 
+    let cwd = std::env::current_dir().ok();
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from));
+
+    resolve_workspace_root(candidate, cwd, exe_dir)
+}
+
+fn resolve_workspace_root(
+    manifest_candidate: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    exe_dir: Option<PathBuf>,
+) -> PathBuf {
     // Sanity-check: the resolved root should contain the muchanipo Python
-    // package. If not (e.g. .app was moved), fall back to walking upward
-    // from cwd and finally to cwd.
-    if let Some(ref root) = candidate {
+    // package. If not (e.g. .app was moved), fall back to walking upward from
+    // the launch directory, then from the packaged executable location.
+    if let Some(ref root) = manifest_candidate {
         if is_workspace_root(root) {
             return root.clone();
         }
     }
 
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(root) = find_workspace_root_from(cwd) {
+    for start in [cwd.as_ref(), exe_dir.as_ref()].into_iter().flatten() {
+        if let Some(root) = find_workspace_root_from(start.clone()) {
             return root;
         }
     }
 
-    candidate.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    cwd.or(exe_dir)
+        .or(manifest_candidate)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn find_workspace_root_from(mut path: PathBuf) -> Option<PathBuf> {
@@ -929,5 +944,57 @@ mod tests {
         std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
 
         assert_eq!(find_workspace_root_from(nested), Some(root));
+    }
+
+    #[test]
+    fn workspace_root_resolution_uses_packaged_exe_path_when_manifest_is_stale() {
+        let root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-exe-src-layout-{}",
+            std::process::id()
+        ));
+        let stale_manifest_root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-stale-src-layout-{}",
+            std::process::id()
+        ));
+        let launch_dir =
+            std::env::temp_dir().join(format!("muchanipo-tauri-launch-dir-{}", std::process::id()));
+        let package_dir = root.join("src").join("muchanipo");
+        let exe_dir = root
+            .join("target")
+            .join("release")
+            .join("bundle")
+            .join("macos")
+            .join("Muchanipo.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&package_dir).expect("create src package dir");
+        std::fs::create_dir_all(&stale_manifest_root).expect("create stale manifest root");
+        std::fs::create_dir_all(&launch_dir).expect("create launch dir");
+        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
+        std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
+
+        assert_eq!(
+            resolve_workspace_root(Some(stale_manifest_root), Some(launch_dir), Some(exe_dir)),
+            root
+        );
+    }
+
+    #[test]
+    fn workspace_root_resolution_does_not_return_stale_manifest_candidate() {
+        let stale_manifest_root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-stale-manifest-{}",
+            std::process::id()
+        ));
+        let launch_dir = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-launch-fallback-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&stale_manifest_root).expect("create stale manifest root");
+        std::fs::create_dir_all(&launch_dir).expect("create launch dir");
+
+        assert_eq!(
+            resolve_workspace_root(Some(stale_manifest_root), Some(launch_dir.clone()), None),
+            launch_dir
+        );
     }
 }
