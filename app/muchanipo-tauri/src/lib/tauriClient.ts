@@ -36,6 +36,7 @@ export type BackendAction =
 //   - "stub" : legacy 4-phase placeholder (interview Q&A, single chapter).
 //   - "full" : PRD-v2 §2.1 8-stage MBB pipeline (10 council rounds → 6 chapters).
 export type PipelineMode = "stub" | "full";
+export type PipelineEnvs = Record<string, string>;
 
 export interface SCR {
   situation: string;
@@ -67,8 +68,9 @@ export interface FinalReport {
 export async function submitIdea(
   topic: string,
   pipeline: PipelineMode = "full",
+  envs: PipelineEnvs = {},
 ): Promise<void> {
-  return invoke("start_pipeline", { topic, pipeline });
+  return invoke("start_pipeline", { topic, pipeline, envs });
 }
 
 /**

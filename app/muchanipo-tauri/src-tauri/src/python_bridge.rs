@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{ChildStdin, Command, Stdio},
@@ -19,6 +20,7 @@ pub struct PythonBridge {
 pub async fn start_pipeline(
     topic: String,
     pipeline: Option<String>,
+    envs: Option<HashMap<String, String>>,
     app: AppHandle,
     bridge: State<'_, PythonBridge>,
 ) -> Result<(), String> {
@@ -40,17 +42,30 @@ pub async fn start_pipeline(
         _ => "full",
     };
 
-    let mut child = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .args([
-            "-m", "muchanipo", "serve",
-            "--topic", &topic,
-            "--pipeline", pipeline_mode,
+            "-m",
+            "muchanipo",
+            "serve",
+            "--topic",
+            &topic,
+            "--pipeline",
+            pipeline_mode,
             "--no-wait",
         ])
         .current_dir(workspace_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(envs) = envs {
+        command.envs(
+            envs.into_iter()
+                .filter(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty()),
+        );
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start python pipeline: {error}"))?;
 
@@ -162,6 +177,7 @@ fn emit_backend_event(app: &AppHandle, event: BackendEvent) {
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
+        .and_then(|path| path.parent())
         .and_then(|path| path.parent())
         .and_then(|path| path.parent())
         .map(PathBuf::from)
