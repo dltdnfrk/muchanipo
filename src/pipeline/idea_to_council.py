@@ -271,7 +271,7 @@ def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -
 
 def _coerce_gateway_v2(model_gateway: ModelGateway | None) -> GatewayV2:
     if model_gateway is None:
-        return default_gateway(force_offline=True)
+        return default_gateway(force_offline=_detect_offline_mode())
     if isinstance(model_gateway, GatewayV2):
         return model_gateway
 
@@ -288,6 +288,45 @@ def _coerce_gateway_v2(model_gateway: ModelGateway | None) -> GatewayV2:
         budget=model_gateway.budget,
         audit=model_gateway.audit,
     )
+
+
+def _detect_offline_mode() -> bool:
+    import os
+    import shutil
+
+    if os.environ.get("MUCHANIPO_OFFLINE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_ONLINE", "").strip().lower() in ("1", "true", "yes"):
+        return False
+
+    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in ("1", "true", "yes")
+    cli_pairs = [
+        ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),
+        ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
+        ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
+    ]
+    for use_flag, bin_var, bin_name in cli_pairs:
+        local_flag = os.environ.get(use_flag, "").strip().lower() in ("1", "true", "yes")
+        if not (cli_global or local_flag):
+            continue
+        explicit = os.environ.get(bin_var)
+        if explicit and os.path.exists(explicit):
+            return False
+        if shutil.which(bin_name):
+            return False
+
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "KIMI_API_KEY",
+        "MOONSHOT_API_KEY",
+    ):
+        if os.environ.get(key):
+            return False
+    return True
 
 
 def _generate_council_personas(

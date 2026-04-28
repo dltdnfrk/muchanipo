@@ -39,12 +39,11 @@ GBrain 하이브리드 검색 패턴 참조 (garrytan/gbrain):
     - MemPalace search → GBrain vector search 역할 (semantic)
     - RRF 통합 → GBrain hybrid.ts rrfFusion과 동일 (K=60)
     - deduplicate() → GBrain dedup.ts Layer 2 (Jaccard) 대응
+    - deduplicate_gbrain() → Layer 1/2/3/4 + stale alerts 대응
 
-  TODO: GBrain 4-layer dedup 완전 채용
-    - Layer 1 (by source): 현재 미구현 — slug/page 단위 best-chunk 선택 추가
-    - Layer 3 (type diversity): 현재 미구현 — page type별 60% cap 추가
-    - Layer 4 (per-page cap): 현재 미구현 — page당 max 2 chunk 추가
-    - Stale alerts: compiled_truth vs timeline 날짜 비교 추가
+  GBrain dedup 채용 상태:
+    - Layer 1/3/4 구현 완료 (_dedup_by_source, _enforce_type_diversity, _cap_per_source)
+    - Stale alerts 구현 완료 (_mark_stale)
 """
 
 from __future__ import annotations
@@ -54,6 +53,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from datetime import date
 from functools import lru_cache
 from typing import Any
 
@@ -401,10 +401,10 @@ def deduplicate(results: list[dict], threshold: float = 0.8) -> list[dict]:
     """텍스트 유사도 > threshold인 중복 결과 제거. 먼저 등장한 (높은 RRF) 항목 유지.
 
     GBrain 4-Layer Dedup (dedup.ts) 중 Layer 2에 해당:
-      Layer 1 (dedupBySource): page slug 기반 best-chunk — TODO 미구현
+      Layer 1 (dedupBySource): page slug 기반 best-chunk — _dedup_by_source
       Layer 2 (dedupByTextSimilarity): Jaccard > 0.85 중복 제거 ← 현재 구현
-      Layer 3 (enforceTypeDiversity): type별 60% cap — TODO 미구현
-      Layer 4 (capPerPage): page당 max 2 chunk — TODO 미구현
+      Layer 3 (enforceTypeDiversity): type별 60% cap — _enforce_type_diversity
+      Layer 4 (capPerPage): page당 max 2 chunk — _cap_per_source
 
     GBrain 원본 threshold=0.85, InsightForge는 0.8 (더 보수적 중복 제거).
     """
@@ -422,10 +422,10 @@ def deduplicate(results: list[dict], threshold: float = 0.8) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# GBrain 4-Layer Dedup Pipeline (dedup.ts 완전 채용)
+# GBrain 5-Layer Dedup Pipeline (dedup.ts 완전 채용)
 # ---------------------------------------------------------------------------
-# 아래 함수들은 GBrain dedup.ts의 4개 레이어를 Python으로 포팅한 것.
-# 현재 deduplicate()가 Layer 2만 구현하므로, 전체 파이프라인을 추가.
+# 아래 함수들은 GBrain dedup.ts의 dedup 레이어 + stale marker를 Python으로 포팅한 것.
+# deduplicate()는 Layer 2만 담당하고, deduplicate_gbrain()이 전체 파이프라인을 담당한다.
 
 _GBRAIN_COSINE_DEDUP_THRESHOLD = 0.85  # GBrain 원본 값
 _GBRAIN_MAX_TYPE_RATIO = 0.6           # GBrain 원본 값
@@ -494,17 +494,56 @@ def _cap_per_source(
     return kept
 
 
+def _parse_iso_date(value: Any) -> date | None:
+    """ISO date/time 문자열을 date로 파싱. 실패 시 None."""
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return date.fromisoformat(normalized)
+    except ValueError:
+        try:
+            return date.fromisoformat(normalized.split("T", 1)[0])
+        except ValueError:
+            return None
+
+
+def _mark_stale(results: list[dict], stale_marker: str = "[STALE]") -> list[dict]:
+    """GBrain Layer 5: compiled_truth가 latest_timeline 보다 오래된 결과에 마커.
+
+    두 날짜 필드가 모두 존재하고 파싱 가능할 때만 비교한다.
+    원본 dict는 변형하지 않고, 필요한 항목만 복사해서 text를 갱신한다.
+    """
+    marked: list[dict] = []
+    marker_prefix = f"{stale_marker} "
+    for item in results:
+        compiled_date = _parse_iso_date(item.get("compiled_truth"))
+        latest_date = _parse_iso_date(item.get("latest_timeline"))
+        if compiled_date and latest_date and compiled_date < latest_date:
+            updated = item.copy()
+            text = updated.get("text", "")
+            if isinstance(text, str) and not text.startswith(marker_prefix):
+                updated["text"] = f"{marker_prefix}{text}"
+            marked.append(updated)
+        else:
+            marked.append(item)
+    return marked
+
+
 def deduplicate_gbrain(results: list[dict]) -> list[dict]:
-    """GBrain 4-Layer Dedup 전체 파이프라인.
+    """GBrain 5-Layer Dedup 전체 파이프라인.
 
     tools/gbrain/src/core/search/dedup.ts dedupResults()의 Python 포팅.
-    Layer 1 → Layer 2 → Layer 3 → Layer 4 순서로 적용.
+    Layer 1 → Layer 2 → Layer 3 → Layer 4 → Layer 5(stale marker) 순서로 적용.
     """
     deduped = results
     deduped = _dedup_by_source(deduped)                                    # Layer 1
     deduped = deduplicate(deduped, threshold=_GBRAIN_COSINE_DEDUP_THRESHOLD)  # Layer 2
     deduped = _enforce_type_diversity(deduped)                             # Layer 3
     deduped = _cap_per_source(deduped)                                     # Layer 4
+    deduped = _mark_stale(deduped)                                         # Layer 5
     return deduped
 
 
@@ -800,13 +839,10 @@ def insight_forge(
         search_queries.extend(expansion_queries)
 
     # 6. 중복 제거
-    # deep 모드: GBrain 4-layer dedup 파이프라인 사용 (dedup.ts 완전 포팅)
-    # light 모드: 기존 Jaccard 기반 단일 레이어 (빠른 응답)
+    # light/deep 공통으로 GBrain dedup 파이프라인 사용.
+    # light는 확장 검색을 생략해 비용을 줄이고, dedup 정책은 동일하게 유지.
     total_before = len(fused)
-    if depth == "deep":
-        deduplicated = deduplicate_gbrain(fused)
-    else:
-        deduplicated = deduplicate(fused, threshold=0.8)
+    deduplicated = deduplicate_gbrain(fused)
     deduplicated = deduplicated[:max_results]
 
     # 7. 엔티티 인사이트 추출 (MiroFish Step 3)

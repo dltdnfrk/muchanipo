@@ -13,7 +13,7 @@ from uuid import uuid4
 from src.hitl.plannotator_adapter import HITLResult, VALID_STATUSES
 
 
-DEFAULT_ENDPOINT = "https://plannotator.ai/api"
+DEFAULT_ENDPOINT = os.environ.get("PLANNOTATOR_ENDPOINT", "https://plannotator.ai/api")
 DEFAULT_TIMEOUT_SEC = 30.0
 DEFAULT_POLL_INTERVAL_SEC = 2.0
 

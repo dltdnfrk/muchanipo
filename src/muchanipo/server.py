@@ -285,18 +285,64 @@ def _render_chapter_markdown(chapter) -> str:
     return "\n".join(lines)
 
 
+def _detect_offline_mode() -> bool:
+    """Decide whether to run the pipeline against mock providers.
+
+    Online iff: (a) any LLM CLI is wired up via MUCHANIPO_USE_CLI / *_USE_CLI
+    and the relevant binary is on PATH, OR (b) any provider API key is
+    present in the environment. Otherwise fall back to offline mocks so the
+    pipeline still produces a placeholder report instead of crashing.
+    """
+    import os
+    import shutil
+
+    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes")
+    cli_pairs = [
+        ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),
+        ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
+        ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
+    ]
+    for use_flag, bin_var, bin_name in cli_pairs:
+        local_flag = os.environ.get(use_flag, "").strip() in ("1", "true", "yes")
+        if not (cli_global or local_flag):
+            continue
+        explicit = os.environ.get(bin_var)
+        if explicit and os.path.exists(explicit):
+            return False
+        if shutil.which(bin_name):
+            return False
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "KIMI_API_KEY",
+        "MOONSHOT_API_KEY",
+    ):
+        if os.environ.get(key):
+            return False
+    return True
+
+
 def serve_full(
     topic: str,
     *,
     report_path: Path,
     stdout: IO[str],
 ) -> int:
-    """PRD-v2 §2.1 full pipeline — offline mock providers."""
+    """PRD-v2 §2.1 full pipeline — uses real LLM providers when configured."""
     from src.pipeline.runner import run_pipeline
     from src.report.chapter_mapper import ChapterMapper
     from src.report.pyramid_formatter import PyramidFormatter
 
-    emit("phase_change", phase="STARTUP", stream=stdout, data={"topic": topic, "pipeline": "full"})
+    offline = _detect_offline_mode()
+    emit(
+        "phase_change",
+        phase="STARTUP",
+        stream=stdout,
+        data={"topic": topic, "pipeline": "full", "offline": offline},
+    )
 
     def emit_progress(event: dict[str, Any]) -> None:
         name = str(event.get("event") or "")
@@ -305,7 +351,7 @@ def serve_full(
             emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
         emit(name, stream=stdout, **fields)
 
-    pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=True)
+    pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline)
     rounds = pipeline_result["rounds"]
 
     for round_no, digest in enumerate(rounds, start=1):

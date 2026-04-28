@@ -92,5 +92,37 @@ export async function sendAction(action: BackendAction): Promise<void> {
   return invoke("send_action", { action });
 }
 
+export interface CliStatus {
+  name: string;
+  installed: boolean;
+  path?: string | null;
+  version?: string | null;
+  error?: string | null;
+}
+
+/** Probe local CLIs (claude / codex / gemini) for availability. */
+export async function checkCliStatus(): Promise<CliStatus[]> {
+  return invoke<CliStatus[]>("check_cli_status");
+}
+
+/**
+ * Fetch every JSON-line event the Python pipeline has emitted since the
+ * current run started. Used by RunProgress to replay history when the page
+ * is re-mounted (e.g. user navigated away and clicked the run from the
+ * sidebar) so the stage list reflects actual pipeline state.
+ */
+export async function getBufferedEvents(): Promise<BackendEvent[]> {
+  const lines = await invoke<string[]>("get_buffered_events");
+  const out: BackendEvent[] = [];
+  for (const line of lines) {
+    try {
+      out.push(JSON.parse(line) as BackendEvent);
+    } catch {
+      /* skip malformed lines */
+    }
+  }
+  return out;
+}
+
 // Legacy alias kept for existing UI components.
 export const onMuchanipoEvent = onBackendEvent;

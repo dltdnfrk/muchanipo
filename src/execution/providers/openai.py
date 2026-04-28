@@ -16,7 +16,12 @@ except ImportError:  # pragma: no cover
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self, model: str = "gpt-5.4", api_key: str | None = None, client: Any = None) -> None:
+    def __init__(
+        self,
+        model: str = os.environ.get("MUCHANIPO_OPENAI_MODEL", "gpt-5.4"),
+        api_key: str | None = None,
+        client: Any = None,
+    ) -> None:
         self.model = model
         self.client = client
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")

@@ -23,19 +23,32 @@ except Exception:  # pragma: no cover
 _DEFAULT_MODEL = "kimi-k2-0711-preview"
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_HTTP_TIMEOUT_SEC = _env_int("MUCHANIPO_KIMI_TIMEOUT_SEC", 30)
+
+
 class KimiProvider:
     name = "kimi"
 
     def __init__(
         self,
-        model: str = _DEFAULT_MODEL,
+        model: str = os.environ.get("MUCHANIPO_KIMI_MODEL", _DEFAULT_MODEL),
         api_key: str | None = None,
-        endpoint: str = "https://api.moonshot.cn/v1/chat/completions",
+        endpoint: str = "",
         offline: bool | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("KIMI_API_KEY") or os.environ.get("MOONSHOT_API_KEY")
-        self.endpoint = endpoint
+        self.endpoint = endpoint or os.environ.get("KIMI_ENDPOINT", "https://api.moonshot.cn/v1/chat/completions")
         if offline is None:
             offline = bool(os.environ.get("KIMI_OFFLINE")) or self.api_key is None
         self.offline = offline
@@ -63,7 +76,7 @@ class KimiProvider:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         text = ""
         try:

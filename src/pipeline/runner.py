@@ -88,9 +88,17 @@ def run_pipeline(
     topic: str,
     *,
     progress_callback: ProgressCallback | None = None,
-    offline: bool = True,
+    offline: bool | None = None,
 ) -> dict[str, Any]:
-    """Run idea -> research -> council -> report -> vault and return report inputs."""
+    """Run idea -> research -> council -> report -> vault and return report inputs.
+
+    `offline=None` auto-detects from environment (any *_USE_CLI flag with the
+    matching binary present, or any provider API key). Explicit `True`/`False`
+    overrides the detection.
+    """
+    if offline is None:
+        from src.muchanipo.server import _detect_offline_mode
+        offline = _detect_offline_mode()
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
 
