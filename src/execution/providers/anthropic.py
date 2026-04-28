@@ -65,6 +65,9 @@ class AnthropicProvider:
         self.api_key = api_key or _resolve_api_key()
         if offline is None:
             offline = bool(os.environ.get("ANTHROPIC_OFFLINE")) or self.api_key is None
+        # Injected client trumps offline default — caller wants real call path.
+        if client is not None and offline:
+            offline = False
         self.offline = offline
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
