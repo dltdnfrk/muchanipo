@@ -21,6 +21,8 @@ CLAUDE_BIN=${CLAUDE_BIN:-claude}
 KIMI_BIN=${KIMI_BIN:-kimi}
 PEER_REVIEW=${PEER_REVIEW:-1}
 PEER_TIMEOUT_SECONDS=${PEER_TIMEOUT_SECONDS:-90}
+CLAUDE_TIMEOUT_SECONDS=${CLAUDE_TIMEOUT_SECONDS:-45}
+KIMI_TIMEOUT_SECONDS=${KIMI_TIMEOUT_SECONDS:-180}
 CLAUDE_MAX_BUDGET_USD=${CLAUDE_MAX_BUDGET_USD:-1.00}
 NO_CHANGE_LIMIT=${NO_CHANGE_LIMIT:-3}
 PUSH_REMOTE=${PUSH_REMOTE:-origin}
@@ -181,8 +183,15 @@ run_peer_reviewer() {
   local bin=$2
   local prompt_file=$3
   local out_file=$4
+  local timeout_seconds=$PEER_TIMEOUT_SECONDS
 
-  python3 - "$reviewer" "$bin" "$ROOT" "$prompt_file" "$out_file" "$PEER_TIMEOUT_SECONDS" "$CLAUDE_MAX_BUDGET_USD" <<'PY'
+  if [[ "$reviewer" == "claude" ]]; then
+    timeout_seconds=$CLAUDE_TIMEOUT_SECONDS
+  elif [[ "$reviewer" == "kimi" ]]; then
+    timeout_seconds=$KIMI_TIMEOUT_SECONDS
+  fi
+
+  python3 - "$reviewer" "$bin" "$ROOT" "$prompt_file" "$out_file" "$timeout_seconds" "$CLAUDE_MAX_BUDGET_USD" <<'PY'
 import pathlib
 import subprocess
 import sys
