@@ -1,22 +1,24 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import ChapterCard from "../components/ChapterCard";
+import { parseChapterMarkdown } from "../lib/parseChapterMarkdown";
+import type { Chapter } from "../lib/tauriClient";
 
 export default function ReportView() {
   const { runId } = useParams<{ runId: string }>();
-  const navigate = useNavigate();
   const [markdown, setMarkdown] = useState<string>("");
-  const [reportPath, setReportPath] = useState<string>("");
-  const [chapterCount, setChapterCount] = useState<number>(0);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [showRaw, setShowRaw] = useState(false);
   const [topic, setTopic] = useState<string>("");
 
   useEffect(() => {
     if (!runId) return;
     try {
-      setMarkdown(localStorage.getItem(`run:${runId}:report`) || "");
-      setReportPath(localStorage.getItem(`run:${runId}:report_path`) || "");
-      setChapterCount(Number(localStorage.getItem(`run:${runId}:chapter_count`) || "0"));
+      const md = localStorage.getItem(`run:${runId}:report`) || "";
+      setMarkdown(md);
+      setChapters(parseChapterMarkdown(md));
       setTopic(localStorage.getItem(`run:${runId}:topic`) || "");
     } catch {
       /* ignore */
@@ -38,13 +40,8 @@ export default function ReportView() {
   if (!markdown) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#15141B] px-4">
-        <p className="text-[#8A8599]">보고서를 찾을 수 없습니다.</p>
-        <button
-          onClick={() => navigate("/")}
-          className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-4 py-2 text-sm text-[#FFB347] hover:border-[#FFB347]"
-        >
-          새 리서치 시작
-        </button>
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#FFB347] border-t-transparent" />
+        <p className="text-sm text-[#8A8599]">보고서를 불러오는 중…</p>
       </div>
     );
   }
@@ -55,39 +52,51 @@ export default function ReportView() {
         <div className="mb-8 flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
           <div>
             <h1 className="text-2xl font-bold text-[#E8E0D0]">
-              {topic || "Muchanipo 보고서"}
+              {topic || "리서치 보고서"}
             </h1>
-            <p className="mt-1 text-xs text-[#6E6B7A]">
-              {chapterCount} chapters · Run ID: {runId}
-              {reportPath && (
-                <>
-                  {" · "}
-                  <span className="text-[#5A5669]">{reportPath}</span>
-                </>
-              )}
-            </p>
+            <p className="mt-1 text-sm text-[#8A8599]">Run ID: {runId}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => navigate("/")}
-              className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-4 py-2 text-sm font-medium text-[#E8E0D0] transition hover:border-[#FFB347] hover:text-[#FFB347]"
+              onClick={() => setShowRaw((s) => !s)}
+              className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-3 py-2 text-xs font-medium text-[#E8E0D0] transition hover:border-[#FFB347]"
             >
-              새 리서치
+              {showRaw ? "카드 보기" : "원본 Markdown"}
             </button>
             <button
               onClick={exportMarkdown}
-              className="rounded-lg bg-[#FFB347] px-4 py-2 text-sm font-semibold text-[#15141B] transition hover:bg-[#e6a03f]"
+              className="rounded-lg border border-[#2A2833] bg-[#1E1D26] px-3 py-2 text-xs font-medium text-[#E8E0D0] transition hover:border-[#FFB347] hover:text-[#FFB347]"
             >
-              Markdown 다운로드
+              다운로드
             </button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#2A2833] bg-[#1E1D26] p-8">
-          <article className="prose prose-invert prose-sm max-w-none prose-headings:text-[#E8E0D0] prose-strong:text-[#FFB347] prose-em:text-[#8A8599] prose-li:text-[#D0CABB]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
-          </article>
-        </div>
+        {showRaw ? (
+          <div className="rounded-xl border border-[#2A2833] bg-[#1E1D26] p-6">
+            <div className="prose prose-invert max-w-none prose-sm">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {chapters.length > 0 ? (
+              chapters.map((chapter) => (
+                <ChapterCard
+                  key={chapter.chapter_no}
+                  chapter={chapter}
+                  highlightScr={chapter.chapter_no === 1}
+                />
+              ))
+            ) : (
+              <div className="rounded-xl border border-[#2A2833] bg-[#1E1D26] p-6">
+                <p className="text-sm text-[#8A8599]">
+                  파싱된 챕터가 없습니다. 원본 Markdown을 확인해주세요.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
