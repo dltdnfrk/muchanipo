@@ -137,6 +137,31 @@ def test_generate_uses_llm_mode_when_gateway_is_present():
     assert "HACHIMI Stage 1 PROPOSE" in gateway.calls[0]["prompt"]
 
 
+def test_generate_propagates_caller_topic_to_llm_deep_validate_when_ontology_lacks_topic():
+    gateway = MockGateway(
+        [
+            _proposal_response(),
+            json.dumps({"score": 9, "reason": "relevant"}),
+            json.dumps({"score": 8, "reason": "relevant"}),
+        ]
+    )
+    generator = PersonaGenerator(gateway=gateway)
+    ontology = dict(_ontology())
+    ontology.pop("topic")
+    caller_topic = "caller supplied orchard disease buyer research"
+
+    finals, _telemetry = generator.generate(
+        ontology,
+        target_count=2,
+        topic=caller_topic,
+    )
+
+    assert [final.name for final in finals] == ["Evidence Judge", "Market Mapper"]
+    assert caller_topic in gateway.calls[0]["prompt"]
+    assert caller_topic in gateway.calls[1]["prompt"]
+    assert caller_topic in gateway.calls[2]["prompt"]
+
+
 def test_generate_without_gateway_keeps_heuristic_mode():
     generator = PersonaGenerator()
 

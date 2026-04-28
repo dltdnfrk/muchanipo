@@ -56,12 +56,15 @@ class CodexProvider:
             capture_output=True,
             timeout=int(kwargs.pop("timeout", 60)),
         )
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(stderr or f"codex exited with {proc.returncode}")
         text = proc.stdout.decode("utf-8", errors="replace")
         return ModelResult(
             text=text,
             provider=self.name,
             model=self.model,
-            raw={"returncode": proc.returncode, "stderr": proc.stderr.decode("utf-8", errors="replace")},
+            raw={"returncode": proc.returncode, "stderr": stderr},
         )
 
     def _call_openai(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:  # pragma: no cover

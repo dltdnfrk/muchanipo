@@ -86,13 +86,8 @@ def test_session_run_all_calls_gateway_v2_for_ten_structured_rounds():
     assert "Chairman Synthesis" in provider.calls[2]["prompt"]
 
 
-def test_session_run_all_stops_early_on_confidence_plateau():
-    provider = SequenceProvider([
-        0.70, 0.70, 0.70,
-        0.71, 0.71, 0.71,
-        0.72, 0.72, 0.72,
-        0.90, 0.90, 0.90,
-    ])
+def test_session_run_all_traverses_default_layers_despite_flat_confidence():
+    provider = SequenceProvider([0.70] * 30)
     session = Session(
         gateway=_gateway(provider),
         layers=list(DEFAULT_LAYERS),
@@ -102,10 +97,10 @@ def test_session_run_all_stops_early_on_confidence_plateau():
 
     results = session.run_all()
 
-    assert len(results) == 3
-    assert session.stopped is True
-    assert "plateau detected" in (session.stop_reason or "")
-    assert len(provider.calls) == 9
+    assert len(results) == 10
+    assert session.stopped is False
+    assert "mandatory layers" in (session.stop_reason or "")
+    assert len(provider.calls) == 30
 
 
 def test_round_prompt_includes_layer_framework_guidance():

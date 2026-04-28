@@ -78,6 +78,14 @@ class _SuccessProvider:
         return ModelResult(text=f"ok-{self.name}", provider=self.name, model="mock")
 
 
+class _AuditRecorder:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def record_call(self, **kwargs):
+        self.calls.append(dict(kwargs))
+
+
 def test_fallback_chain_returns_first_success():
     chain = FallbackChain(name="test", providers=[_SuccessProvider("a"), _FailProvider("b")])
     result = chain.call(stage="test", prompt="x")
@@ -148,6 +156,22 @@ def test_gateway_v2_records_fallback_events_when_primary_fails():
     assert gw.fallback_events[0]["provider"] == "primary"
 
 
+def test_gateway_v2_audit_records_actual_fallback_provider():
+    audit = _AuditRecorder()
+    gw = GatewayV2(
+        providers={"primary": _FailProvider("primary"), "secondary": _SuccessProvider("secondary")},
+        stage_routes={"x": "primary"},
+        fallback_chain={"x": ["primary", "secondary"]},
+        audit=audit,
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "secondary"
+    assert audit.calls[0]["provider"] == "secondary"
+    assert "primary failed" in (audit.calls[0]["fallback_reason"] or "")
+
+
 def test_gateway_v2_unknown_stage_falls_back_to_default_routing():
     """체인 미정의 stage는 기존 ModelGateway 동작으로 폴백."""
     primary = _SuccessProvider("default")
@@ -203,6 +227,23 @@ def test_gateway_v2_calls_budget_reserve_and_reconcile():
     gw.call("x", "prompt")
     actions = [c["action"] for c in tracker.calls]
     assert actions == ["reserve", "reconcile"]
+
+
+def test_gateway_v2_budget_audit_records_actual_fallback_provider():
+    audit = _AuditRecorder()
+    tracker = _BudgetTracker()
+    gw = GatewayV2(
+        providers={"primary": _FailProvider("primary"), "secondary": _SuccessProvider("secondary")},
+        stage_routes={"x": "primary"},
+        fallback_chain={"x": ["primary", "secondary"]},
+        budget=tracker,
+        audit=audit,
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "secondary"
+    assert audit.calls[0]["provider"] == "secondary"
 
 
 def test_gateway_v2_reconciles_zero_when_chain_exhausted():

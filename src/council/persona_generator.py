@@ -393,6 +393,7 @@ class PersonaGenerator:
         ontology: Mapping[str, Any],
         topic_keywords: Optional[Sequence[str]] = None,
         diversity_map: Any = None,
+        topic: Optional[str] = None,
     ) -> ValidationReport:
         """Fast 통과한 페르소나에만 적용되는 깊은 검증.
 
@@ -405,6 +406,7 @@ class PersonaGenerator:
         issues: List[ValidationIssue] = []
         valid_ids: List[str] = []
         topic_set = {str(k).strip().lower() for k in (topic_keywords or []) if str(k).strip()}
+        resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
 
         for draft in drafts:
             persona_issues: List[ValidationIssue] = []
@@ -435,7 +437,7 @@ class PersonaGenerator:
 
             if self.gateway is not None:
                 persona_issues.extend(
-                    self._deep_validate_llm(draft, ontology, topic_keywords)
+                    self._deep_validate_llm(draft, ontology, resolved_topic)
                 )
 
             # MAP-Elites 다양성 — 점유된 셀이면 reject (admit는 generate에서 별도 호출)
@@ -461,13 +463,12 @@ class PersonaGenerator:
         self,
         draft: Draft,
         ontology: Mapping[str, Any],
-        topic_keywords: Optional[Sequence[str]] = None,
+        topic: str,
     ) -> List[ValidationIssue]:
         """Ask the LLM judge whether a draft is topic-relevant."""
 
         if self.gateway is None:
             return []
-        topic = _topic_from_keywords(topic_keywords, ontology)
         prompt = build_persona_deep_validate_prompt(draft, ontology, topic)
         try:
             result = self.gateway.call("council", prompt)
@@ -581,12 +582,14 @@ class PersonaGenerator:
         }
 
         if self.gateway is not None and not seed_personas:
+            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
             drafts = self.propose_with_llm(
                 ontology,
                 target_count=target_count,
-                topic=topic or _topic_from_keywords(topic_keywords, ontology),
+                topic=resolved_topic,
             )
         else:
+            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
             drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
 
         # Fast loop with up to max_revisions iterations
@@ -609,6 +612,7 @@ class PersonaGenerator:
             ontology,
             topic_keywords=topic_keywords,
             diversity_map=diversity_map,
+            topic=resolved_topic,
         )
         telemetry["deep_failed_ids"] = [
             d.persona_id for d in survivors if d.persona_id not in deep_report.valid_ids

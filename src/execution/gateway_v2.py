@@ -219,7 +219,8 @@ class GatewayV2(ModelGateway):
                     result.fallback_reason = first_fallback_reason
                 actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
                 self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-                self._audit(stage, primary, result, actual_usd, result.fallback_reason)
+                actual_provider = self._provider_from_result(result, provider)
+                self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
                 return result
             raise RuntimeError(
                 f"FallbackChain {stage} exhausted ({len(chain_providers)} providers) — last: {last_error}"
@@ -240,7 +241,8 @@ class GatewayV2(ModelGateway):
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
         if reservation_id and self.budget is not None:
             self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-        self._audit(stage, primary, result, actual_usd, result.fallback_reason)
+        actual_provider = self._provider_from_result(result, primary)
+        self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
         return result
 
     def _record_fallback(self, stage: str, provider: Provider, error: Exception) -> None:
@@ -249,6 +251,12 @@ class GatewayV2(ModelGateway):
             "provider": getattr(provider, "name", str(provider)),
             "error": str(error),
         })
+
+    def _provider_from_result(self, result: ModelResult, default: Provider) -> Provider:
+        provider_name = getattr(result, "provider", None)
+        if isinstance(provider_name, str):
+            return self.providers.get(provider_name, default)
+        return default
 
     @property
     def fallback_events(self) -> List[Dict[str, Any]]:
