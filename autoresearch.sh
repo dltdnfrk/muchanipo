@@ -43,6 +43,7 @@ cd "$ROOT"
 run_step python_tests python_tests 40 python3 -m pytest \
   tests/test_e2e_tauri_smoke.py \
   tests/test_execution_real_wire.py \
+  tests/test_model_router_config.py \
   tests/test_model_gateway_routing.py \
   tests/test_provider_kimi.py \
   -q

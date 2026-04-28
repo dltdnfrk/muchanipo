@@ -255,7 +255,7 @@ class ModelRouter:
             }
 
         # 4. Codex 모델
-        if model in ("o3", "gpt-5.4-codex"):
+        if model in ("o3", "gpt-5.5"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -343,7 +343,7 @@ class ModelRouter:
                 "note": f"fallback → {model}",
                 "is_fallback": True,
             }
-        if model in ("o3", "gpt-5.4-codex"):
+        if model in ("o3", "gpt-5.5"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -920,7 +920,7 @@ class ModelRouter:
                     "response": None,
                     "note": "Claude Agent tool로 실행 필요",
                 }
-            elif model in ("o3", "gpt-5.4-codex"):
+            elif model in ("o3", "gpt-5.5"):
                 response = self.call_codex(model, prompt)
                 provider = "codex"
             elif model.startswith("kimi"):
@@ -1036,7 +1036,7 @@ class ModelRouter:
             },
             "codex": {
                 "o3": {"input_per_1k": 0.010, "output_per_1k": 0.040},
-                "gpt-5.4-codex": {"input_per_1k": 0.002, "output_per_1k": 0.008},
+                "gpt-5.5": {"input_per_1k": 0.002, "output_per_1k": 0.008},
             },
         }
 

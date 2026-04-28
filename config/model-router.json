@@ -12,11 +12,11 @@
     },
     "codex": {
       "type": "oauth",
-      "models": ["gpt-5.4-codex"],
-      "default": "gpt-5.4-codex",
-      "access": "no_proxy='*' codex exec --full-auto -m gpt-5.4-codex",
+      "models": ["gpt-5.5"],
+      "default": "gpt-5.5",
+      "access": "no_proxy='*' codex exec --full-auto -m gpt-5.5",
       "env": "no_proxy=* + dangerouslyDisableSandbox",
-      "note": "GPT-5.4 사용 (high 모드). o3 불필요."
+      "note": "GPT-5.5 사용 (high 모드). o3 불필요."
     },
     "ollama": {
       "type": "local",
@@ -84,9 +84,9 @@
       "step": "Step 3b: Council 토론 (심층)",
       "reasoning": "높음 (다관점 분석, 근거 기반 논증)",
       "model": "opus-4-6",
-      "alt": "gpt-5.4-codex",
+      "alt": "gpt-5.5",
       "cost": "$$$",
-      "note": "프론티어 모델 필수. Opus + GPT-5.4 교차 사용으로 관점 다양성 확보"
+      "note": "프론티어 모델 필수. Opus + GPT-5.5 교차 사용으로 관점 다양성 확보"
     },
     "council_debate_fast": {
       "step": "Step 3b: Council 토론 (속도 우선)",
@@ -176,7 +176,7 @@
     "pattern": "MiroFish의 multi-platform 패턴 채용",
     "example_5_personas": {
       "persona_1_investor": "opus-4-6 (비판적 분석)",
-      "persona_2_scientist": "gpt-5.4-codex (논리적 추론)",
+      "persona_2_scientist": "gpt-5.5 (논리적 추론)",
       "persona_3_farmer": "sonnet-4-6 (실용적 관점)",
       "persona_4_regulator": "kimi-k2 (장문맥 규제 분석)",
       "persona_5_competitor": "gemma4:26b (로컬, 비용 절감)"

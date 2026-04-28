@@ -18,7 +18,7 @@ class OpenAIProvider:
 
     def __init__(
         self,
-        model: str = os.environ.get("MUCHANIPO_OPENAI_MODEL", "gpt-5.4"),
+        model: str = os.environ.get("MUCHANIPO_OPENAI_MODEL", "gpt-5.5"),
         api_key: str | None = None,
         client: Any = None,
     ) -> None:
