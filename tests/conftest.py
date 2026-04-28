@@ -28,11 +28,13 @@ def sample_evidence():
             "id": "E1",
             "source": "market-brief",
             "quote": "MuchaNipo replay harness reduces manual regression review by 25% in 2026.",
+            "source_text": "MuchaNipo replay harness reduces manual regression review by 25% in 2026.",
         },
         {
             "id": "E2",
             "source": "ops-note",
             "quote": "한국어 토큰 중첩 검증은 근거 문장과 핵심 주장을 비교한다.",
+            "source_text": "한국어 토큰 중첩 검증은 근거 문장과 핵심 주장을 비교한다.",
         },
     ]
 

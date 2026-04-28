@@ -13,6 +13,7 @@ from src.execution.gateway_v2 import (
     default_gateway,
 )
 from src.execution.models import ModelResult
+from src.execution.providers.anthropic import AnthropicProvider
 
 
 # ---- offline mock providers ----------------------------------------------
@@ -20,7 +21,7 @@ from src.execution.models import ModelResult
 
 def test_default_offline_providers_return_mock_text():
     providers = build_default_providers(force_offline=True)
-    for name in ("gemini", "kimi", "codex"):
+    for name in ("anthropic", "gemini", "kimi", "codex"):
         result = providers[name].call(stage="research", prompt="hello")
         assert "[mock-" in result.text
         assert result.provider == name
@@ -146,6 +147,24 @@ def test_gateway_v2_records_fallback_events_when_primary_fails():
     assert result.text == "ok-secondary"
     assert len(gw.fallback_events) == 1
     assert gw.fallback_events[0]["provider"] == "primary"
+
+
+def test_gateway_v2_disables_anthropic_provider_fallback_in_chain():
+    client = pytest.importorskip("unittest.mock").MagicMock()
+    client.messages.create.side_effect = RuntimeError("anthropic down")
+    anthropic = AnthropicProvider(api_key="sk-test", client=client, offline=False)
+    secondary = _SuccessProvider("gemini")
+    gw = GatewayV2(
+        providers={"anthropic": anthropic, "gemini": secondary},
+        stage_routes={"x": "anthropic"},
+        fallback_chain={"x": ["anthropic", "gemini"]},
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "gemini"
+    assert result.text == "ok-gemini"
+    assert gw.fallback_events[0]["provider"] == "anthropic"
 
 
 def test_gateway_v2_unknown_stage_falls_back_to_default_routing():

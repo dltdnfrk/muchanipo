@@ -132,14 +132,17 @@ def test_evidence_store_marks_provenance_failure_when_lockdown_rejects(monkeypat
 
 
 def test_verified_claim_ratio_routes_through_citation_grounder():
-    """Substring quote in evidence → 'supported' → ratio == 1.0."""
+    """Substring source text in evidence → 'supported' → ratio == 1.0."""
     ev = EvidenceRef(
         id="e1",
         source_url=None,
         source_title="src",
         quote="Initial research direction for: agent memory architectures",
         source_grade="B",
-        provenance={"kind": "vault"},
+        provenance={
+            "kind": "vault",
+            "source_text": "Initial research direction for: agent memory architectures",
+        },
     )
     finding = Finding(
         claim="Initial research direction for: agent memory architectures",

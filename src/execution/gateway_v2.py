@@ -77,7 +77,11 @@ class FallbackChain:
         last_error: Optional[Exception] = None
         for i, provider in enumerate(self.providers):
             try:
-                result = provider.call(stage=stage, prompt=prompt, **kwargs)
+                result = provider.call(
+                    stage=stage,
+                    prompt=prompt,
+                    **_chain_call_kwargs(provider, kwargs),
+                )
                 if i > 0:
                     result.is_fallback = True
                     result.fallback_reason = (
@@ -115,7 +119,7 @@ def build_default_providers(
     from src.execution.providers.mock import MockProvider
 
     providers: Dict[str, Provider] = {
-        "anthropic": AnthropicProvider(),
+        "anthropic": AnthropicProvider(offline=True if force_offline else None),
         "gemini": GeminiProvider(offline=True if force_offline else None),
         "kimi": KimiProvider(offline=True if force_offline else None),
         "codex": CodexProvider(offline=True if force_offline else None),
@@ -205,7 +209,12 @@ class GatewayV2(ModelGateway):
                         first_fallback_reason = f"primary {primary.name} failed: budget exceeded"
                     continue
                 try:
-                    result = self.dispatch(provider, stage=stage, prompt=prompt, **kwargs)
+                    result = self.dispatch(
+                        provider,
+                        stage=stage,
+                        prompt=prompt,
+                        **_chain_call_kwargs(provider, kwargs),
+                    )
                 except Exception as exc:
                     last_error = exc
                     self.budget.reconcile(reservation_id, actual_usd=0.0)
@@ -253,3 +262,10 @@ class GatewayV2(ModelGateway):
     @property
     def fallback_events(self) -> List[Dict[str, Any]]:
         return list(self._fallback_events)
+
+
+def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[str, Any]:
+    call_kwargs = dict(kwargs)
+    if getattr(provider, "name", "") == "anthropic":
+        call_kwargs.setdefault("allow_fallback", False)
+    return call_kwargs

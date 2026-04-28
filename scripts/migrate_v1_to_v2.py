@@ -49,6 +49,10 @@ class PlannedWrite:
         self.content = content
 
 
+class UnsupportedFrontmatter(ValueError):
+    pass
+
+
 def migrate_vault(vault_dir: Path, dry_run: bool = False) -> MigrationResult:
     vault_dir = Path(vault_dir)
     warnings: list[str] = []
@@ -218,17 +222,28 @@ def _parse_frontmatter_file(path: Path, warnings: list[str]) -> tuple[dict[str, 
     body = text[end + len("\n---") :]
     if body.startswith("\n"):
         body = body[1:]
-    return _parse_mapping(raw.splitlines()), body
+    try:
+        return _parse_mapping(raw.splitlines()), body
+    except UnsupportedFrontmatter as exc:
+        warnings.append(f"unsupported frontmatter skipped: {path}: {exc}")
+        return None
 
 
 def _parse_mapping(lines: list[str]) -> dict[str, Any]:
     root: dict[str, Any] = {}
     stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
     for raw_line in lines:
-        if not raw_line.strip() or raw_line.lstrip().startswith("#") or ":" not in raw_line:
+        stripped = raw_line.strip()
+        if not stripped or raw_line.lstrip().startswith("#"):
             continue
+        if raw_line.lstrip().startswith("- "):
+            raise UnsupportedFrontmatter("block lists are not supported")
+        if ":" not in raw_line:
+            raise UnsupportedFrontmatter("multiline scalar continuation is not supported")
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         key, raw_value = raw_line.strip().split(":", 1)
+        if raw_value.strip() in {"|", ">"}:
+            raise UnsupportedFrontmatter("block scalars are not supported")
         while stack and indent <= stack[-1][0]:
             stack.pop()
         current = stack[-1][1]
