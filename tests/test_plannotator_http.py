@@ -2,7 +2,9 @@ import json
 from urllib.request import Request
 
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
-from src.hitl.plannotator_http import PlannotatorClient
+import pytest
+
+from src.hitl.plannotator_http import PlannotatorClient, PlannotatorError
 
 
 class _Response:
@@ -151,3 +153,13 @@ def test_offline_mode_returns_approved_without_annotations(monkeypatch):
     assert result.status == "approved"
     assert result.annotations == []
     assert result.comments == []
+
+
+def test_missing_api_key_fails_closed_without_offline(monkeypatch):
+    monkeypatch.delenv("PLANNOTATOR_OFFLINE", raising=False)
+    monkeypatch.delenv("PLANNOTATOR_API_KEY", raising=False)
+    client = PlannotatorClient()
+
+    assert client.offline is False
+    with pytest.raises(PlannotatorError, match="no api key"):
+        client.create_session({"gate": "report"})

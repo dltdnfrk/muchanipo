@@ -112,3 +112,22 @@ def test_migrate_v1_to_v2_reports_cost_log_warnings(tmp_path):
 
     assert any("missing status" in warning for warning in result.warnings)
     assert any("invalid cost-log json" in warning for warning in result.warnings)
+
+
+def test_migrate_v1_to_v2_skips_unsupported_yaml_without_rewriting(tmp_path):
+    vault = _write_fixture_vault(tmp_path)
+    persona = vault / "personas" / "operator.md"
+    original = (
+        "---\n"
+        "title: Operator\n"
+        "aliases:\n"
+        "  - Field Ops\n"
+        "---\n"
+        "# Operator\n"
+    )
+    persona.write_text(original, encoding="utf-8")
+
+    result = migration.migrate_vault(vault, dry_run=True)
+
+    assert persona.read_text(encoding="utf-8") == original
+    assert any("unsupported frontmatter skipped" in warning for warning in result.warnings)

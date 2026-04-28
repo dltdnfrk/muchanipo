@@ -1,6 +1,10 @@
 # Runtime data
 logs/
 signoff-queue/*.json
+src/hitl/signoff-queue/
+muchanipo-pipeline-*/
+/REPORT.md
+app/muchanipo-tauri/tsconfig.tsbuildinfo
 rubric-history/
 reports/*.html
 raw/*.pdf

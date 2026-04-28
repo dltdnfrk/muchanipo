@@ -121,6 +121,14 @@ class TestAnthropicProviderMockClient:
         assert result.is_fallback is True
         assert "rate limit" in (result.fallback_reason or "")
 
+    def test_allow_fallback_false_raises_after_internal_model_chain(self):
+        client = MagicMock()
+        client.messages.create.side_effect = RuntimeError("rate limit")
+        p = AnthropicProvider(api_key="sk-test", client=client, offline=False)
+
+        with pytest.raises(RuntimeError, match="rate limit"):
+            p.call("stage", "prompt", allow_fallback=False)
+
     def test_model_parameter_override(self):
         client = MagicMock()
         client.messages.create.return_value = FakeMessage("ok", 10, 10)

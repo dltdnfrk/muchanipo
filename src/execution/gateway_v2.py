@@ -77,7 +77,11 @@ class FallbackChain:
         last_error: Optional[Exception] = None
         for i, provider in enumerate(self.providers):
             try:
-                result = provider.call(stage=stage, prompt=prompt, **kwargs)
+                result = provider.call(
+                    stage=stage,
+                    prompt=prompt,
+                    **_chain_call_kwargs(provider, kwargs),
+                )
                 if i > 0:
                     result.is_fallback = True
                     result.fallback_reason = (
@@ -115,7 +119,7 @@ def build_default_providers(
     from src.execution.providers.mock import MockProvider
 
     providers: Dict[str, Provider] = {
-        "anthropic": AnthropicProvider(),
+        "anthropic": AnthropicProvider(offline=True if force_offline else None),
         "gemini": GeminiProvider(offline=True if force_offline else None),
         "kimi": KimiProvider(offline=True if force_offline else None),
         "codex": CodexProvider(offline=True if force_offline else None),
@@ -205,7 +209,12 @@ class GatewayV2(ModelGateway):
                         first_fallback_reason = f"primary {primary.name} failed: budget exceeded"
                     continue
                 try:
-                    result = self.dispatch(provider, stage=stage, prompt=prompt, **kwargs)
+                    result = self.dispatch(
+                        provider,
+                        stage=stage,
+                        prompt=prompt,
+                        **_chain_call_kwargs(provider, kwargs),
+                    )
                 except Exception as exc:
                     last_error = exc
                     self.budget.reconcile(reservation_id, actual_usd=0.0)
@@ -219,7 +228,8 @@ class GatewayV2(ModelGateway):
                     result.fallback_reason = first_fallback_reason
                 actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
                 self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-                self._audit(stage, primary, result, actual_usd, result.fallback_reason)
+                actual_provider = self._provider_from_result(result, provider)
+                self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
                 return result
             raise RuntimeError(
                 f"FallbackChain {stage} exhausted ({len(chain_providers)} providers) — last: {last_error}"
@@ -240,7 +250,8 @@ class GatewayV2(ModelGateway):
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
         if reservation_id and self.budget is not None:
             self.budget.reconcile(reservation_id, actual_usd=actual_usd)
-        self._audit(stage, primary, result, actual_usd, result.fallback_reason)
+        actual_provider = self._provider_from_result(result, primary)
+        self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
         return result
 
     def _record_fallback(self, stage: str, provider: Provider, error: Exception) -> None:
@@ -250,6 +261,19 @@ class GatewayV2(ModelGateway):
             "error": str(error),
         })
 
+    def _provider_from_result(self, result: ModelResult, default: Provider) -> Provider:
+        provider_name = getattr(result, "provider", None)
+        if isinstance(provider_name, str):
+            return self.providers.get(provider_name, default)
+        return default
+
     @property
     def fallback_events(self) -> List[Dict[str, Any]]:
         return list(self._fallback_events)
+
+
+def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[str, Any]:
+    call_kwargs = dict(kwargs)
+    if getattr(provider, "name", "") == "anthropic":
+        call_kwargs.setdefault("allow_fallback", False)
+    return call_kwargs

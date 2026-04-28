@@ -75,7 +75,7 @@ function parseBlock(
 
   // Source layers: `_Sources: ...` or `Sources: ...`
   let source_layers: string[] = [];
-  const sourceMatch = body.match(/[_*]?Sources?:\s*([\s\S]+?)(?=\n{2,}|\n##|$)/i);
+  const sourceMatch = body.match(/\*?\*?_?Sources?:?_?\*?\*?\s*([\s\S]+?)(?=\n{2,}|\n##|$)/i);
   if (sourceMatch) {
     source_layers = sourceMatch[1]
       .split(/[,;]/)

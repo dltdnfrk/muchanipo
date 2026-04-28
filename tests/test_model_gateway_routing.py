@@ -13,6 +13,7 @@ from src.execution.gateway_v2 import (
     default_gateway,
 )
 from src.execution.models import ModelResult
+from src.execution.providers.anthropic import AnthropicProvider
 
 
 # ---- offline mock providers ----------------------------------------------
@@ -20,7 +21,7 @@ from src.execution.models import ModelResult
 
 def test_default_offline_providers_return_mock_text():
     providers = build_default_providers(force_offline=True)
-    for name in ("gemini", "kimi", "codex"):
+    for name in ("anthropic", "gemini", "kimi", "codex"):
         result = providers[name].call(stage="research", prompt="hello")
         assert "[mock-" in result.text
         assert result.provider == name
@@ -76,6 +77,14 @@ class _SuccessProvider:
 
     def call(self, stage: str, prompt: str, **kwargs):
         return ModelResult(text=f"ok-{self.name}", provider=self.name, model="mock")
+
+
+class _AuditRecorder:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def record_call(self, **kwargs):
+        self.calls.append(dict(kwargs))
 
 
 def test_fallback_chain_returns_first_success():
@@ -148,6 +157,40 @@ def test_gateway_v2_records_fallback_events_when_primary_fails():
     assert gw.fallback_events[0]["provider"] == "primary"
 
 
+def test_gateway_v2_disables_anthropic_provider_fallback_in_chain():
+    client = pytest.importorskip("unittest.mock").MagicMock()
+    client.messages.create.side_effect = RuntimeError("anthropic down")
+    anthropic = AnthropicProvider(api_key="sk-test", client=client, offline=False)
+    secondary = _SuccessProvider("gemini")
+    gw = GatewayV2(
+        providers={"anthropic": anthropic, "gemini": secondary},
+        stage_routes={"x": "anthropic"},
+        fallback_chain={"x": ["anthropic", "gemini"]},
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "gemini"
+    assert result.text == "ok-gemini"
+    assert gw.fallback_events[0]["provider"] == "anthropic"
+
+
+def test_gateway_v2_audit_records_actual_fallback_provider():
+    audit = _AuditRecorder()
+    gw = GatewayV2(
+        providers={"primary": _FailProvider("primary"), "secondary": _SuccessProvider("secondary")},
+        stage_routes={"x": "primary"},
+        fallback_chain={"x": ["primary", "secondary"]},
+        audit=audit,
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "secondary"
+    assert audit.calls[0]["provider"] == "secondary"
+    assert "primary failed" in (audit.calls[0]["fallback_reason"] or "")
+
+
 def test_gateway_v2_unknown_stage_falls_back_to_default_routing():
     """체인 미정의 stage는 기존 ModelGateway 동작으로 폴백."""
     primary = _SuccessProvider("default")
@@ -203,6 +246,23 @@ def test_gateway_v2_calls_budget_reserve_and_reconcile():
     gw.call("x", "prompt")
     actions = [c["action"] for c in tracker.calls]
     assert actions == ["reserve", "reconcile"]
+
+
+def test_gateway_v2_budget_audit_records_actual_fallback_provider():
+    audit = _AuditRecorder()
+    tracker = _BudgetTracker()
+    gw = GatewayV2(
+        providers={"primary": _FailProvider("primary"), "secondary": _SuccessProvider("secondary")},
+        stage_routes={"x": "primary"},
+        fallback_chain={"x": ["primary", "secondary"]},
+        budget=tracker,
+        audit=audit,
+    )
+
+    result = gw.call("x", "prompt")
+
+    assert result.provider == "secondary"
+    assert audit.calls[0]["provider"] == "secondary"
 
 
 def test_gateway_v2_reconciles_zero_when_chain_exhausted():

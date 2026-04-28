@@ -5,8 +5,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-from src.execution.models import ModelGateway
-from src.execution.providers.mock import MockProvider
+from src.council.parsers import RoundResult
+from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
 from src.report.chapter_mapper import RoundDigest
@@ -46,6 +46,17 @@ def round_result_to_digest(
     chapter_title: str,
 ) -> RoundDigest:
     """Convert a CouncilSession round record into a report RoundDigest."""
+    if isinstance(round_result, RoundResult):
+        return RoundDigest(
+            layer_id=round_result.layer_id,
+            chapter_title=round_result.chapter_title,
+            key_claim=round_result.key_claim,
+            body_claims=list(round_result.body_claims) or [round_result.key_claim],
+            evidence_ref_ids=list(round_result.evidence_ref_ids),
+            confidence=round_result.confidence_score,
+            framework=round_result.framework,
+        )
+
     record = _as_mapping(round_result)
     results = _as_list(record.get("results"))
     first = _as_mapping(results[0]) if results else {}
@@ -77,9 +88,17 @@ def run_pipeline(
     topic: str,
     *,
     progress_callback: ProgressCallback | None = None,
-    offline: bool = True,
+    offline: bool | None = None,
 ) -> dict[str, Any]:
-    """Run idea -> research -> council -> report -> vault and return report inputs."""
+    """Run idea -> research -> council -> report -> vault and return report inputs.
+
+    `offline=None` auto-detects from environment (any *_USE_CLI flag with the
+    matching binary present, or any provider API key). Explicit `True`/`False`
+    overrides the detection.
+    """
+    if offline is None:
+        from src.muchanipo.server import _detect_offline_mode
+        offline = _detect_offline_mode()
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
 
@@ -94,10 +113,10 @@ def run_pipeline(
             progress_callback({"event": "stage_started", **payload})
             progress_callback({"event": "stage_completed", **payload})
 
-    provider = MockProvider(response=f"mock council critique for: {topic}")
+    gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=HITLAdapter(mode="auto_approve" if offline else "markdown"),
-        model_gateway=ModelGateway(provider=provider),
+        model_gateway=gateway,
         vault_dir=scratch / "vault" / "insights",
         council_log_dir=scratch / "council",
         progress_callback=handle_progress,
