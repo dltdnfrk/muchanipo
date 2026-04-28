@@ -1,29 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { type PipelineMode, submitIdea } from "../lib/tauriClient";
+import { submitIdea } from "../lib/tauriClient";
 
 function newRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function readPipelineMode(): PipelineMode {
-  const value = localStorage.getItem("pipeline_mode");
-  return value === "stub" ? "stub" : "full";
-}
-
-function readPipelineEnvs(): Record<string, string> {
-  const mappings: Array<[string, string]> = [
-    ["anthropic_api_key", "ANTHROPIC_API_KEY"],
-    ["gemini_api_key", "GEMINI_API_KEY"],
-    ["kimi_api_key", "KIMI_API_KEY"],
-    ["openalex_email", "MUCHANIPO_CONTACT_EMAIL"],
-    ["plannotator_key", "PLANNOTATOR_API_KEY"],
-  ];
-  return Object.fromEntries(
-    mappings
-      .map(([storageKey, envKey]) => [envKey, localStorage.getItem(storageKey)?.trim() || ""] as const)
-      .filter(([, value]) => value.length > 0),
-  );
 }
 
 export default function IdeaSubmit() {
@@ -51,7 +31,23 @@ export default function IdeaSubmit() {
       } catch {
         /* private mode etc. — ignore */
       }
-      await submitIdea(trimmed, readPipelineMode(), readPipelineEnvs());
+
+      const envs: Record<string, string> = {};
+      const keyMap: Record<string, string> = {
+        anthropic_api_key: "ANTHROPIC_API_KEY",
+        gemini_api_key: "GEMINI_API_KEY",
+        kimi_api_key: "KIMI_API_KEY",
+        openalex_email: "MUCHANIPO_CONTACT_EMAIL",
+        plannotator_key: "PLANNOTATOR_API_KEY",
+      };
+      for (const [lsKey, envKey] of Object.entries(keyMap)) {
+        const v = localStorage.getItem(lsKey);
+        if (v) envs[envKey] = v;
+      }
+      const pipelineMode =
+        (localStorage.getItem("pipeline_mode") as "full" | "stub") || "full";
+
+      await submitIdea(trimmed, pipelineMode, envs);
       navigate(`/run/${runId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "제출 중 오류가 발생했습니다.");

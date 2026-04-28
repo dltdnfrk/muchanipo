@@ -32,7 +32,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   return (
     <>
       <NavHeader />
-      <div className="pt-0">{children}</div>
+      <div className="pt-12">{children}</div>
     </>
   );
 }

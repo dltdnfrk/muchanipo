@@ -79,6 +79,7 @@ export default function RunProgress() {
     return init;
   });
   const [tokenCards, setTokenCards] = useState<TokenCard[]>([]);
+  const [runError, setRunError] = useState<string>("");
   const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -88,24 +89,7 @@ export default function RunProgress() {
       if (!mounted) return;
 
       if (event.event === "error") {
-        setStages((prev) => {
-          const next = { ...prev };
-          const activeStages = STAGES.filter((s) => prev[s].status === "active");
-          const targets = activeStages.length > 0 ? activeStages : (["finalize"] as Stage[]);
-          const now = Date.now();
-
-          for (const target of targets) {
-            next[target] = {
-              ...next[target],
-              status: "error",
-              completedAt: now,
-              durationMs: next[target].startedAt ? now - next[target].startedAt : undefined,
-              message: String(event.message || "오류"),
-            };
-          }
-
-          return next;
-        });
+        setRunError(String(event.message || "오류 발생"));
         return;
       }
 
@@ -126,6 +110,9 @@ export default function RunProgress() {
               current.durationMs = current.completedAt - current.startedAt;
             }
             current.message = "완료";
+          } else if (event.event === "error") {
+            current.status = "error";
+            current.message = String(event.message || "오류");
           } else if (current.status !== "completed") {
             current.status = "active";
             if (current.startedAt == null) {
@@ -202,6 +189,20 @@ export default function RunProgress() {
         <p className="mb-10 text-center text-sm text-[#8A8599]">
           Run ID: {runId}
         </p>
+
+        {runError && (
+          <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-red-400">{runError}</p>
+              <button
+                onClick={() => navigate("/")}
+                className="ml-4 rounded-md bg-[#2A2833] px-3 py-1 text-xs text-[#E8E0D0] hover:bg-[#3A3849]"
+              >
+                처음으로
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="relative space-y-0">
           {/* vertical line */}
