@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -750,29 +750,38 @@ fn workspace_root() -> PathBuf {
     // package. If not (e.g. .app was moved), fall back to walking upward
     // from cwd and finally to cwd.
     if let Some(ref root) = candidate {
-        if root.join("muchanipo").join("__init__.py").exists()
-            || root
-                .join("src")
-                .join("muchanipo")
-                .join("__init__.py")
-                .exists()
-        {
+        if is_workspace_root(root) {
             return root.clone();
         }
     }
 
-    if let Ok(mut cwd) = std::env::current_dir() {
-        loop {
-            if cwd.join("muchanipo").join("__init__.py").exists() {
-                return cwd;
-            }
-            if !cwd.pop() {
-                break;
-            }
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(root) = find_workspace_root_from(cwd) {
+            return root;
         }
     }
 
     candidate.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn find_workspace_root_from(mut path: PathBuf) -> Option<PathBuf> {
+    loop {
+        if is_workspace_root(&path) {
+            return Some(path);
+        }
+        if !path.pop() {
+            return None;
+        }
+    }
+}
+
+fn is_workspace_root(path: &Path) -> bool {
+    path.join("muchanipo").join("__init__.py").exists()
+        || path
+            .join("src")
+            .join("muchanipo")
+            .join("__init__.py")
+            .exists()
 }
 
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
@@ -894,5 +903,31 @@ mod tests {
             event.fields.get("message").and_then(|value| value.as_str()),
             Some("heads up")
         );
+    }
+
+    #[test]
+    fn workspace_root_detection_accepts_src_layout() {
+        let root =
+            std::env::temp_dir().join(format!("muchanipo-tauri-src-layout-{}", std::process::id()));
+        let package_dir = root.join("src").join("muchanipo");
+        std::fs::create_dir_all(&package_dir).expect("create src package dir");
+        std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
+
+        assert!(is_workspace_root(&root));
+    }
+
+    #[test]
+    fn workspace_root_fallback_walks_up_to_src_layout() {
+        let root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-walk-src-layout-{}",
+            std::process::id()
+        ));
+        let package_dir = root.join("src").join("muchanipo");
+        let nested = root.join("app").join("muchanipo-tauri");
+        std::fs::create_dir_all(&package_dir).expect("create src package dir");
+        std::fs::create_dir_all(&nested).expect("create nested app dir");
+        std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
+
+        assert_eq!(find_workspace_root_from(nested), Some(root));
     }
 }
