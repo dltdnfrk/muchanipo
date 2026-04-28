@@ -736,6 +736,10 @@ fn emit_backend_event(app: &AppHandle, event: BackendEvent) {
 }
 
 fn workspace_root() -> PathBuf {
+    let configured_candidate = std::env::var_os("MUCHANIPO_WORKSPACE_ROOT")
+        .or_else(|| std::env::var_os("MUCHANIPO_WORKSPACE"))
+        .map(PathBuf::from);
+
     // CARGO_MANIFEST_DIR = .../<root>/app/muchanipo-tauri/src-tauri (the dir
     // containing Cargo.toml, NOT Cargo.toml itself). Three parent() steps
     // climb out of src-tauri → muchanipo-tauri → app → <root>.
@@ -751,10 +755,11 @@ fn workspace_root() -> PathBuf {
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from));
 
-    resolve_workspace_root(candidate, cwd, exe_dir)
+    resolve_workspace_root(configured_candidate, candidate, cwd, exe_dir)
 }
 
 fn resolve_workspace_root(
+    configured_candidate: Option<PathBuf>,
     manifest_candidate: Option<PathBuf>,
     cwd: Option<PathBuf>,
     exe_dir: Option<PathBuf>,
@@ -762,9 +767,12 @@ fn resolve_workspace_root(
     // Sanity-check: the resolved root should contain the muchanipo Python
     // package. If not (e.g. .app was moved), fall back to walking upward from
     // the launch directory, then from the packaged executable location.
-    if let Some(ref root) = manifest_candidate {
+    for root in [configured_candidate.as_ref(), manifest_candidate.as_ref()]
+        .into_iter()
+        .flatten()
+    {
         if is_workspace_root(root) {
-            return root.clone();
+            return root.to_path_buf();
         }
     }
 
@@ -776,6 +784,7 @@ fn resolve_workspace_root(
 
     cwd.or(exe_dir)
         .or(manifest_candidate)
+        .or(configured_candidate)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -974,7 +983,73 @@ mod tests {
         std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
 
         assert_eq!(
-            resolve_workspace_root(Some(stale_manifest_root), Some(launch_dir), Some(exe_dir)),
+            resolve_workspace_root(
+                None,
+                Some(stale_manifest_root),
+                Some(launch_dir),
+                Some(exe_dir)
+            ),
+            root
+        );
+    }
+
+    #[test]
+    fn workspace_root_resolution_prefers_valid_configured_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-configured-src-layout-{}",
+            std::process::id()
+        ));
+        let stale_manifest_root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-configured-stale-manifest-{}",
+            std::process::id()
+        ));
+        let launch_dir = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-configured-launch-dir-{}",
+            std::process::id()
+        ));
+        let package_dir = root.join("src").join("muchanipo");
+        std::fs::create_dir_all(&package_dir).expect("create src package dir");
+        std::fs::create_dir_all(&stale_manifest_root).expect("create stale manifest root");
+        std::fs::create_dir_all(&launch_dir).expect("create launch dir");
+        std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
+
+        assert_eq!(
+            resolve_workspace_root(
+                Some(root.clone()),
+                Some(stale_manifest_root),
+                Some(launch_dir),
+                None
+            ),
+            root
+        );
+    }
+
+    #[test]
+    fn workspace_root_resolution_ignores_invalid_configured_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-invalid-config-src-layout-{}",
+            std::process::id()
+        ));
+        let invalid_config = std::env::temp_dir().join(format!(
+            "muchanipo-tauri-invalid-config-{}",
+            std::process::id()
+        ));
+        let package_dir = root.join("src").join("muchanipo");
+        let exe_dir = root
+            .join("target")
+            .join("release")
+            .join("bundle")
+            .join("macos")
+            .join("Muchanipo.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&package_dir).expect("create src package dir");
+        std::fs::create_dir_all(&invalid_config).expect("create invalid config dir");
+        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
+        std::fs::write(package_dir.join("__init__.py"), "").expect("write package marker");
+
+        assert_eq!(
+            resolve_workspace_root(Some(invalid_config), None, None, Some(exe_dir)),
             root
         );
     }
@@ -993,7 +1068,12 @@ mod tests {
         std::fs::create_dir_all(&launch_dir).expect("create launch dir");
 
         assert_eq!(
-            resolve_workspace_root(Some(stale_manifest_root), Some(launch_dir.clone()), None),
+            resolve_workspace_root(
+                None,
+                Some(stale_manifest_root),
+                Some(launch_dir.clone()),
+                None
+            ),
             launch_dir
         );
     }
