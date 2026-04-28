@@ -308,6 +308,7 @@ pub struct CliSmokeResult {
 pub struct CliAuthLaunch {
     pub name: String,
     pub command: String,
+    pub login_command: String,
 }
 
 #[tauri::command]
@@ -469,7 +470,11 @@ pub async fn open_cli_auth(name: String) -> Result<CliAuthLaunch, String> {
         });
     }
 
-    Ok(CliAuthLaunch { name, command })
+    Ok(CliAuthLaunch {
+        name,
+        command,
+        login_command: login_command.to_string(),
+    })
 }
 
 fn which_binary(name: &str) -> Option<String> {
@@ -507,9 +512,9 @@ fn which_binary(name: &str) -> Option<String> {
 
 fn cli_login_command(name: &str) -> &'static str {
     match name {
-        "claude" => "claude auth",
+        "claude" => "claude auth login",
         "codex" => "codex login",
-        "gemini" => "gemini /auth",
+        "gemini" => "gemini -i /auth",
         "kimi" => "kimi login",
         _ => unreachable!("validated by open_cli_auth"),
     }
@@ -833,9 +838,9 @@ mod tests {
 
     #[test]
     fn cli_login_commands_are_known() {
-        assert_eq!(cli_login_command("claude"), "claude auth");
+        assert_eq!(cli_login_command("claude"), "claude auth login");
         assert_eq!(cli_login_command("codex"), "codex login");
-        assert_eq!(cli_login_command("gemini"), "gemini /auth");
+        assert_eq!(cli_login_command("gemini"), "gemini -i /auth");
         assert_eq!(cli_login_command("kimi"), "kimi login");
     }
 }

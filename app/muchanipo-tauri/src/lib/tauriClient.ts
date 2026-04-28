@@ -130,6 +130,7 @@ export interface CliSmokeResult {
 export interface CliAuthLaunch {
   name: string;
   command: string;
+  login_command: string;
 }
 
 /** Probe local CLIs (claude / codex / gemini) for availability. */

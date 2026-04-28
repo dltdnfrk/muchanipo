@@ -6,8 +6,7 @@ mod python_bridge;
 
 use python_bridge::{
     check_cli_smoke, check_cli_status, get_buffered_events, open_cli_auth, send_action,
-    start_pipeline,
-    PythonBridge,
+    start_pipeline, PythonBridge,
 };
 
 #[tauri::command]

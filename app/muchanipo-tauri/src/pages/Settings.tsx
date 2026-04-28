@@ -24,9 +24,9 @@ const KEY_CONFIGS: KeyForm[] = [
 ];
 
 const CLI_HINTS: Record<string, string> = {
-  claude: "claude /login 으로 OAuth 로그인",
+  claude: "claude auth login 으로 OAuth 로그인",
   codex: "codex login (또는 OPENAI_API_KEY 설정)",
-  gemini: "gemini /auth 으로 Google OAuth 로그인",
+  gemini: "gemini -i /auth 로 Google OAuth 로그인",
   kimi: "kimi login 으로 Moonshot OAuth 로그인",
 };
 
@@ -102,9 +102,9 @@ export default function Settings() {
     setAuthLoading((prev) => ({ ...prev, [name]: true }));
     setAuthMessage(null);
     try {
-      await openCliAuth(name);
+      const launch = await openCliAuth(name);
       setAuthMessage(
-        `${name} 로그인 창을 열었습니다. 완료 후 다시 확인 또는 실호출 테스트를 눌러주세요.`,
+        `${name} 로그인 창을 열었습니다. 실행 명령: ${launch.login_command}. 완료 후 다시 확인 또는 실호출 테스트를 눌러주세요.`,
       );
       window.setTimeout(() => {
         refreshCliStatus();
