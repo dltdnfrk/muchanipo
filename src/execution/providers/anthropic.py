@@ -75,10 +75,11 @@ class AnthropicProvider:
             return _mock_result(stage, prompt, model=self.model, provider=self.name)
 
         stream_callback = kwargs.pop("stream_callback", None)
+        allow_fallback = kwargs.pop("allow_fallback", True)
         try:
             return self._call_with_fallback(stage, prompt, stream_callback=stream_callback, **kwargs)
         except Exception as exc:
-            if kwargs.pop("allow_fallback", True):
+            if allow_fallback:
                 return _fallback_result(exc, self.model)
             raise
 

@@ -40,6 +40,7 @@ class PlannotatorClient:
             session_id = f"offline-{uuid4().hex[:12]}"
             self._offline_sessions.add(session_id)
             return session_id
+        self._ensure_api_key()
 
         data = self._request("POST", "/sessions", payload)
         session_id = data.get("session_id") or data.get("id")
@@ -51,6 +52,7 @@ class PlannotatorClient:
         """GET /sessions/{id}/annotations -> [{type, target, instruction, ...}]."""
         if self.offline:
             return []
+        self._ensure_api_key()
 
         data = self._request("GET", f"/sessions/{_quote(session_id)}/annotations")
         annotations = data.get("annotations") if isinstance(data, dict) else data
@@ -64,6 +66,7 @@ class PlannotatorClient:
         """GET /sessions/{id}/status -> 'pending'|'approved'|'changes_requested'."""
         if self.offline:
             return "approved"
+        self._ensure_api_key()
 
         data = self._request("GET", f"/sessions/{_quote(session_id)}/status")
         status = data.get("status") if isinstance(data, dict) else data
@@ -82,6 +85,7 @@ class PlannotatorClient:
         if self.offline:
             time.sleep(0.5)
             return "approved"
+        self._ensure_api_key()
 
         deadline = time.monotonic() + max(0.0, float(timeout_sec))
         interval = max(0.01, float(poll_interval_sec))
@@ -143,6 +147,10 @@ class PlannotatorClient:
         except json.JSONDecodeError as exc:
             raise PlannotatorError("Plannotator response was not valid JSON") from exc
 
+    def _ensure_api_key(self) -> None:
+        if not self.api_key:
+            raise PlannotatorError("no api key")
+
 
 def _offline_enabled(offline: bool | None, api_key: str | None) -> bool:
     if offline is not None:
@@ -150,7 +158,7 @@ def _offline_enabled(offline: bool | None, api_key: str | None) -> bool:
     flag = os.getenv("PLANNOTATOR_OFFLINE", "")
     if flag.strip().lower() in {"1", "true", "yes", "on"}:
         return True
-    return not bool(api_key)
+    return False
 
 
 def _quote(value: str) -> str:

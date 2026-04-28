@@ -55,16 +55,16 @@ def _lockdown_validate_provenance(evidence: List[Dict[str, Any]]) -> Dict[str, b
     lockdown.validate_evidence_provenance 는 전체 리스트에 대한 (ok, errors)를
     반환하지만 여기서는 per-evidence boolean 매핑이 필요하므로 evidence를
     하나씩 호출하여 source_text 누락/quote 미포함 케이스를 잡는다.
+    source_text/content/text 없이 quote만 있는 evidence는 supported 후보에서
+    제외한다. quote-only evidence는 ground_claims에서 partial 후보로만 쓴다.
     """
-    if _lockdown is None:
-        return {ev.get("id", str(idx)): True for idx, ev in enumerate(evidence)}
-
     flags: Dict[str, bool] = {}
     for idx, ev in enumerate(evidence):
         ev_id = str(ev.get("id") or f"E{idx + 1}")
-        # source_text 가 없으면 quote 자체를 source 로 보고 통과 처리하여
-        # 기존 fixture(text-only quote) 호환성을 유지한다.
-        if not ev.get("source_text") and not ev.get("content") and not ev.get("text"):
+        if not ev.get("source_text"):
+            flags[ev_id] = False
+            continue
+        if _lockdown is None:
             flags[ev_id] = True
             continue
         try:
@@ -176,6 +176,7 @@ def _normalize_evidence(evidence: Iterable[Any]) -> List[Dict[str, Any]]:
                 "source_text": str(
                     item.get("source_text")
                     or item.get("content")
+                    or item.get("text")
                     or ""
                 ),
             })
@@ -529,9 +530,16 @@ def ground_claims(
 
     provenance_flags = _lockdown_validate_provenance(norm_evidence)
     provenance_failures = sum(1 for ok in provenance_flags.values() if not ok)
-    # provenance 통과 evidence 만 supported 후보로 사용
-    trusted_evidence = [
+    # provenance 통과 evidence 만 supported 후보로 사용한다.
+    # source_text 없는 quote-only evidence는 partial 후보까지만 유지하고,
+    # source_text가 있는데 provenance 실패한 evidence는 fabricated quote 위험이
+    # 있어 matching pool에서 제외한다.
+    support_evidence = [
         ev for ev in norm_evidence if provenance_flags.get(ev["id"], True)
+    ]
+    partial_evidence = [
+        ev for ev in norm_evidence
+        if provenance_flags.get(ev["id"], True) or not ev.get("source_text")
     ]
 
     per_claim: List[Dict[str, Any]] = []
@@ -548,9 +556,8 @@ def ground_claims(
         match_details: Dict[str, Any] = {}
 
         # 1) substring 직접 인용 — 유일한 'supported' 경로
-        for ev in trusted_evidence:
-            candidate_text = ev["source_text"] or ev["quote"]
-            if _is_substring_quote(claim, candidate_text):
+        for ev in support_evidence:
+            if _is_substring_quote(claim, ev["source_text"]):
                 substring_hit = ev["id"]
                 break
 
@@ -563,7 +570,7 @@ def ground_claims(
             supported += 1
         else:
             # 2) semantic fallback — paraphrase/near-quote supported if strong enough
-            for ev in trusted_evidence:
+            for ev in support_evidence:
                 if not ev["source_text"]:
                     continue
                 candidate_text = ev["source_text"]
@@ -591,7 +598,7 @@ def ground_claims(
                 continue
 
             # 3) keyword overlap (secondary signal — partial 까지만)
-            for ev in trusted_evidence:
+            for ev in partial_evidence:
                 ratio = _overlap_ratio(claim, ev["quote"])
                 if ratio > best_ratio + 1e-9:
                     best_ratio = ratio
