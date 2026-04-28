@@ -18,24 +18,30 @@ def test_run_budget_reserve_reconcile_log(tmp_path):
     assert "reconciled" in (tmp_path / "cost-log.jsonl").read_text(encoding="utf-8")
 
 
-def test_budget_exceeded_raises_and_logs(tmp_path):
+def test_budget_exceeded_returns_false_and_logs(tmp_path):
     budget = RunBudget(limit_usd=0.1, cost_log_path=tmp_path / "cost-log.jsonl")
+
+    assert budget.reserve(stage="council", estimated_usd=0.2) is False
+
+    assert "reserve_rejected" in (tmp_path / "cost-log.jsonl").read_text(encoding="utf-8")
+
+
+def test_budget_exceeded_can_still_raise_for_legacy_callers(tmp_path):
+    budget = RunBudget(
+        limit_usd=0.1,
+        cost_log_path=tmp_path / "cost-log.jsonl",
+        raise_on_exceeded=True,
+    )
 
     with pytest.raises(BudgetExceeded):
         budget.reserve(stage="council", estimated_usd=0.2)
-
-    assert "reserve_rejected" in (tmp_path / "cost-log.jsonl").read_text(encoding="utf-8")
 
 
 def test_budget_reserve_is_atomic_under_race(tmp_path):
     budget = RunBudget(limit_usd=0.5, cost_log_path=tmp_path / "cost-log.jsonl")
 
     def reserve_one():
-        try:
-            budget.reserve(stage="race", estimated_usd=0.1)
-            return True
-        except BudgetExceeded:
-            return False
+        return budget.reserve(stage="race", estimated_usd=0.1) is not False
 
     with ThreadPoolExecutor(max_workers=12) as executor:
         results = list(executor.map(lambda _: reserve_one(), range(12)))
