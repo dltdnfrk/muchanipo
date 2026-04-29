@@ -24,10 +24,10 @@ const KEY_CONFIGS: KeyForm[] = [
 ];
 
 const CLI_HINTS: Record<string, string> = {
-  claude: "claude auth login 으로 OAuth 로그인",
+  claude: "터미널에서 직접 claude login / Claude Code 인증",
   codex: "codex login (또는 OPENAI_API_KEY 설정)",
-  gemini: "gemini -i /auth 로 Google OAuth 로그인",
-  kimi: "kimi login 으로 Moonshot OAuth 로그인",
+  gemini: "터미널에서 직접 gemini 로그인",
+  kimi: "터미널에서 직접 kimi login",
 };
 
 const CLI_STAGE_MAP: Record<string, string> = {
@@ -134,7 +134,7 @@ export default function Settings() {
         <div className="fade-in mb-8">
           <h1 className="text-xl font-semibold tracking-tight text-white">설정</h1>
           <p className="mt-1 text-sm text-tertiary">
-            로컬 CLI 또는 API 키로 LLM 백엔드를 연결하세요.
+            Muchanipo는 로컬 CLI core를 우선 실행하고, Tauri는 진행상황과 보고서를 보여줍니다.
           </p>
         </div>
 
@@ -154,7 +154,7 @@ export default function Settings() {
             >
               <div className="font-medium">로컬 CLI</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
-                claude / codex / gemini OAuth 재사용 (권장)
+                claude / codex / gemini / kimi CLI 호출 (권장)
               </div>
             </button>
             <button

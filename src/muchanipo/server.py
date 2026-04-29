@@ -1,6 +1,11 @@
-"""`muchanipo serve` — JSON-line event stream for the Tauri/Swift native shell.
+"""Muchanipo command line entrypoint.
 
 Modes:
+    run
+        Terminal-first full pipeline runner. Writes a report, event log, and
+        summary under the local runs directory.
+    tui
+        Terminal dashboard wrapper around the same full pipeline core.
     --pipeline=stub  (default, legacy)
         Emits the canonical phase order (STARTUP → INTERVIEW → COUNCIL → REPORT
         → done) with placeholder council/report content.
@@ -31,6 +36,40 @@ from .events import Action, emit, parse_action
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="muchanipo")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    run = sub.add_parser("run", help="Run the full local CLI-first pipeline in the terminal")
+    run.add_argument("topic_arg", nargs="?", help="Research topic")
+    run.add_argument("--topic", dest="topic_opt", help="Research topic")
+    run.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    run.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    run.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
+    run.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
+    run.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+
+    tui = sub.add_parser("tui", help="Run the terminal dashboard over the full pipeline")
+    tui.add_argument("topic_arg", nargs="?", help="Research topic")
+    tui.add_argument("--topic", dest="topic_opt", help="Research topic")
+    tui.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    tui.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    tui.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
+    tui.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
+    tui.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
 
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
@@ -470,6 +509,26 @@ def serve(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"run", "tui"}:
+        from src.muchanipo.terminal import terminal_run
+
+        topic = (args.topic_opt or args.topic_arg or "").strip()
+        if not topic:
+            parser.error(f"{args.command} requires a topic")
+        if args.offline and args.online:
+            parser.error("--offline and --online are mutually exclusive")
+        offline = True if args.offline else False if args.online else None
+        terminal_run(
+            topic,
+            stdout=sys.stdout,
+            report_path=Path(args.report_path) if args.report_path else None,
+            run_dir=Path(args.run_dir) if args.run_dir else None,
+            offline=offline,
+            jsonl=bool(getattr(args, "jsonl", False)),
+            dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
+        )
+        return 0
+
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")
 

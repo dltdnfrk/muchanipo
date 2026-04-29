@@ -124,6 +124,34 @@ Stdlib-only — no external LLM calls.
 
 ## Quick Start
 
+### Terminal-first research app
+
+Muchanipo's product core is the Python CLI/TUI runner. The Tauri app is a
+viewer/control shell over the same event stream.
+
+```bash
+# Full local pipeline, CLI-first when installed CLIs are available
+python3 -m muchanipo run "딸기 농가용 저비용 분자진단 키트 시장성"
+
+# Terminal dashboard over the same core
+python3 -m muchanipo tui "딸기 농가용 저비용 분자진단 키트 시장성"
+
+# Machine-readable events for scripts or external viewers
+python3 -m muchanipo run "딸기 진단키트 시장성" --jsonl
+```
+
+Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by
+default:
+
+- `REPORT.md` — final report
+- `events.jsonl` — append-only execution event log
+- `summary.json` — run metadata and paths
+
+Muchanipo does not read Claude/Gemini/Kimi/Codex token files. It invokes the
+installed CLIs and lets each CLI own its own login/session.
+
+### Legacy document tools
+
 ```bash
 # 1. Drop a document
 cp your-document.pdf raw/
