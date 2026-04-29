@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
 from src.governance.budget import BudgetExceeded, provider_name, resolve_model
-from src.runtime.live_mode import assert_live_model_result, require_live_mode
+from src.runtime.live_mode import assert_live_model_result, live_requested_from_env
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -181,7 +181,7 @@ class GatewayV2(ModelGateway):
         self._fallback_events: List[Dict[str, Any]] = []
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
-        require_live = bool(kwargs.pop("require_live", False)) or require_live_mode()
+        require_live = bool(kwargs.pop("require_live", False)) or live_requested_from_env()
         chain_names = self.fallback_chain.get(stage)
         if not chain_names:
             # 체인 미정의 → 기본 ModelGateway 동작

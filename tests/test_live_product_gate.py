@@ -73,6 +73,19 @@ def test_gateway_live_mode_rejects_mock_provider_result():
         gw.call("research", "ping", require_live=True)
 
 
+def test_gateway_real_research_env_rejects_mock_provider_result(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_REAL_RESEARCH", "1")
+    monkeypatch.delenv("MUCHANIPO_REQUIRE_LIVE", raising=False)
+    gw = GatewayV2(
+        providers={"mock": MockProvider()},
+        stage_routes={"research": "mock"},
+        fallback_chain={"research": ["mock"]},
+    )
+
+    with pytest.raises(LiveModeViolation, match="mock model result"):
+        gw.call("research", "ping")
+
+
 def test_gateway_live_mode_allows_non_mock_result():
     gw = GatewayV2(
         providers={"gemini": _SuccessProvider()},

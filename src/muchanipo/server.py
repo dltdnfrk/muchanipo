@@ -356,7 +356,22 @@ def serve_full(
             emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
         emit(name, stream=stdout, **fields)
 
-    pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline)
+    try:
+        pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline)
+    except Exception as exc:
+        from src.runtime.live_mode import LiveModeViolation
+
+        if not isinstance(exc, LiveModeViolation):
+            raise
+        emit(
+            "error",
+            stream=stdout,
+            kind="live_mode_violation",
+            message=str(exc),
+            pipeline="full",
+        )
+        emit("done", stream=stdout, pipeline="full", aborted=True)
+        return 1
     rounds = pipeline_result["rounds"]
 
     for round_no, digest in enumerate(rounds, start=1):
