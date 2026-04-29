@@ -4,6 +4,7 @@ import json
 
 from src.council.persona_generator import PersonaGenerator
 from src.execution.models import ModelResult
+from src.runtime.live_mode import LiveModeViolation
 
 
 class MockGateway:
@@ -16,6 +17,15 @@ class MockGateway:
         if not self.responses:
             raise RuntimeError("no mock response left")
         return ModelResult(text=self.responses.pop(0), provider="mock")
+
+
+class LiveViolationGateway:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def call(self, stage: str, prompt: str, **kwargs) -> ModelResult:
+        self.calls.append({"stage": stage, "prompt": prompt})
+        raise LiveModeViolation("live mode rejected mock persona output")
 
 
 def _ontology():
@@ -103,6 +113,20 @@ def test_propose_with_llm_falls_back_to_heuristic_on_broken_response():
     assert gateway.calls[0]["stage"] == "council"
 
 
+def test_propose_with_llm_propagates_live_mode_violation():
+    gateway = LiveViolationGateway()
+    generator = PersonaGenerator(gateway=gateway)
+
+    try:
+        generator.propose_with_llm(_ontology(), target_count=2, topic="orchard disease")
+        raised = False
+    except LiveModeViolation:
+        raised = True
+
+    assert raised is True
+    assert gateway.calls[0]["stage"] == "council"
+
+
 def test_deep_validate_llm_adds_issue_for_low_relevance():
     gateway = MockGateway([json.dumps({"score": 2, "reason": "not topic relevant"})])
     generator = PersonaGenerator(gateway=gateway)
@@ -113,6 +137,21 @@ def test_deep_validate_llm_adds_issue_for_low_relevance():
     assert report.valid_ids == []
     assert any(issue.code == "deep.llm_topic_relevance" for issue in report.issues)
     assert "HACHIMI Stage 2 DEEP VALIDATE" in gateway.calls[0]["prompt"]
+
+
+def test_deep_validate_llm_propagates_live_mode_violation():
+    gateway = LiveViolationGateway()
+    generator = PersonaGenerator(gateway=gateway)
+    draft = generator.propose(_ontology(), target_count=1)[0]
+
+    try:
+        generator.deep_validate([draft], _ontology(), topic_keywords=["orchard", "disease"])
+        raised = False
+    except LiveModeViolation:
+        raised = True
+
+    assert raised is True
+    assert gateway.calls[0]["stage"] == "council"
 
 
 def test_generate_uses_llm_mode_when_gateway_is_present():

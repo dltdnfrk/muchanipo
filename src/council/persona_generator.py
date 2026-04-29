@@ -39,6 +39,7 @@ from src.council.persona_prompts import (
     parse_persona_validation_response,
 )
 from src.execution.gateway_v2 import GatewayV2
+from src.runtime.live_mode import LiveModeViolation
 
 
 # ---- Korean real-name targeting guard --------------------------------------
@@ -226,6 +227,8 @@ class PersonaGenerator:
             result = self.gateway.call("council", prompt)
             raw_personas = parse_persona_proposal_response(result.text)
             drafts = self._drafts_from_llm_specs(raw_personas, ontology, target_count)
+        except LiveModeViolation:
+            raise
         except Exception:
             return self.propose(ontology, target_count=target_count)
         if len(drafts) < target_count:
@@ -473,6 +476,8 @@ class PersonaGenerator:
         try:
             result = self.gateway.call("council", prompt)
             score, reason, issues = parse_persona_validation_response(result.text)
+        except LiveModeViolation:
+            raise
         except Exception:
             return []
         if score < 0.3:
