@@ -13,7 +13,7 @@ import pytest
 
 from src.muchanipo import parse_action
 from src.muchanipo.events import KNOWN_EVENTS, emit
-from src.muchanipo.server import serve
+from src.muchanipo.server import _detect_offline_mode, serve
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -142,3 +142,52 @@ def test_serve_rejects_stub_pipeline_when_live_requested(tmp_path: Path, monkeyp
     assert events[-2]["kind"] == "live_mode_violation"
     assert events[-1] == {"event": "done", "pipeline": "stub", "aborted": True}
     assert not report.exists()
+
+
+def test_detect_offline_mode_treats_local_cli_as_online(monkeypatch):
+    monkeypatch.delenv("MUCHANIPO_OFFLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "1")
+
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+
+    assert _detect_offline_mode() is False
+
+
+def test_detect_offline_mode_can_disable_cli_preference(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "0")
+    monkeypatch.delenv("MUCHANIPO_USE_CLI", raising=False)
+    monkeypatch.delenv("ANTHROPIC_USE_CLI", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+
+    assert _detect_offline_mode() is True
+
+
+def test_detect_offline_mode_keeps_pytest_offline_despite_host_keys(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "server-test")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "host-token")
+    monkeypatch.delenv("MUCHANIPO_PREFER_CLI", raising=False)
+    monkeypatch.delenv("MUCHANIPO_USE_CLI", raising=False)
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_OFFLINE", raising=False)
+
+    assert _detect_offline_mode() is True

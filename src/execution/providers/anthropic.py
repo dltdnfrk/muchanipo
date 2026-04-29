@@ -1,7 +1,7 @@
-"""Anthropic provider wrapper — OAuth-aware, streaming, cost-tracking, fallback.
+"""Anthropic provider wrapper — CLI-first, streaming, cost-tracking, fallback.
 
 Supports three execution modes:
-  1. CLI subprocess (`claude -p`) — uses local Claude Code OAuth, no API key.
+  1. CLI subprocess (`claude -p`) — auth is owned by Claude Code, no API key.
   2. Anthropic SDK direct (ANTHROPIC_API_KEY).
   3. Offline mock.
 """
@@ -14,6 +14,7 @@ import subprocess
 from typing import Any, Callable
 
 from src.execution.models import ModelResult
+from src.execution.providers.cli_policy import cli_requested, prefer_cli_default
 
 try:  # pragma: no cover - availability depends on local environment.
     from anthropic import Anthropic
@@ -49,35 +50,16 @@ _CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_ANTHROPIC_CLI_TIMEOUT_SEC", 300)
 
 
 def _resolve_api_key() -> str | None:
-    """Check env vars and Claude Code OAuth token paths."""
+    """Check explicit API env vars only; never read Claude Code OAuth files."""
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         val = os.environ.get(key)
         if val:
             return val
-    # Claude Code OAuth token (best-effort)
-    for path in (
-        os.path.expanduser("~/.config/claude/settings.json"),
-        os.path.expanduser("~/.claude/settings.json"),
-    ):
-        if os.path.exists(path):
-            try:
-                import json
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                token = data.get("oauthToken") or data.get("token")
-                if token:
-                    return str(token)
-            except Exception:
-                pass
     return None
 
 
 def _cli_enabled() -> bool:
-    if os.environ.get("ANTHROPIC_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    return False
+    return cli_requested("ANTHROPIC_USE_CLI")
 
 
 def _resolve_claude_bin() -> str | None:
@@ -97,14 +79,17 @@ class AnthropicProvider:
         client: Any = None,
         offline: bool | None = None,
         use_cli: bool | None = None,
+        prefer_cli: bool | None = None,
         claude_bin: str | None = None,
     ) -> None:
         self.model = model
         self.client = client
         self.api_key = api_key or _resolve_api_key()
         self.claude_bin = claude_bin or _resolve_claude_bin()
+        if prefer_cli is None:
+            prefer_cli = prefer_cli_default()
         if use_cli is None:
-            use_cli = _cli_enabled() and bool(self.claude_bin)
+            use_cli = bool(self.claude_bin) and (_cli_enabled() or (prefer_cli and client is None))
         self.use_cli = use_cli
         if offline is None:
             # CLI mode bypasses the offline-by-no-key check.

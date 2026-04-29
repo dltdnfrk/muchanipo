@@ -2,7 +2,7 @@
 """
 MuchaNipo Model Router — 파이프라인 단계별 최적 모델 자동 선택 + 호출
 ====================================================================
-멀티 프로바이더(Ollama/Claude/Codex/Kimi/MiniMax) API 인프라.
+멀티 프로바이더(Ollama/Claude/Codex/Kimi/MiniMax) 로컬 CLI/API 인프라.
 파이프라인 단계(task)에 따라 최적 모델을 자동 선택하고,
 프로바이더별 호출 방식(REST/subprocess/prompt-file)으로 실행한다.
 
@@ -167,6 +167,20 @@ def _codex_version() -> str:
         return "unavailable"
 
 
+def _kimi_available() -> bool:
+    """Kimi CLI 설치 여부 확인."""
+    try:
+        result = subprocess.run(
+            ["kimi", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CODEX_CHECK_TIMEOUT,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # ModelRouter
 # ---------------------------------------------------------------------------
@@ -255,7 +269,7 @@ class ModelRouter:
             }
 
         # 4. Codex 모델
-        if model in ("o3", "gpt-5.5"):
+        if model in ("o3", "gpt-5.4"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -267,21 +281,21 @@ class ModelRouter:
 
         # 5. Kimi
         if model.startswith("kimi"):
-            available = bool(KIMI_API_KEY)
+            available = _kimi_available() or bool(KIMI_API_KEY)
             result: dict[str, Any] = {
                 "model": model,
                 "provider": "kimi",
-                "method": "rest-api",
+                "method": "cli" if _kimi_available() else "rest-api",
                 "cost": entry.get("cost", "$$"),
                 "available": available,
-                "note": entry.get("note", "Kimi API"),
+                "note": entry.get("note", "Kimi CLI"),
             }
             if not available:
                 fallback = entry.get("fallback")
                 if fallback:
-                    _log(f"[ROUTE] Kimi API 키 없음. fallback → {fallback}")
+                    _log(f"[ROUTE] Kimi CLI/API 없음. fallback → {fallback}")
                     return self._resolve_model(fallback, entry)
-                result["error"] = "KIMI_API_KEY 미설정"
+                result["error"] = "Kimi CLI 또는 KIMI_API_KEY 미설정"
             return result
 
         # 6. MiniMax
@@ -343,7 +357,7 @@ class ModelRouter:
                 "note": f"fallback → {model}",
                 "is_fallback": True,
             }
-        if model in ("o3", "gpt-5.5"):
+        if model in ("o3", "gpt-5.4"):
             return {
                 "model": model,
                 "provider": "codex",
@@ -687,7 +701,8 @@ class ModelRouter:
     ) -> str:
         """
         Kimi API 호출.
-        KIMI_API_KEY 설정 시 활성화. 미설정 시 에러.
+        새 제품 경로는 src.execution.providers.KimiProvider의 CLI-first 경로를 사용한다.
+        이 legacy router는 API fallback 전용으로 유지한다.
         """
         if not KIMI_API_KEY:
             raise RuntimeError(
@@ -920,7 +935,7 @@ class ModelRouter:
                     "response": None,
                     "note": "Claude Agent tool로 실행 필요",
                 }
-            elif model in ("o3", "gpt-5.5"):
+            elif model in ("o3", "gpt-5.4"):
                 response = self.call_codex(model, prompt)
                 provider = "codex"
             elif model.startswith("kimi"):
@@ -993,10 +1008,14 @@ class ModelRouter:
         }
 
         # Kimi
+        kimi_cli_ok = _kimi_available()
         results["kimi"] = {
-            "available": bool(KIMI_API_KEY),
+            "available": kimi_cli_ok or bool(KIMI_API_KEY),
+            "cli_available": kimi_cli_ok,
             "api_key_set": bool(KIMI_API_KEY),
-            "note": "KIMI_API_KEY 설정 필요" if not KIMI_API_KEY else "API 키 설정됨",
+            "note": "Kimi CLI 사용 가능" if kimi_cli_ok else (
+                "KIMI_API_KEY fallback 설정됨" if KIMI_API_KEY else "Kimi CLI 또는 KIMI_API_KEY 필요"
+            ),
         }
 
         # MiniMax
@@ -1036,7 +1055,7 @@ class ModelRouter:
             },
             "codex": {
                 "o3": {"input_per_1k": 0.010, "output_per_1k": 0.040},
-                "gpt-5.5": {"input_per_1k": 0.002, "output_per_1k": 0.008},
+                "gpt-5.4": {"input_per_1k": 0.002, "output_per_1k": 0.008},
             },
         }
 
@@ -1071,7 +1090,7 @@ class ModelRouter:
             "estimated_cost_usd": round(total, 4),
             "rates": rates,
             "note": route_info.get("note", ""),
-            "oauth_note": "OAuth 사용 시 실제 API 비용 없음 (세션 내 토큰 소비)",
+            "cli_note": "Muchanipo 제품 경로는 가능하면 설치된 로컬 CLI를 우선 사용합니다.",
         }
 
     # --- List all tasks ----------------------------------------------------

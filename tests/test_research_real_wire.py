@@ -79,6 +79,38 @@ def test_web_runner_accepts_academic_evidence_refs():
     assert findings[0].support[0].source_grade == "A"
 
 
+def test_web_runner_prioritizes_insight_forge_backend_when_enabled():
+    plan = _plan("딸기 재배 자동 연구")
+    calls: list[str] = []
+
+    def fake_insight_forge(query: str):
+        calls.append(query)
+        return [
+            {
+                "source": "vault/insight.md",
+                "text": "InsightForge RRF result with GBrain dedup",
+                "score": 0.99,
+                "matched_questions": ["who", "why"],
+            }
+        ]
+
+    runner = WebResearchRunner(
+        insight_forge_search=fake_insight_forge,
+        vault_search=lambda q: [],
+        academic_search=lambda q: [],
+        web_search=None,
+        exa_search=None,
+    )
+
+    findings = runner.run(plan)
+
+    assert calls == plan.queries
+    first = findings[0].support[0]
+    assert first.provenance["kind"] == "insight_forge"
+    assert first.provenance["source"] == "vault/insight.md"
+    assert first.source_grade == "B"
+
+
 def test_web_runner_graceful_fallback_when_all_backends_empty():
     plan = _plan("Quoque obscura quaestio")
     runner = WebResearchRunner(

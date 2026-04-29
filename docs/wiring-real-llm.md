@@ -5,47 +5,50 @@
 
 ## TL;DR
 
+Personal/local usage should prefer installed CLIs. Muchanipo does not read
+Claude Code, Gemini, Kimi, or Codex token files directly; each CLI owns its
+own login/session.
+
 ```bash
-bash scripts/setup_keys.sh         # writes .env scaffold
-$EDITOR .env                        # add at least ANTHROPIC_API_KEY
-source .env
+export MUCHANIPO_PREFER_CLI=1
 ANTHROPIC_OFFLINE=                  # unset to enable real calls
 python3 -m muchanipo serve --topic "딸기 진단키트 시장성" --pipeline full \
   --report-path /tmp/REPORT.md
 ```
 
-If at least one provider key is set, the corresponding stage will dispatch
-to the real API. Other stages remain on the offline fallback so a partial
-key set still produces an end-to-end report.
+If at least one configured CLI is installed, the corresponding stage will
+dispatch to that CLI. API keys remain supported as fallback inputs for
+environments that do not have local CLIs.
 
 ## Stage → Provider routing (PRD §8.1)
 
-| Stage      | Primary       | Fallback chain                            | Env switch                        |
+| Stage      | Primary       | Fallback chain                            | Preferred local switch            |
 |------------|---------------|-------------------------------------------|------------------------------------|
-| intake     | Gemini Flash  | gemini → anthropic → mock                | `GEMINI_API_KEY`                  |
-| interview  | Claude Sonnet | anthropic → gemini → mock                | `ANTHROPIC_API_KEY`               |
-| targeting  | Gemini        | gemini → anthropic → mock                | `GEMINI_API_KEY`                  |
-| research   | Gemini Pro    | gemini → kimi → anthropic → mock         | `GEMINI_API_KEY` / `KIMI_API_KEY` |
-| evidence   | Kimi K2.6     | kimi → gemini → anthropic → mock         | `KIMI_API_KEY`                    |
-| council    | Claude Opus   | anthropic → gemini → mock                | `ANTHROPIC_API_KEY`               |
-| report     | Claude Sonnet | anthropic → gemini → mock                | `ANTHROPIC_API_KEY`               |
-| eval       | Codex / GPT-5 | codex → anthropic → mock                 | `OPENAI_API_KEY` or `CODEX_BIN`   |
+| intake     | Gemini Flash  | gemini → anthropic → mock                | `MUCHANIPO_PREFER_CLI=1`          |
+| interview  | Claude Sonnet | anthropic → gemini → mock                | `MUCHANIPO_PREFER_CLI=1`          |
+| targeting  | Gemini        | gemini → anthropic → mock                | `MUCHANIPO_PREFER_CLI=1`          |
+| research   | Gemini Pro    | gemini → kimi → anthropic → mock         | `MUCHANIPO_PREFER_CLI=1`          |
+| evidence   | Kimi K2.6     | kimi → gemini → anthropic → mock         | `MUCHANIPO_PREFER_CLI=1`          |
+| council    | Claude Opus   | anthropic → gemini → mock                | `MUCHANIPO_PREFER_CLI=1`          |
+| report     | Claude Sonnet | anthropic → gemini → mock                | `MUCHANIPO_PREFER_CLI=1`          |
+| eval       | Codex / GPT-5 | codex → anthropic → mock                 | `CODEX_BIN` or `codex` on PATH    |
 
 Qwen 3.6 로컬 provider는 보류 (PRD §15.3 Phase 3+).
 
 ## Offline mocks
 
-Each provider returns deterministic mock text when its key is missing OR
-the corresponding `*_OFFLINE=1` env var is set. This keeps `pytest`,
-`bash scripts/e2e_smoke.sh`, and the Tauri app working in CI/local-dev
-without any keys. Real-mode behavior is opt-in.
+Each provider returns deterministic mock text when its local CLI/API access is
+missing OR the corresponding `*_OFFLINE=1` env var is set. This keeps `pytest`,
+`bash scripts/e2e_smoke.sh`, and CI working without credentials. The installed
+Tauri app prefers CLI execution by default; pytest disables implicit CLI
+detection unless a test explicitly opts in.
 
 | Provider  | Offline trigger                                |
 |-----------|------------------------------------------------|
-| anthropic | `ANTHROPIC_API_KEY` unset or `ANTHROPIC_OFFLINE=1` |
-| gemini    | `GEMINI_API_KEY` unset or `GEMINI_OFFLINE=1`   |
-| kimi      | `KIMI_API_KEY` unset or `KIMI_OFFLINE=1`       |
-| codex     | `OPENAI_API_KEY` and `CODEX_BIN` both missing or `CODEX_OFFLINE=1` |
+| anthropic | `claude` CLI/API unavailable or `ANTHROPIC_OFFLINE=1` |
+| gemini    | `gemini` CLI/API unavailable or `GEMINI_OFFLINE=1` |
+| kimi      | `kimi` CLI/API unavailable or `KIMI_OFFLINE=1` |
+| codex     | `codex` CLI/API unavailable or `CODEX_OFFLINE=1` |
 | ollama    | not used in Phase 2 (Qwen 3.6 보류)            |
 
 ## Cost control
@@ -64,15 +67,15 @@ without any keys. Real-mode behavior is opt-in.
 # offline (always works)
 bash scripts/e2e_smoke.sh
 
-# real LLM (auto-skipped without keys)
-ANTHROPIC_API_KEY=sk-... pytest tests/test_real_llm_smoke.py -v
+# real LLM through installed CLIs
+MUCHANIPO_PREFER_CLI=1 pytest tests/test_real_llm_smoke.py -v
 ```
 
 ## Tauri app
 
-The bundled app (`Muchanipo.app`) reads `.env` from the working directory.
-For an installed `.app`, set keys in your shell login script
-(`~/.zshrc` exports) or run from the project directory.
+The bundled app (`Muchanipo.app`) prefers installed CLIs. Keep each provider
+logged in through its own CLI. API keys in `.env` are optional fallback inputs,
+not the default personal-local path.
 
 ## Limitations / open work
 

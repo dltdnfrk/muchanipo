@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Union
 
@@ -76,11 +77,62 @@ def _load_default_vault_search() -> SearchFn | None:
     return lambda query: fn(query, limit=3)
 
 
+def _load_default_insight_forge_search() -> SearchFn | None:
+    """Load InsightForge's full RRF/GBrain search path behind an env gate."""
+    depth = os.environ.get("MUCHANIPO_INSIGHT_FORGE_DEPTH", "light").strip().lower()
+    if depth in {"", "disabled", "off", "0", "no", "false"}:
+        return None
+    if depth not in {"light", "deep"}:
+        depth = "light"
+
+    src_path = Path(__file__).resolve().parent.parent / "search" / "insight-forge.py"
+    if not src_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("muchanipo_insight_forge_full", src_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("insight_forge import failed: %s", exc)
+        return None
+    forge = getattr(module, "insight_forge", None)
+    if not callable(forge):
+        return None
+
+    def _search(query: str) -> list[dict[str, Any]]:
+        try:
+            payload = forge(query=query, depth=depth)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("insight_forge backend failed for query %r: %s", query, exc)
+            return []
+        hits: list[dict[str, Any]] = []
+        for item in payload.get("results", []) or []:
+            text = item.get("text") or ""
+            source = item.get("source") or ""
+            if not text and not source:
+                continue
+            hits.append(
+                {
+                    "kind": "insight_forge",
+                    "text": text,
+                    "source": source,
+                    "title": source or "InsightForge result",
+                    "score": float(item.get("rrf_score") or item.get("score") or 0.0),
+                    "matched_questions": list(item.get("matched_questions") or []),
+                }
+            )
+        return hits
+
+    return _search
+
+
 def _grade_for(hit: dict) -> str:
     """Heuristic source grade: vault hits → B, web → C unless score>=0.8."""
     score = float(hit.get("score") or 0.0)
     kind = (hit.get("kind") or "").lower()
-    if kind in {"vault", "obsidian"} or hit.get("source", "").endswith(".md"):
+    if kind in {"vault", "obsidian", "insight_forge"} or hit.get("source", "").endswith(".md"):
         return "B"
     if score >= 0.8:
         return "B"
@@ -97,11 +149,22 @@ class WebResearchRunner:
         exa_search: SearchFn | None = None,
         vault_search: SearchFn | None = None,
         academic_search: SearchFn | None = None,
+        insight_forge_search: SearchFn | None = None,
+        enable_default_insight_forge: bool | None = None,
         per_query_cap: int = 4,
     ) -> None:
         self.web_search = web_search
         self.exa_search = exa_search
         self.academic_search = academic_search
+        if enable_default_insight_forge is None:
+            enable_default_insight_forge = not any(
+                backend is not None for backend in (web_search, exa_search, vault_search, academic_search)
+            )
+        self.insight_forge_search = (
+            _load_default_insight_forge_search()
+            if insight_forge_search is None and enable_default_insight_forge
+            else insight_forge_search
+        )
         # vault default loaded lazily; allow explicit None to disable
         if vault_search is None:
             self.vault_search = _load_default_vault_search()
@@ -112,6 +175,7 @@ class WebResearchRunner:
     def _gather(self, query: str) -> list[dict]:
         hits: list[dict] = []
         for backend, kind in (
+            (self.insight_forge_search, "insight_forge"),
             (self.vault_search, "vault"),
             (self.academic_search, "academic"),
             (self.web_search, "web"),
@@ -216,4 +280,6 @@ def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | 
         return MockResearchRunner()
     if "academic_search" not in kwargs:
         kwargs["academic_search"] = academic_sync_search.search
+    if "insight_forge_search" not in kwargs and "enable_default_insight_forge" not in kwargs:
+        kwargs["enable_default_insight_forge"] = True
     return WebResearchRunner(**kwargs)

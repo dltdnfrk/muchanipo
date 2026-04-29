@@ -1,6 +1,7 @@
 """Pipeline runner facade for server.py and Tauri smoke flows."""
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -37,7 +38,8 @@ STAGE_MAP = {
     "evidence": "evidence",
     "council": "council",
     "report": "report",
-    "vault": "finalize",
+    "vault": "vault",
+    "agents": "agents",
     "done": "finalize",
 }
 
@@ -119,7 +121,7 @@ def run_pipeline(
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=HITLAdapter(
-            mode="markdown" if live_required else "auto_approve",
+            mode=_hitl_mode_from_env(live_required=live_required),
             timeout_seconds=_hitl_timeout_from_env(),
         ),
         research_runner=build_runner(use_real=(live_required or not offline)),
@@ -142,9 +144,18 @@ def run_pipeline(
     }
 
 
-def _hitl_timeout_from_env() -> float:
-    import os
+def _hitl_mode_from_env(*, live_required: bool) -> str:
+    if os.environ.get("PLANNOTATOR_API_KEY") or os.environ.get("PLANNOTATOR_OFFLINE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return "plannotator"
+    return "markdown" if live_required else "auto_approve"
 
+
+def _hitl_timeout_from_env() -> float:
     raw = os.environ.get("MUCHANIPO_HITL_TIMEOUT_SEC")
     if raw is None:
         return 0.0

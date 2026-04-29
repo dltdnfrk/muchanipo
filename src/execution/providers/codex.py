@@ -1,4 +1,4 @@
-"""OpenAI Codex CLI / GPT-5.5 provider — offline-safe stub.
+"""OpenAI Codex CLI / GPT-5.4 provider — CLI-first, API fallback, offline-safe.
 
 PRD-v2 §8.1: Eval stage uses Codex CLI subprocess. We support two modes:
   1. Subprocess via Codex CLI binary (CODEX_BIN env var, default 'codex')
@@ -16,6 +16,7 @@ import subprocess
 from typing import Any
 
 from src.execution.models import ModelResult
+from src.execution.providers.cli_policy import cli_requested, prefer_cli_default
 
 
 def _env_int(name: str, default: int) -> int:
@@ -28,17 +29,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-_DEFAULT_MODEL = os.environ.get("MUCHANIPO_CODEX_MODEL", "gpt-5.5")
+_DEFAULT_MODEL = os.environ.get("MUCHANIPO_CODEX_MODEL", "gpt-5.4")
 _HTTP_TIMEOUT_SEC = _env_int("MUCHANIPO_CODEX_TIMEOUT_SEC", 30)
 _CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_CODEX_CLI_TIMEOUT_SEC", 600)
 
 
 def _cli_enabled() -> bool:
-    if os.environ.get("CODEX_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    return False
+    return cli_requested("CODEX_USE_CLI")
+
+
+def _resolve_codex_bin() -> str | None:
+    explicit = os.environ.get("CODEX_BIN")
+    if explicit:
+        return explicit
+    # Prefer the native Homebrew binary over a potentially stale npm shim.
+    for candidate in ("/opt/homebrew/bin/codex", "/usr/local/bin/codex", shutil.which("codex")):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 
 
 class CodexProvider:
@@ -52,15 +60,18 @@ class CodexProvider:
         endpoint: str = "",
         offline: bool | None = None,
         use_cli: bool | None = None,
+        prefer_cli: bool | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.codex_bin = codex_bin or os.environ.get("CODEX_BIN") or shutil.which("codex")
+        self.codex_bin = codex_bin or _resolve_codex_bin()
         self.endpoint = endpoint or os.environ.get("OPENAI_ENDPOINT", "https://api.openai.com/v1/chat/completions")
-        # CLI is preferred whenever the binary is available AND either the
-        # USE_CLI flag is set or there is no API key.
+        # CLI is preferred whenever the binary is available and the local app
+        # or env policy asks for CLI-first operation.
+        if prefer_cli is None:
+            prefer_cli = prefer_cli_default()
         if use_cli is None:
-            use_cli = bool(self.codex_bin) and (_cli_enabled() or not self.api_key)
+            use_cli = bool(self.codex_bin) and (_cli_enabled() or prefer_cli or not self.api_key)
         self.use_cli = use_cli
         if offline is None:
             offline = bool(os.environ.get("CODEX_OFFLINE")) or (

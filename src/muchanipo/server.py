@@ -288,10 +288,10 @@ def _render_chapter_markdown(chapter) -> str:
 def _detect_offline_mode() -> bool:
     """Decide whether to run the pipeline against mock providers.
 
-    Online iff: (a) any LLM CLI is wired up via MUCHANIPO_USE_CLI / *_USE_CLI
-    and the relevant binary is on PATH, OR (b) any provider API key is
-    present in the environment. Otherwise fall back to offline mocks so the
-    pipeline still produces a placeholder report instead of crashing.
+    Online iff: (a) a local LLM CLI binary is available and CLI preference has
+    not been disabled, OR (b) any provider API key is present in the
+    environment. Otherwise fall back to offline mocks so the pipeline still
+    produces a placeholder report instead of crashing.
     """
     import os
     import shutil
@@ -301,15 +301,32 @@ def _detect_offline_mode() -> bool:
     if os.environ.get("MUCHANIPO_ONLINE", "").strip().lower() in ("1", "true", "yes"):
         return False
 
-    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes")
+    true_values = ("1", "true", "yes", "on")
+    running_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    explicit_cli_preference = os.environ.get("MUCHANIPO_PREFER_CLI")
+    default_prefer_cli = "0" if running_pytest else "1"
+    prefer_cli = os.environ.get("MUCHANIPO_PREFER_CLI", default_prefer_cli).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in true_values
+    provider_cli_requested = any(
+        os.environ.get(flag, "").strip().lower() in true_values
+        for flag in ("ANTHROPIC_USE_CLI", "GEMINI_USE_CLI", "KIMI_USE_CLI", "CODEX_USE_CLI")
+    )
+    if running_pytest and explicit_cli_preference is None and not cli_global and not provider_cli_requested:
+        return True
     cli_pairs = [
         ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),
         ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
+        ("KIMI_USE_CLI", "KIMI_BIN", "kimi"),
         ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
     ]
     for use_flag, bin_var, bin_name in cli_pairs:
-        local_flag = os.environ.get(use_flag, "").strip() in ("1", "true", "yes")
-        if not (cli_global or local_flag):
+        local_flag = os.environ.get(use_flag, "").strip().lower() in true_values
+        if not (prefer_cli or cli_global or local_flag):
             continue
         explicit = os.environ.get(bin_var)
         if explicit and os.path.exists(explicit):
@@ -400,7 +417,7 @@ def serve_full(
             source_layers=list(ch.source_layers),
         )
 
-    final_md = "\n".join(md_parts)
+    final_md = str(pipeline_result.get("report_md") or "\n".join(md_parts))
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_md, encoding="utf-8")
 

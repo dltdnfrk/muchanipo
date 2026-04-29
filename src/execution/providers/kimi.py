@@ -1,7 +1,7 @@
-"""Moonshot Kimi K2.6 provider — offline-safe stub.
+"""Moonshot Kimi K2.6 provider — CLI-first, API fallback, offline-safe.
 
-Real Moonshot API (api.moonshot.cn) compatible — when KIMI_API_KEY is unset
-or KIMI_OFFLINE=1, returns deterministic mock responses for tests.
+The local app path can call `kimi --print`; API keys are a fallback only.
+When neither CLI nor API key is available, tests receive deterministic mocks.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 
 from src.execution.models import ModelResult
+from src.execution.providers.cli_policy import cli_requested, prefer_cli_default, writable_workdir
 
 try:  # pragma: no cover - 외부 의존성 optional.
     import urllib.request
@@ -40,11 +41,7 @@ _CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_KIMI_CLI_TIMEOUT_SEC", 600)
 
 
 def _cli_enabled() -> bool:
-    if os.environ.get("KIMI_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    return False
+    return cli_requested("KIMI_USE_CLI")
 
 
 def _resolve_kimi_bin() -> str | None:
@@ -64,14 +61,17 @@ class KimiProvider:
         endpoint: str = "",
         offline: bool | None = None,
         use_cli: bool | None = None,
+        prefer_cli: bool | None = None,
         kimi_bin: str | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("KIMI_API_KEY") or os.environ.get("MOONSHOT_API_KEY")
         self.endpoint = endpoint or os.environ.get("KIMI_ENDPOINT", "https://api.moonshot.cn/v1/chat/completions")
         self.kimi_bin = kimi_bin or _resolve_kimi_bin()
+        if prefer_cli is None:
+            prefer_cli = prefer_cli_default()
         if use_cli is None:
-            use_cli = _cli_enabled() and bool(self.kimi_bin)
+            use_cli = bool(self.kimi_bin) and (_cli_enabled() or prefer_cli)
         self.use_cli = use_cli
         if offline is None:
             offline = bool(os.environ.get("KIMI_OFFLINE")) or (
@@ -95,7 +95,7 @@ class KimiProvider:
         args = [
             self.kimi_bin,
             "--work-dir",
-            os.getcwd(),
+            writable_workdir(env_var="MUCHANIPO_KIMI_WORKDIR"),
             "--print",
             "--final-message-only",
             "--input-format",

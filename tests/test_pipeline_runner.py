@@ -50,6 +50,8 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
         "evidence",
         "council",
         "report",
+        "vault",
+        "agents",
         "finalize",
     ]
     completed = [event["stage"] for event in events if event["event"] == "stage_completed"]
@@ -81,3 +83,26 @@ def test_run_pipeline_uses_human_gate_only_when_live_requested(monkeypatch):
         runner_mod.run_pipeline("configured but non-live topic", offline=False)
 
     assert captured_modes == ["markdown", "auto_approve"]
+
+
+def test_run_pipeline_selects_plannotator_when_configured(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    captured_modes: list[str] = []
+
+    class _StopAfterInitPipeline:
+        def __init__(self, *, hitl_adapter, **kwargs):
+            captured_modes.append(hitl_adapter.mode)
+
+        def run(self, topic):
+            raise RuntimeError("stop after init")
+
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterInitPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+    monkeypatch.setenv("PLANNOTATOR_OFFLINE", "1")
+
+    with pytest.raises(RuntimeError, match="stop after init"):
+        runner_mod.run_pipeline("plannotator topic", offline=True)
+
+    assert captured_modes == ["plannotator"]

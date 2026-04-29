@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from src.execution.providers.codex import CodexProvider
+from src.execution.providers.codex import CodexProvider, _resolve_codex_bin
 
 
 def test_codex_subprocess_nonzero_returncode_raises_runtime_error(monkeypatch):
@@ -25,3 +25,10 @@ def test_codex_subprocess_nonzero_returncode_raises_runtime_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="codex failed"):
         provider.call("eval", "check this")
+
+
+def test_codex_resolver_prefers_homebrew_native_binary(monkeypatch):
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+    monkeypatch.setattr("os.path.exists", lambda path: path == "/opt/homebrew/bin/codex")
+
+    assert _resolve_codex_bin() == "/opt/homebrew/bin/codex"

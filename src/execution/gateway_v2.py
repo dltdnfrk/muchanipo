@@ -8,11 +8,12 @@ Stage routing per PRD-v2 §8.1 (Qwen 보류):
     Evidence   → Kimi
     Council    → Anthropic Opus
     Report     → Anthropic Sonnet  (Qwen 로컬 보류)
-    Eval       → Codex (GPT-5.5)
+    Eval       → Codex (GPT-5.4)
 
 Fallback chain per stage — first failure → next provider in chain.
-Offline mode is opt-in: if KIMI_OFFLINE / GEMINI_OFFLINE / CODEX_OFFLINE / no
-API keys, providers return deterministic mocks (test-friendly).
+The app path is CLI-first: installed Claude/Gemini/Kimi/Codex CLIs own their
+own auth, and API keys are only fallback inputs. Providers return
+deterministic mocks when neither CLI nor API credentials are available.
 
 stdlib only.
 """
@@ -108,6 +109,7 @@ class FallbackChain:
 def build_default_providers(
     *,
     force_offline: bool = False,
+    prefer_cli: bool = True,
 ) -> Dict[str, Provider]:
     """기본 5종 provider (anthropic/gemini/kimi/codex/mock).
 
@@ -120,10 +122,10 @@ def build_default_providers(
     from src.execution.providers.mock import MockProvider
 
     providers: Dict[str, Provider] = {
-        "anthropic": AnthropicProvider(offline=True if force_offline else None),
-        "gemini": GeminiProvider(offline=True if force_offline else None),
-        "kimi": KimiProvider(offline=True if force_offline else None),
-        "codex": CodexProvider(offline=True if force_offline else None),
+        "anthropic": AnthropicProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "gemini": GeminiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "kimi": KimiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "codex": CodexProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "mock": MockProvider(),
     }
     return providers
@@ -138,9 +140,13 @@ def default_gateway(
     audit: Any = None,
     force_offline: bool = False,
     require_live_default: bool = False,
+    prefer_cli: bool = True,
 ) -> "GatewayV2":
     """PRD §8.1 기본 라우팅 + fallback chain을 갖춘 GatewayV2 인스턴스."""
-    provider_map = dict(providers) if providers else build_default_providers(force_offline=force_offline)
+    provider_map = dict(providers) if providers else build_default_providers(
+        force_offline=force_offline,
+        prefer_cli=prefer_cli,
+    )
     return GatewayV2(
         providers=provider_map,
         stage_routes=dict(routes or PRIMARY_ROUTES),

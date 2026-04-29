@@ -65,6 +65,29 @@ class _TrustedEvidenceRunner:
         ]
 
 
+class _OnlyCGradeEvidenceRunner:
+    def run(self, plan):
+        ref = EvidenceRef(
+            id="web:live-c",
+            source_url="https://example.com/live-c",
+            source_title="Live but weak web source",
+            quote="strawberry diagnostics evidence",
+            source_grade="C",
+            provenance={
+                "kind": "web",
+                "source": "https://example.com/live-c",
+                "source_text": "strawberry diagnostics evidence",
+            },
+        )
+        return [
+            Finding(
+                claim="strawberry diagnostics evidence",
+                support=[ref],
+                confidence=0.55,
+            )
+        ]
+
+
 def test_gateway_live_mode_rejects_mock_provider_result():
     gw = GatewayV2(
         providers={"mock": MockProvider()},
@@ -140,7 +163,7 @@ def test_pipeline_live_mode_blocks_pending_hitl(tmp_path: Path):
         require_live=True,
     )
 
-    with pytest.raises(LiveModeViolation, match="approved HITL gate 'brief'"):
+    with pytest.raises(LiveModeViolation, match="approved HITL gate 'plan'"):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
@@ -154,6 +177,19 @@ def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):
     )
 
     with pytest.raises(LiveModeViolation, match="non-live evidence"):
+        pipeline.run("딸기 농가용 진단키트 시장성")
+
+
+def test_pipeline_live_mode_requires_ab_grade_evidence_floor(tmp_path: Path):
+    pipeline = IdeaToCouncilPipeline(
+        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        research_runner=_OnlyCGradeEvidenceRunner(),
+        vault_dir=tmp_path / "vault",
+        council_log_dir=tmp_path / "council",
+        require_live=True,
+    )
+
+    with pytest.raises(LiveModeViolation, match="A/B-grade evidence"):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 

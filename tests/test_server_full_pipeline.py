@@ -43,7 +43,7 @@ def test_serve_full_emits_all_pipeline_stages(tmp_path):
     assert stages == [
         "intake", "interview", "targeting",
         "research", "evidence", "council",
-        "report", "finalize",
+        "report", "vault", "agents", "finalize",
     ]
 
 
@@ -74,6 +74,8 @@ def test_serve_full_emits_final_report_event_with_markdown(tmp_path):
     assert finals[0]["chapter_count"] == 6
     assert "## Chapter 1" in finals[0]["markdown"]
     assert "## Chapter 6" in finals[0]["markdown"]
+    assert "## ReACT Execution Plan" in finals[0]["markdown"]
+    assert "## GBrain Compiled Truth + Timeline" in finals[0]["markdown"]
 
 
 def test_serve_full_emits_done_at_end(tmp_path):

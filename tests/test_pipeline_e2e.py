@@ -75,11 +75,14 @@ def test_mock_first_pipeline_from_idea_to_vault(tmp_path: Path):
         "council",
         "report",
         "vault",
+        "agents",
         "done",
     ]:
         assert stage in stage_names
 
     assert result.report_md.count("## Chapter ") == 6
+    assert "## ReACT Execution Plan" in result.report_md
+    assert "## GBrain Compiled Truth + Timeline" in result.report_md
     for chapter_no in range(1, 7):
         assert f"## Chapter {chapter_no}:" in result.report_md
 
@@ -92,6 +95,10 @@ def test_mock_first_pipeline_from_idea_to_vault(tmp_path: Path):
     assert evidence_events
     assert evidence_events[0]["reference_projects"]
     assert "evidence_validation_summary" in evidence_events[0]["artifacts"]
+    report_events = [event for event in events if event["stage"] == "report"]
+    assert report_events
+    assert int(report_events[0]["artifacts"]["react_section_count"]) >= 1
+    assert report_events[0]["artifacts"]["gbrain_content_hash"]
 
 
 def test_pipeline_can_record_retro_learning(tmp_path: Path):
@@ -110,3 +117,4 @@ def test_pipeline_can_record_retro_learning(tmp_path: Path):
     assert result.retrospective.learnings
     assert (tmp_path / "learnings.jsonl").exists()
     assert int(result.state.artifacts["learning_count"]) >= 1
+    assert any(event["stage"] == "agents" for event in result.progress_events)

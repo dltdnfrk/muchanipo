@@ -11,8 +11,10 @@ from uuid import uuid4
 
 from src.agents.generator import DebateAgentGenerator, DebateAgentSpec
 from src.agents.mirofish import debate_agent_to_council_persona
+from src.council.diversity_mapper import DiversityMap
 from src.council.parsers import RoundResult
 from src.council.persona_generator import PersonaGenerator
+from src.council.persona_sampler import KoreaPersonaSampler
 from src.council.round_layers import DEFAULT_LAYERS
 from src.council.session import Session as KarpathySession
 from src.evidence.artifact import EvidenceRef, Finding
@@ -48,6 +50,7 @@ from src.targeting.builder import build_targeting_map
 from .stages import Stage
 from .state import PipelineState
 from .reference_contracts import contract_for_stage
+from .reference_runtime import build_reference_runtime_artifacts
 
 ProgressCallback = Callable[[Dict[str, Any]], None]
 
@@ -68,6 +71,7 @@ class IdeaToCouncilResult:
     progress_events: list[dict[str, Any]]
     agents: list[DebateAgentSpec]
     council: KarpathySession
+    reference_runtime_artifacts: dict[str, Any]
     retrospective: Retrospective | None = None
 
 
@@ -105,12 +109,12 @@ class IdeaToCouncilPipeline:
         idea = capture_idea(raw_idea)
         self._emit(state, Stage.IDEA_DUMP)
         state.advance(Stage.INTERVIEW)
-        self._emit(state, Stage.INTERVIEW)
 
         interview = InterviewSession.from_idea(idea)
         design_doc = OfficeHours().reframe(idea.raw_text)
         brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
         state.record_artifact("brief_id", brief.id)
+        self._emit(state, Stage.INTERVIEW)
 
         consensus_plan = PlanReview().autoplan(design_doc)
         state.record_artifact("plan_review_gate", "passed" if consensus_plan.gate_passed else "blocked")
@@ -119,6 +123,17 @@ class IdeaToCouncilPipeline:
             raise LiveModeViolation(f"live mode blocked by plan review gate: {consensus_plan.gate_reason}")
         if not consensus_plan.gate_passed:
             state.warnings.append(f"plan review gate did not pass: {consensus_plan.gate_reason}")
+        hitl_results: dict[str, HITLResult] = {}
+        hitl_results["plan"] = self.hitl_adapter.gate(
+            "plan",
+            {
+                "design_doc": design_doc.to_brief(),
+                "consensus_plan": consensus_plan.to_ontology(),
+                "gate_reason": consensus_plan.gate_reason,
+            },
+        )
+        self._require_approved_gate("plan", hitl_results["plan"])
+        state.record_artifact("plan_gate_status", hitl_results["plan"].status)
 
         state.advance(Stage.TARGETING)
         targeting_map = build_targeting_map(brief)
@@ -126,7 +141,6 @@ class IdeaToCouncilPipeline:
         state.record_artifact("targeting_domains", ",".join(targeting_map.domains))
         self._emit(state, Stage.TARGETING)
 
-        hitl_results: dict[str, HITLResult] = {}
         hitl_results["brief"] = self.hitl_adapter.gate_brief(brief)
         self._require_approved_gate("brief", hitl_results["brief"])
         if hitl_results["brief"].status == "changes_requested":
@@ -137,9 +151,13 @@ class IdeaToCouncilPipeline:
             setattr(brief, "targeting_map", targeting_map)
 
         state.advance(Stage.RESEARCH)
-        self._emit(state, Stage.RESEARCH)
         plan = ResearchPlanner().plan(brief)
         state.record_artifact("research_query_count", str(len(plan.queries)))
+        state.record_artifact("research_memory_store", "MemPalace")
+        state.record_artifact("research_memory_key", brief.id)
+        state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
+        state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
+        self._emit(state, Stage.RESEARCH)
         findings = list(self.research_runner.run(plan))
 
         state.advance(Stage.EVIDENCE)
@@ -151,11 +169,11 @@ class IdeaToCouncilPipeline:
         evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
         state.record_artifact("evidence_count", str(len(evidence_refs)))
         state.record_artifact("evidence_validation_summary", json.dumps(evidence_summary, ensure_ascii=False, sort_keys=True))
-        self._emit(state, Stage.EVIDENCE)
         self._require_live_evidence(evidence_summary, evidence_refs)
 
         hitl_results["evidence"] = self.hitl_adapter.gate_evidence(evidence_refs)
         self._require_approved_gate("evidence", hitl_results["evidence"])
+        state.record_artifact("evidence_gate_status", hitl_results["evidence"].status)
         if hitl_results["evidence"].status == "changes_requested":
             state.warnings.append("evidence gate requested changes; augmented research once")
             findings = list(self.research_runner.run(plan))
@@ -165,6 +183,9 @@ class IdeaToCouncilPipeline:
                 evidence_store.add(ref)
             grounding_reports = annotate_findings(findings)
             evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
+            state.record_artifact("evidence_count", str(len(evidence_refs)))
+            state.record_artifact("evidence_validation_summary", json.dumps(evidence_summary, ensure_ascii=False, sort_keys=True))
+        self._emit(state, Stage.EVIDENCE)
 
         report = ResearchReport(
             brief_id=brief.id,
@@ -180,13 +201,17 @@ class IdeaToCouncilPipeline:
 
         agents = DebateAgentGenerator().from_report(report)
         state.record_artifact("agents", ",".join(agent.name for agent in agents))
-        personas = _generate_council_personas(
+        personas, persona_telemetry = _generate_council_personas(
             report=report,
             agents=agents,
             gateway=self.gateway_v2,
+            consensus_plan=consensus_plan,
+            targeting_map=targeting_map,
         )
 
         state.advance(Stage.COUNCIL)
+        for key, value in persona_telemetry.items():
+            state.record_artifact(key, str(value))
         self._emit(state, Stage.COUNCIL)
         council = KarpathySession(
             gateway=self.gateway_v2,
@@ -196,8 +221,28 @@ class IdeaToCouncilPipeline:
         council.run_all()
         state.record_artifact("council_id", report.id)
 
+        reference_runtime_artifacts = build_reference_runtime_artifacts(
+            report=report,
+            council=council,
+            evidence_summary=evidence_summary,
+        )
+        state.record_artifact(
+            "react_section_count",
+            str(reference_runtime_artifacts["react"]["section_count"]),
+        )
+        state.record_artifact(
+            "gbrain_content_hash",
+            str(reference_runtime_artifacts["gbrain"]["content_hash"]),
+        )
+
         state.advance(Stage.REPORT)
-        report_md = _compose_six_chapter_report(brief, report, council, targeting_map)
+        report_md = _compose_six_chapter_report(
+            brief,
+            report,
+            council,
+            targeting_map,
+            reference_runtime_artifacts=reference_runtime_artifacts,
+        )
         self._require_live_report(report_md)
         self._emit(state, Stage.REPORT)
 
@@ -211,6 +256,9 @@ class IdeaToCouncilPipeline:
         if retrospective is not None:
             state.record_artifact("learning_count", str(len(retrospective.learnings)))
         self._emit(state, Stage.VAULT)
+
+        state.advance(Stage.AGENTS)
+        self._emit(state, Stage.AGENTS)
 
         state.advance(Stage.DONE)
         self._emit(state, Stage.DONE)
@@ -230,6 +278,7 @@ class IdeaToCouncilPipeline:
             progress_events=list(self.progress_events),
             agents=agents,
             council=council,
+            reference_runtime_artifacts=reference_runtime_artifacts,
             retrospective=retrospective,
         )
 
@@ -240,6 +289,8 @@ class IdeaToCouncilPipeline:
     def _require_live_evidence(self, evidence_summary: dict[str, Any], refs: list[EvidenceRef]) -> None:
         if self.require_live:
             assert_live_evidence(evidence_summary, refs)
+            if not any(str(ref.source_grade).upper() in {"A", "B"} for ref in refs):
+                raise LiveModeViolation("live mode requires at least one A/B-grade evidence record")
 
     def _require_live_report(self, report_md: str) -> None:
         if self.require_live:
@@ -335,6 +386,8 @@ def _compose_six_chapter_report(
     report: ResearchReport,
     council: KarpathySession,
     targeting_map: TargetingMap,
+    *,
+    reference_runtime_artifacts: dict[str, Any] | None = None,
 ) -> str:
     digests = _round_digests(council, report.evidence_refs)
     chapters = PyramidFormatter().reorder_all(ChapterMapper().map(digests))
@@ -370,7 +423,55 @@ def _compose_six_chapter_report(
         for claim in chapter.body_claims:
             lines.append(f"- {claim}")
         lines.append("")
+    if reference_runtime_artifacts:
+        _append_react_plan(lines, reference_runtime_artifacts.get("react", {}))
+        _append_gbrain_snapshot(lines, reference_runtime_artifacts.get("gbrain", {}))
     return "\n".join(lines).strip() + "\n"
+
+
+def _append_react_plan(lines: list[str], react: dict[str, Any]) -> None:
+    lines.extend([
+        "## ReACT Execution Plan",
+        "",
+        (
+            "This appendix is generated by `src/search/react-report.py` and records "
+            "the Think -> Act -> Observe -> Write plan required before report prose is finalized."
+        ),
+        "",
+        f"- Minimum tool calls per section: {react.get('min_tool_calls', 0)}",
+        f"- Available tools: {', '.join(str(tool) for tool in react.get('available_tools', []))}",
+        "",
+    ])
+    for idx, section in enumerate(react.get("sections", []), start=1):
+        lines.extend([
+            f"### ReACT Section {idx}: {section.get('title', '')}",
+            "",
+            f"- THINK: {section.get('think', '')}",
+            f"- ACT: {section.get('act', '')}",
+            f"- OBSERVE: {section.get('observe', '')}",
+            f"- WRITE: {section.get('write', '')}",
+            "",
+        ])
+
+
+def _append_gbrain_snapshot(lines: list[str], gbrain: dict[str, Any]) -> None:
+    lines.extend([
+        "## GBrain Compiled Truth + Timeline",
+        "",
+        (
+            "This section is generated through `src/hitl/vault-router.py` helpers. "
+            "Compiled truth is the current best answer; timeline is the audit trail."
+        ),
+        "",
+        f"- Slug: `{gbrain.get('slug', '')}`",
+        f"- Content hash: `{gbrain.get('content_hash', '')}`",
+        f"- Timeline entry: {gbrain.get('timeline_entry', '')}",
+        "",
+        "### Compiled Truth Snapshot",
+        "",
+        str(gbrain.get("compiled_truth", "")).strip(),
+        "",
+    ])
 
 
 def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -> list[RoundDigest]:
@@ -498,15 +599,32 @@ def _detect_offline_mode() -> bool:
     if os.environ.get("MUCHANIPO_ONLINE", "").strip().lower() in ("1", "true", "yes"):
         return False
 
-    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in ("1", "true", "yes")
+    true_values = ("1", "true", "yes", "on")
+    running_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    explicit_cli_preference = os.environ.get("MUCHANIPO_PREFER_CLI")
+    default_prefer_cli = "0" if running_pytest else "1"
+    prefer_cli = os.environ.get("MUCHANIPO_PREFER_CLI", default_prefer_cli).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in true_values
+    provider_cli_requested = any(
+        os.environ.get(flag, "").strip().lower() in true_values
+        for flag in ("ANTHROPIC_USE_CLI", "GEMINI_USE_CLI", "KIMI_USE_CLI", "CODEX_USE_CLI")
+    )
+    if running_pytest and explicit_cli_preference is None and not cli_global and not provider_cli_requested:
+        return True
     cli_pairs = [
         ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),
         ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
+        ("KIMI_USE_CLI", "KIMI_BIN", "kimi"),
         ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
     ]
     for use_flag, bin_var, bin_name in cli_pairs:
-        local_flag = os.environ.get(use_flag, "").strip().lower() in ("1", "true", "yes")
-        if not (cli_global or local_flag):
+        local_flag = os.environ.get(use_flag, "").strip().lower() in true_values
+        if not (prefer_cli or cli_global or local_flag):
             continue
         explicit = os.environ.get(bin_var)
         if explicit and os.path.exists(explicit):
@@ -533,28 +651,64 @@ def _generate_council_personas(
     report: ResearchReport,
     agents: list[DebateAgentSpec],
     gateway: GatewayV2,
-) -> list[Any]:
+    consensus_plan: ConsensusPlan,
+    targeting_map: TargetingMap,
+) -> tuple[list[Any], dict[str, Any]]:
     ontology = {
+        **consensus_plan.to_ontology(),
         "topic": report.title,
-        "roles": [agent.role for agent in agents] or ["evidence_reviewer"],
-        "intents": [
+        "roles": list(dict.fromkeys(
+            list(consensus_plan.to_ontology().get("roles", []))
+            + [agent.role for agent in agents]
+        )) or ["evidence_reviewer"],
+        "intents": list(consensus_plan.to_ontology().get("intents", [])) + [
             agent.system_prompt or agent.perspective or "Evaluate topic-specific evidence."
             for agent in agents
         ] or ["Evaluate topic-specific evidence."],
-        "allowed_tools": ["model_gateway"],
+        "allowed_tools": list(dict.fromkeys(
+            list(consensus_plan.to_ontology().get("allowed_tools", []))
+            + ["model_gateway"]
+        )),
         "required_outputs": ["council_round_response"],
-        "value_axes": {
+        "value_axes": dict(consensus_plan.to_ontology().get("value_axes") or {
             "time_horizon": "mid",
             "risk_tolerance": 0.35,
             "stakeholder_priority": ["primary", "secondary", "tertiary"],
             "innovation_orientation": 0.55,
-        },
+        }),
+        "targeting_domains": list(targeting_map.domains),
     }
-    finals, _telemetry = PersonaGenerator(gateway=gateway).generate(
+    seed_personas = KoreaPersonaSampler(
+        data_path=Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl"),
+        seed=17,
+    ).agtech_farmer_seed(max(1, len(agents)))
+    diversity_map = DiversityMap()
+    finals, telemetry = PersonaGenerator(gateway=gateway).generate(
         ontology,
         target_count=max(1, len(agents)),
+        seed_personas=seed_personas,
+        diversity_map=diversity_map,
         topic=report.title,
     )
+    persona_telemetry = _persona_generation_telemetry(finals, telemetry)
     if finals:
-        return finals
-    return [debate_agent_to_council_persona(agent) for agent in agents]
+        return finals, persona_telemetry
+    return [debate_agent_to_council_persona(agent) for agent in agents], persona_telemetry
+
+
+def _persona_generation_telemetry(personas: list[Any], telemetry: dict[str, Any]) -> dict[str, Any]:
+    seed_source = ""
+    for persona in personas:
+        manifest = getattr(persona, "manifest", {}) or {}
+        grounded_seed = manifest.get("grounded_seed") if isinstance(manifest, dict) else None
+        if isinstance(grounded_seed, dict) and grounded_seed.get("source"):
+            seed_source = str(grounded_seed["source"])
+            break
+    return {
+        "persona_seed_source": seed_source or "none",
+        "persona_validation_framework": "HACHIMI",
+        "persona_diversity_framework": "MAP-Elites",
+        "council_protocol": "OASIS / CAMEL-AI",
+        "persona_diversity_coverage": f"{float(telemetry.get('coverage_after_admit', 0.0) or 0.0):.4f}",
+        "persona_fallbacks_used": str(int(telemetry.get("fallbacks_used", 0) or 0)),
+    }
