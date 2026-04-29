@@ -134,7 +134,7 @@ def test_evidence_store_marks_provenance_failure_when_lockdown_rejects(monkeypat
     def fake_validate(payload):
         return {entry["id"]: False for entry in payload}
 
-    monkeypatch.setattr(store_mod, "_validate_provenance", lambda refs: fake_validate(
+    monkeypatch.setattr(store_mod, "_validate_provenance", lambda refs, **kwargs: fake_validate(
         [{"id": ref.id} for ref in refs]
     ))
 

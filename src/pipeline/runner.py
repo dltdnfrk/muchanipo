@@ -119,7 +119,7 @@ def run_pipeline(
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=HITLAdapter(
-            mode="auto_approve" if offline and not live_required else "markdown",
+            mode="markdown" if live_required else "auto_approve",
             timeout_seconds=_hitl_timeout_from_env(),
         ),
         research_runner=build_runner(use_real=(live_required or not offline)),

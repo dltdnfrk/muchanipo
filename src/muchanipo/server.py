@@ -429,6 +429,18 @@ def serve(
 ) -> int:
     if pipeline == "full":
         return serve_full(topic, report_path=report_path, stdout=stdout)
+    from src.runtime.live_mode import live_requested_from_env
+
+    if live_requested_from_env():
+        emit(
+            "error",
+            stream=stdout,
+            kind="live_mode_violation",
+            message="live mode does not allow the legacy stub pipeline; use --pipeline=full",
+            pipeline="stub",
+        )
+        emit("done", stream=stdout, pipeline="stub", aborted=True)
+        return 1
     return serve_stub(
         topic,
         report_path=report_path,

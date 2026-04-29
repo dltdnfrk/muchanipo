@@ -15,7 +15,9 @@ into `EvidenceRef` + `Finding` objects so downstream `EvidenceStore` and
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Union
 
@@ -29,6 +31,7 @@ from .synthesis import finding_from_query
 
 SearchHit = Union[dict, EvidenceRef]
 SearchFn = Callable[[str], Iterable[SearchHit]]
+LOGGER = logging.getLogger(__name__)
 
 
 class MockResearchRunner:
@@ -118,7 +121,8 @@ class WebResearchRunner:
                 continue
             try:
                 raw = list(backend(query) or [])
-            except Exception:  # noqa: BLE001 — never fail the whole run
+            except Exception as exc:  # noqa: BLE001 — never fail the whole run
+                LOGGER.warning("research backend %s failed for query %r: %s", kind, query, exc)
                 continue
             for item in raw:
                 if isinstance(item, EvidenceRef):
@@ -149,8 +153,19 @@ class WebResearchRunner:
                 "source_text": (hit.get("text") or "")[:280],
             },
         ).as_dict()
+        stable_key = "|".join(
+            [
+                str(kind),
+                str(source_url or ""),
+                str(source),
+                str(hit.get("title") or ""),
+                query,
+                str(sub_idx),
+            ]
+        )
+        digest = hashlib.sha1(stable_key.encode("utf-8")).hexdigest()[:10]
         return EvidenceRef(
-            id=f"{kind}-{idx}-{sub_idx}",
+            id=f"{kind}-{idx}-{sub_idx}-{digest}",
             source_url=source_url,
             source_title=hit.get("title") or source,
             quote=(hit.get("text") or hit.get("snippet") or query)[:280],

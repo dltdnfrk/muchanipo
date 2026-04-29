@@ -121,3 +121,24 @@ def test_serve_in_process_writes_report(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert report.read_text(encoding="utf-8").startswith("# in-process")
+
+
+def test_serve_rejects_stub_pipeline_when_live_requested(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MUCHANIPO_REQUIRE_LIVE", "1")
+    report = tmp_path / "R.md"
+    stdout = io.StringIO()
+
+    rc = serve(
+        "live-stub",
+        report_path=report,
+        wait_for_input=False,
+        stdout=stdout,
+        stdin=io.StringIO(),
+    )
+
+    events = _parse_lines(stdout.getvalue())
+    assert rc == 1
+    assert events[-2]["event"] == "error"
+    assert events[-2]["kind"] == "live_mode_violation"
+    assert events[-1] == {"event": "done", "pipeline": "stub", "aborted": True}
+    assert not report.exists()

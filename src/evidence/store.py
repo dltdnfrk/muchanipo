@@ -6,9 +6,10 @@ from typing import Any
 from collections import Counter
 
 from .artifact import EvidenceRef
+from src.runtime.live_mode import LiveModeViolation
 
 
-def _validate_provenance(refs: list[EvidenceRef]) -> dict[str, bool]:
+def _validate_provenance(refs: list[EvidenceRef], *, require_live: bool = False) -> dict[str, bool]:
     """Per-evidence provenance flags. Defers to citation_grounder which itself
     wraps `src.safety.lockdown.validate_evidence_provenance` and degrades to
     pass-through when the safety module is missing."""
@@ -16,7 +17,9 @@ def _validate_provenance(refs: list[EvidenceRef]) -> dict[str, bool]:
         return {}
     try:
         from src.eval.citation_grounder import _lockdown_validate_provenance
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if require_live:
+            raise LiveModeViolation("live mode requires provenance validator availability") from exc
         return {ref.id: True for ref in refs}
 
     payload: list[dict[str, Any]] = []
@@ -32,18 +35,21 @@ def _validate_provenance(refs: list[EvidenceRef]) -> dict[str, bool]:
         )
     try:
         return _lockdown_validate_provenance(payload)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if require_live:
+            raise LiveModeViolation("live mode provenance validation failed") from exc
         return {ref.id: True for ref in refs}
 
 
 @dataclass
 class EvidenceStore:
+    require_live: bool = False
     _items: dict[str, EvidenceRef] = field(default_factory=dict)
     _provenance_flags: dict[str, bool] = field(default_factory=dict)
 
     def add(self, ref: EvidenceRef) -> EvidenceRef:
         ref.validate()
-        flags = _validate_provenance([ref])
+        flags = _validate_provenance([ref], require_live=self.require_live)
         ok = flags.get(ref.id, True)
         self._provenance_flags[ref.id] = bool(ok)
         if not ok and isinstance(ref.provenance, dict):

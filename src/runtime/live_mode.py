@@ -19,7 +19,6 @@ _MOCK_TEXT_MARKERS = (
     "[mock-",
     "mock response",
     "mock council critique",
-    "[anthropic fallback]",
     "not a real autoresearch run",
     "mock-first skeleton",
     "No live evidence",
@@ -66,9 +65,15 @@ def assert_live_evidence(evidence_summary: dict[str, Any], refs: list[Any]) -> N
         kind = str(provenance.get("kind", "") or "").lower()
         title = str(getattr(ref, "source_title", "") or "")
         grade = str(getattr(ref, "source_grade", "") or "").upper()
+        source_url = str(getattr(ref, "source_url", "") or "").strip()
+        provenance_source = str(provenance.get("source", "") or "").strip()
         if kind in rejected_kinds or grade == "D" or "No live evidence" in title:
             raise LiveModeViolation(
                 f"live mode rejected non-live evidence record {getattr(ref, 'id', '<unknown>')}"
+            )
+        if not source_url and not provenance_source:
+            raise LiveModeViolation(
+                f"live mode requires source_url or provenance source for evidence record {getattr(ref, 'id', '<unknown>')}"
             )
 
     trusted_count = int(evidence_summary.get("trusted", 0) or 0)

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from src.pipeline.runner import run_pipeline, round_result_to_digest
 
 
@@ -52,3 +54,30 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
     ]
     completed = [event["stage"] for event in events if event["event"] == "stage_completed"]
     assert completed == started
+
+
+def test_run_pipeline_uses_human_gate_only_when_live_requested(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    captured_modes: list[str] = []
+
+    class _StopAfterInitPipeline:
+        def __init__(self, *, hitl_adapter, **kwargs):
+            captured_modes.append(hitl_adapter.mode)
+
+        def run(self, topic):
+            raise RuntimeError("stop after init")
+
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterInitPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+
+    monkeypatch.setenv("MUCHANIPO_ONLINE", "1")
+    with pytest.raises(RuntimeError, match="stop after init"):
+        runner_mod.run_pipeline("live topic", offline=False)
+
+    monkeypatch.delenv("MUCHANIPO_ONLINE")
+    with pytest.raises(RuntimeError, match="stop after init"):
+        runner_mod.run_pipeline("configured but non-live topic", offline=False)
+
+    assert captured_modes == ["markdown", "auto_approve"]

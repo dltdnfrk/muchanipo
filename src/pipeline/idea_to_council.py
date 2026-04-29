@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict
 from uuid import uuid4
@@ -84,16 +85,19 @@ class IdeaToCouncilPipeline:
         progress_callback: ProgressCallback | None = None,
         require_live: bool | None = None,
     ) -> None:
+        self.require_live = live_requested_from_env() if require_live is None else require_live
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
         self.research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
-        self.gateway_v2 = _coerce_gateway_v2(model_gateway)
+        self.gateway_v2 = _coerce_gateway_v2(
+            model_gateway,
+            require_live_default=self.require_live,
+        )
         self.vault_dir = Path(vault_dir)
         self.council_log_dir = Path(council_log_dir)
         self.enable_learning = enable_learning
         self.learning_log_path = Path(learning_log_path) if learning_log_path is not None else None
         self.progress_callback = progress_callback
         self.progress_events: list[dict[str, Any]] = []
-        self.require_live = live_requested_from_env() if require_live is None else require_live
 
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
@@ -139,7 +143,7 @@ class IdeaToCouncilPipeline:
         findings = list(self.research_runner.run(plan))
 
         state.advance(Stage.EVIDENCE)
-        evidence_store = EvidenceStore()
+        evidence_store = EvidenceStore(require_live=self.require_live)
         evidence_refs = _dedupe_evidence_refs([ev for finding in findings for ev in finding.support])
         for ref in evidence_refs:
             evidence_store.add(ref)
@@ -156,7 +160,7 @@ class IdeaToCouncilPipeline:
             state.warnings.append("evidence gate requested changes; augmented research once")
             findings = list(self.research_runner.run(plan))
             evidence_refs = _dedupe_evidence_refs([ev for finding in findings for ev in finding.support])
-            evidence_store = EvidenceStore()
+            evidence_store = EvidenceStore(require_live=self.require_live)
             for ref in evidence_refs:
                 evidence_store.add(ref)
             grounding_reports = annotate_findings(findings)
@@ -201,7 +205,7 @@ class IdeaToCouncilPipeline:
         self._require_approved_gate("report", hitl_results["report"])
 
         state.advance(Stage.VAULT)
-        vault_path = self._save_to_vault(brief.id, report_md)
+        vault_path = self._save_to_vault(brief.id, report_md, run_id=state.run_id)
         state.record_artifact("vault_path", str(vault_path))
         retrospective = self._maybe_record_learning(report, council, evidence_summary)
         if retrospective is not None:
@@ -280,9 +284,13 @@ class IdeaToCouncilPipeline:
         if self.progress_callback is not None:
             self.progress_callback(event)
 
-    def _save_to_vault(self, brief_id: str, report_md: str) -> Path:
+    def _save_to_vault(self, brief_id: str, report_md: str, *, run_id: str | None = None) -> Path:
         self.vault_dir.mkdir(parents=True, exist_ok=True)
-        path = self.vault_dir / f"{brief_id}.md"
+        filename = f"{brief_id}.md"
+        if self.require_live:
+            suffix = _safe_filename(run_id or datetime.now(timezone.utc).isoformat())
+            filename = f"{brief_id}-{suffix}.md"
+        path = self.vault_dir / filename
         path.write_text(report_md, encoding="utf-8")
         return path
 
@@ -336,9 +344,18 @@ def _compose_six_chapter_report(
         f"Brief ID: `{brief.id}`",
         f"Targeting domains: {', '.join(targeting_map.domains)}",
         "",
-        "## Evidence Index",
+        "## Run Metadata",
         "",
     ]
+    for limitation in report.limitations:
+        lines.append(f"- Limitation: {limitation}")
+    if not report.limitations:
+        lines.append("- Limitation: none recorded")
+    lines.extend([
+        "",
+        "## Evidence Index",
+        "",
+    ])
     for ref in report.evidence_refs:
         lines.append(f"- `{ref.id}` {ref.source_title or ref.source_url or ref.quote or ''}")
     lines.append("")
@@ -393,24 +410,40 @@ def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -
     return digests
 
 
-def _coerce_gateway_v2(model_gateway: ModelGateway | None) -> GatewayV2:
+def _coerce_gateway_v2(
+    model_gateway: ModelGateway | None,
+    *,
+    require_live_default: bool = False,
+) -> GatewayV2:
     if model_gateway is None:
-        return default_gateway(force_offline=_detect_offline_mode())
+        return default_gateway(
+            force_offline=_detect_offline_mode(),
+            require_live_default=require_live_default,
+        )
     if isinstance(model_gateway, GatewayV2):
+        model_gateway.require_live_default = bool(
+            getattr(model_gateway, "require_live_default", False)
+            or require_live_default
+        )
         return model_gateway
 
     provider = model_gateway.provider
     if provider is None and model_gateway.providers:
         provider = next(iter(model_gateway.providers.values()))
     if provider is None:
+        if require_live_default:
+            raise LiveModeViolation("live mode requires a non-mock model provider")
         provider = MockProvider(response="mock council critique")
     provider_name = getattr(provider, "name", provider.__class__.__name__)
+    if require_live_default and str(provider_name).lower() == "mock":
+        raise LiveModeViolation("live mode requires a non-mock model provider")
     return GatewayV2(
         providers={provider_name: provider},
         stage_routes={"council": provider_name},
         fallback_chain={"council": [provider_name]},
         budget=model_gateway.budget,
         audit=model_gateway.audit,
+        require_live_default=require_live_default,
     )
 
 
@@ -421,7 +454,11 @@ def _use_real_research_from_env() -> bool:
 def _report_limitations(*, require_live: bool) -> list[str]:
     if require_live:
         return ["live run; source coverage, recency, and rate-limit gaps must be reviewed before external use"]
-    return ["mock-first skeleton; not a real autoresearch run yet"]
+    return ["offline demonstration run; not suitable as source-backed product research"]
+
+
+def _safe_filename(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-")
 
 
 def _evidence_validation_summary(

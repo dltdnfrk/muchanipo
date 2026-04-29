@@ -1,11 +1,14 @@
 from pathlib import Path
 from types import SimpleNamespace
+import sys
+import types
 
 import pytest
 
 from src.evidence.artifact import EvidenceRef, Finding
+from src.evidence.store import EvidenceStore
 from src.execution.gateway_v2 import GatewayV2
-from src.execution.models import ModelResult
+from src.execution.models import ModelGateway, ModelResult
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline
@@ -71,6 +74,18 @@ def test_gateway_live_mode_rejects_mock_provider_result():
 
     with pytest.raises(LiveModeViolation, match="mock model result"):
         gw.call("research", "ping", require_live=True)
+
+
+def test_gateway_default_live_mode_rejects_mock_provider_result_without_env():
+    gw = GatewayV2(
+        providers={"mock": MockProvider()},
+        stage_routes={"research": "mock"},
+        fallback_chain={"research": ["mock"]},
+        require_live_default=True,
+    )
+
+    with pytest.raises(LiveModeViolation, match="mock model result"):
+        gw.call("research", "ping")
 
 
 def test_gateway_real_research_env_rejects_mock_provider_result(monkeypatch):
@@ -182,6 +197,102 @@ def test_pipeline_env_real_research_implies_live_gate(tmp_path: Path, monkeypatc
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
+def test_pipeline_constructor_require_live_propagates_to_gateway(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MUCHANIPO_REQUIRE_LIVE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_REAL_RESEARCH", raising=False)
+    gw = GatewayV2(
+        providers={"mock": MockProvider(response="mock council critique")},
+        stage_routes={"council": "mock"},
+        fallback_chain={"council": ["mock"]},
+    )
+    pipeline = IdeaToCouncilPipeline(
+        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        research_runner=_TrustedEvidenceRunner(),
+        model_gateway=gw,
+        vault_dir=tmp_path / "vault",
+        council_log_dir=tmp_path / "council",
+        require_live=True,
+    )
+
+    with pytest.raises(LiveModeViolation, match="mock model result"):
+        pipeline.run("딸기 농가용 진단키트 시장성")
+
+
+def test_pipeline_live_mode_rejects_empty_model_gateway(tmp_path: Path):
+    with pytest.raises(LiveModeViolation, match="non-mock model provider"):
+        IdeaToCouncilPipeline(
+            model_gateway=ModelGateway(),
+            vault_dir=tmp_path / "vault",
+            council_log_dir=tmp_path / "council",
+            require_live=True,
+        )
+
+
+def test_live_evidence_rejects_missing_source_url_or_source():
+    from src.runtime.live_mode import assert_live_evidence
+
+    ref = EvidenceRef(
+        id="openalex:no-source",
+        source_url=None,
+        source_title="Live paper",
+        quote="source-backed claim",
+        source_grade="A",
+        provenance={"kind": "openalex", "source_text": "source-backed claim"},
+    )
+
+    with pytest.raises(LiveModeViolation, match="source_url"):
+        assert_live_evidence({"trusted": 1}, [ref])
+
+
 def test_live_report_guard_rejects_mock_markers():
     with pytest.raises(LiveModeViolation, match="report marker"):
         assert_live_report("# Report\n\n[mock-anthropic/council] placeholder\n")
+
+
+def test_live_report_guard_allows_non_mock_fallback_language():
+    assert_live_report("# Report\n\nAnthropic fallback provider returned a cited answer.\n")
+
+
+def test_offline_report_limitations_do_not_self_trip_live_guard():
+    from src.pipeline.idea_to_council import _report_limitations
+
+    text = "\n".join(_report_limitations(require_live=False))
+
+    assert "mock-first skeleton" not in text
+    assert "not a real autoresearch run" not in text
+
+
+def test_evidence_store_live_mode_fails_closed_on_provenance_validator_error(monkeypatch):
+    module = types.ModuleType("src.eval.citation_grounder")
+
+    def boom(payload):
+        raise RuntimeError("validator unavailable")
+
+    module._lockdown_validate_provenance = boom
+    monkeypatch.setitem(sys.modules, "src.eval.citation_grounder", module)
+
+    ref = EvidenceRef(
+        id="openalex:live-provenance",
+        source_url="https://doi.org/10.123/live-provenance",
+        source_title="Live paper",
+        quote="source-backed claim",
+        source_grade="A",
+        provenance={"kind": "openalex", "source_text": "source-backed claim"},
+    )
+
+    with pytest.raises(LiveModeViolation, match="provenance validation failed"):
+        EvidenceStore(require_live=True).add(ref)
+
+
+def test_live_vault_save_uses_run_version_suffix(tmp_path: Path):
+    pipeline = IdeaToCouncilPipeline(
+        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        vault_dir=tmp_path / "vault",
+        require_live=True,
+    )
+
+    path = pipeline._save_to_vault("brief-123", "# report\n", run_id="run:abc/123")
+
+    assert path.name == "brief-123-run-abc-123.md"
+    assert path.read_text(encoding="utf-8") == "# report\n"

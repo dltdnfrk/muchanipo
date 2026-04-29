@@ -137,6 +137,7 @@ def default_gateway(
     budget: Any = None,
     audit: Any = None,
     force_offline: bool = False,
+    require_live_default: bool = False,
 ) -> "GatewayV2":
     """PRD §8.1 기본 라우팅 + fallback chain을 갖춘 GatewayV2 인스턴스."""
     provider_map = dict(providers) if providers else build_default_providers(force_offline=force_offline)
@@ -146,6 +147,7 @@ def default_gateway(
         fallback_chain=dict(fallback_chain or FALLBACK_CHAIN),
         budget=budget,
         audit=audit,
+        require_live_default=require_live_default,
     )
 
 
@@ -167,6 +169,7 @@ class GatewayV2(ModelGateway):
         fallback_chain: Mapping[str, Sequence[str]],
         budget: Any = None,
         audit: Any = None,
+        require_live_default: bool = False,
     ) -> None:
         # 기본 ModelGateway 초기화 (fallback_provider는 미사용 — 체인이 대신함)
         super().__init__(
@@ -179,9 +182,14 @@ class GatewayV2(ModelGateway):
             k: list(v) for k, v in fallback_chain.items()
         }
         self._fallback_events: List[Dict[str, Any]] = []
+        self.require_live_default = bool(require_live_default)
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
-        require_live = bool(kwargs.pop("require_live", False)) or live_requested_from_env()
+        require_live = (
+            bool(kwargs.pop("require_live", False))
+            or self.require_live_default
+            or live_requested_from_env()
+        )
         chain_names = self.fallback_chain.get(stage)
         if not chain_names:
             # 체인 미정의 → 기본 ModelGateway 동작
