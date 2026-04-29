@@ -9,7 +9,9 @@ from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
+from src.research.runner import build_runner
 from src.report.chapter_mapper import RoundDigest
+from src.runtime.live_mode import live_requested_from_env
 
 
 ProgressCallback = Callable[[Dict[str, Any]], None]
@@ -99,6 +101,7 @@ def run_pipeline(
     if offline is None:
         from src.muchanipo.server import _detect_offline_mode
         offline = _detect_offline_mode()
+    live_required = live_requested_from_env()
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
 
@@ -115,11 +118,16 @@ def run_pipeline(
 
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve" if offline else "markdown"),
+        hitl_adapter=HITLAdapter(
+            mode="auto_approve" if offline and not live_required else "markdown",
+            timeout_seconds=_hitl_timeout_from_env(),
+        ),
+        research_runner=build_runner(use_real=(live_required or not offline)),
         model_gateway=gateway,
         vault_dir=scratch / "vault" / "insights",
         council_log_dir=scratch / "council",
         progress_callback=handle_progress,
+        require_live=live_required,
     )
     result = pipeline.run(topic)
 
@@ -132,6 +140,18 @@ def run_pipeline(
         "vault_path": result.vault_path,
         "pipeline_result": result,
     }
+
+
+def _hitl_timeout_from_env() -> float:
+    import os
+
+    raw = os.environ.get("MUCHANIPO_HITL_TIMEOUT_SEC")
+    if raw is None:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
 
 
 def _digests_from_result(result: IdeaToCouncilResult) -> list[RoundDigest]:

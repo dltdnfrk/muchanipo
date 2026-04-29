@@ -14,7 +14,7 @@ rm -f "$REPORT" "$EVENTS"
 cd "$ROOT"
 
 echo "[smoke] running full pipeline…"
-python3 -m muchanipo serve \
+MUCHANIPO_OFFLINE=1 python3 -m muchanipo serve \
   --topic "딸기 진단키트 시장성 (smoke)" \
   --pipeline full \
   --no-wait \

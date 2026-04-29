@@ -17,16 +17,18 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Union
 
 from src.evidence.artifact import EvidenceRef, Finding
 from src.evidence.provenance import Provenance
 
+from .academic import sync_search as academic_sync_search
 from .planner import ResearchPlan
 from .synthesis import finding_from_query
 
 
-SearchFn = Callable[[str], Iterable[dict]]
+SearchHit = Union[dict, EvidenceRef]
+SearchFn = Callable[[str], Iterable[SearchHit]]
 
 
 class MockResearchRunner:
@@ -91,10 +93,12 @@ class WebResearchRunner:
         web_search: SearchFn | None = None,
         exa_search: SearchFn | None = None,
         vault_search: SearchFn | None = None,
+        academic_search: SearchFn | None = None,
         per_query_cap: int = 4,
     ) -> None:
         self.web_search = web_search
         self.exa_search = exa_search
+        self.academic_search = academic_search
         # vault default loaded lazily; allow explicit None to disable
         if vault_search is None:
             self.vault_search = _load_default_vault_search()
@@ -106,6 +110,7 @@ class WebResearchRunner:
         hits: list[dict] = []
         for backend, kind in (
             (self.vault_search, "vault"),
+            (self.academic_search, "academic"),
             (self.web_search, "web"),
             (self.exa_search, "exa"),
         ):
@@ -116,6 +121,9 @@ class WebResearchRunner:
             except Exception:  # noqa: BLE001 — never fail the whole run
                 continue
             for item in raw:
+                if isinstance(item, EvidenceRef):
+                    hits.append({"kind": kind, "score": 1.0, "evidence_ref": item})
+                    continue
                 if not isinstance(item, dict):
                     continue
                 item.setdefault("kind", kind)
@@ -125,6 +133,9 @@ class WebResearchRunner:
         return hits[: self.per_query_cap]
 
     def _to_evidence(self, hit: dict, query: str, idx: int, sub_idx: int, plan: ResearchPlan) -> EvidenceRef:
+        existing = hit.get("evidence_ref")
+        if isinstance(existing, EvidenceRef):
+            return existing
         kind = hit.get("kind") or "web"
         source_url = hit.get("url") or hit.get("source_url")
         source = hit.get("source") or source_url or "unknown"
@@ -188,4 +199,6 @@ def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | 
     """Factory that swaps mock ↔ real keeping the same interface."""
     if not use_real:
         return MockResearchRunner()
+    if "academic_search" not in kwargs:
+        kwargs["academic_search"] = academic_sync_search.search
     return WebResearchRunner(**kwargs)

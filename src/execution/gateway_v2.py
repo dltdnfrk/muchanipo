@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
 from src.governance.budget import BudgetExceeded, provider_name, resolve_model
+from src.runtime.live_mode import assert_live_model_result, require_live_mode
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -180,10 +181,14 @@ class GatewayV2(ModelGateway):
         self._fallback_events: List[Dict[str, Any]] = []
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
+        require_live = bool(kwargs.pop("require_live", False)) or require_live_mode()
         chain_names = self.fallback_chain.get(stage)
         if not chain_names:
             # 체인 미정의 → 기본 ModelGateway 동작
-            return super().call(stage, prompt, **kwargs)
+            result = super().call(stage, prompt, **kwargs)
+            if require_live:
+                assert_live_model_result(stage, result)
+            return result
 
         chain_providers: List[Provider] = []
         for name in chain_names:
@@ -235,6 +240,8 @@ class GatewayV2(ModelGateway):
                 self.budget.reconcile(reservation_id, actual_usd=actual_usd)
                 actual_provider = self._provider_from_result(result, provider)
                 self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
+                if require_live:
+                    assert_live_model_result(stage, result)
                 return result
             raise RuntimeError(
                 f"FallbackChain {stage} exhausted ({len(chain_providers)} providers) — last: {last_error}"
@@ -257,6 +264,8 @@ class GatewayV2(ModelGateway):
             self.budget.reconcile(reservation_id, actual_usd=actual_usd)
         actual_provider = self._provider_from_result(result, primary)
         self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
+        if require_live:
+            assert_live_model_result(stage, result)
         return result
 
     def _record_fallback(self, stage: str, provider: Provider, error: Exception) -> None:

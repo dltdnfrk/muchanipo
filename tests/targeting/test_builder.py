@@ -42,6 +42,16 @@ class TestBuildTargetingMap:
         tmap = build_targeting_map(brief)
         assert "general" in tmap.domains
 
+    def test_korean_agriculture_terms_match_agriculture_domain(self):
+        brief = ResearchBrief(
+            raw_idea="딸기 농가 진단키트",
+            research_question="한국 딸기 농가용 저비용 진단키트 시장성",
+            purpose="research",
+            context="농업 기술",
+        )
+        tmap = build_targeting_map(brief)
+        assert "agriculture" in tmap.domains
+
     def test_provenance_structure(self):
         brief = ResearchBrief(
             raw_idea="test",

@@ -296,6 +296,11 @@ def _detect_offline_mode() -> bool:
     import os
     import shutil
 
+    if os.environ.get("MUCHANIPO_OFFLINE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_ONLINE", "").strip().lower() in ("1", "true", "yes"):
+        return False
+
     cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes")
     cli_pairs = [
         ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),

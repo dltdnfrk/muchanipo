@@ -1,6 +1,8 @@
-"""End-to-end mock-first Idea-to-Council pipeline."""
+"""End-to-end Idea-to-Council pipeline with offline and live-product modes."""
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -13,24 +15,38 @@ from src.council.persona_generator import PersonaGenerator
 from src.council.round_layers import DEFAULT_LAYERS
 from src.council.session import Session as KarpathySession
 from src.evidence.artifact import EvidenceRef, Finding
+from src.evidence.findings import annotate_findings
 from src.evidence.store import EvidenceStore
 from src.execution.gateway_v2 import GatewayV2, default_gateway
 from src.execution.models import ModelGateway
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
 from src.intake.normalizer import capture_idea
+from src.intent.learnings_log import LearningsLog
+from src.intent.office_hours import DesignDoc, OfficeHours
+from src.intent.plan_review import ConsensusPlan, PlanReview
+from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
 from src.interview.session import InterviewSession
 from src.research.planner import ResearchPlanner
-from src.research.runner import MockResearchRunner
+from src.research.runner import MockResearchRunner, build_runner
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
 from src.report.pyramid_formatter import PyramidFormatter
 from src.report.schema import ResearchReport
+from src.runtime.live_mode import (
+    LiveModeViolation,
+    assert_live_evidence,
+    assert_live_hitl,
+    assert_live_report,
+    live_requested_from_env,
+    require_live_mode,
+)
 from src.targeting import TargetingMap
 from src.targeting.builder import build_targeting_map
 
 from .stages import Stage
 from .state import PipelineState
+from .reference_contracts import contract_for_stage
 
 ProgressCallback = Callable[[Dict[str, Any]], None]
 
@@ -39,8 +55,11 @@ ProgressCallback = Callable[[Dict[str, Any]], None]
 class IdeaToCouncilResult:
     state: PipelineState
     brief: ResearchBrief
+    design_doc: DesignDoc
+    consensus_plan: ConsensusPlan
     targeting_map: TargetingMap
     evidence_refs: list[EvidenceRef]
+    evidence_summary: dict[str, Any]
     report: ResearchReport
     report_md: str
     vault_path: Path
@@ -48,6 +67,7 @@ class IdeaToCouncilResult:
     progress_events: list[dict[str, Any]]
     agents: list[DebateAgentSpec]
     council: KarpathySession
+    retrospective: Retrospective | None = None
 
 
 class IdeaToCouncilPipeline:
@@ -59,15 +79,21 @@ class IdeaToCouncilPipeline:
         model_gateway: ModelGateway | None = None,
         vault_dir: Path | str = Path("vault/insights"),
         council_log_dir: Path | str = Path("src/council/council-logs"),
+        enable_learning: bool = False,
+        learning_log_path: Path | str | None = None,
         progress_callback: ProgressCallback | None = None,
+        require_live: bool | None = None,
     ) -> None:
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
-        self.research_runner = research_runner or MockResearchRunner()
+        self.research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
         self.gateway_v2 = _coerce_gateway_v2(model_gateway)
         self.vault_dir = Path(vault_dir)
         self.council_log_dir = Path(council_log_dir)
+        self.enable_learning = enable_learning
+        self.learning_log_path = Path(learning_log_path) if learning_log_path is not None else None
         self.progress_callback = progress_callback
         self.progress_events: list[dict[str, Any]] = []
+        self.require_live = live_requested_from_env() if require_live is None else require_live
 
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
@@ -78,8 +104,17 @@ class IdeaToCouncilPipeline:
         self._emit(state, Stage.INTERVIEW)
 
         interview = InterviewSession.from_idea(idea)
-        brief = self._brief_from_interview(interview, idea.raw_text)
+        design_doc = OfficeHours().reframe(idea.raw_text)
+        brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
         state.record_artifact("brief_id", brief.id)
+
+        consensus_plan = PlanReview().autoplan(design_doc)
+        state.record_artifact("plan_review_gate", "passed" if consensus_plan.gate_passed else "blocked")
+        state.record_artifact("plan_review_consensus", f"{consensus_plan.consensus_score:.2f}")
+        if self.require_live and (not consensus_plan.gate_passed or design_doc.aup_risk_score >= 0.7):
+            raise LiveModeViolation(f"live mode blocked by plan review gate: {consensus_plan.gate_reason}")
+        if not consensus_plan.gate_passed:
+            state.warnings.append(f"plan review gate did not pass: {consensus_plan.gate_reason}")
 
         state.advance(Stage.TARGETING)
         targeting_map = build_targeting_map(brief)
@@ -89,31 +124,43 @@ class IdeaToCouncilPipeline:
 
         hitl_results: dict[str, HITLResult] = {}
         hitl_results["brief"] = self.hitl_adapter.gate_brief(brief)
+        self._require_approved_gate("brief", hitl_results["brief"])
         if hitl_results["brief"].status == "changes_requested":
             state.warnings.append("brief gate requested changes; re-interviewed once")
             interview = InterviewSession.from_idea(idea)
-            brief = self._brief_from_interview(interview, idea.raw_text)
+            brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
             targeting_map = build_targeting_map(brief)
             setattr(brief, "targeting_map", targeting_map)
 
         state.advance(Stage.RESEARCH)
         self._emit(state, Stage.RESEARCH)
         plan = ResearchPlanner().plan(brief)
+        state.record_artifact("research_query_count", str(len(plan.queries)))
         findings = list(self.research_runner.run(plan))
 
         state.advance(Stage.EVIDENCE)
         evidence_store = EvidenceStore()
-        evidence_refs = [ev for finding in findings for ev in finding.support]
+        evidence_refs = _dedupe_evidence_refs([ev for finding in findings for ev in finding.support])
         for ref in evidence_refs:
             evidence_store.add(ref)
+        grounding_reports = annotate_findings(findings)
+        evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
         state.record_artifact("evidence_count", str(len(evidence_refs)))
+        state.record_artifact("evidence_validation_summary", json.dumps(evidence_summary, ensure_ascii=False, sort_keys=True))
         self._emit(state, Stage.EVIDENCE)
+        self._require_live_evidence(evidence_summary, evidence_refs)
 
         hitl_results["evidence"] = self.hitl_adapter.gate_evidence(evidence_refs)
+        self._require_approved_gate("evidence", hitl_results["evidence"])
         if hitl_results["evidence"].status == "changes_requested":
             state.warnings.append("evidence gate requested changes; augmented research once")
             findings = list(self.research_runner.run(plan))
-            evidence_refs = [ev for finding in findings for ev in finding.support]
+            evidence_refs = _dedupe_evidence_refs([ev for finding in findings for ev in finding.support])
+            evidence_store = EvidenceStore()
+            for ref in evidence_refs:
+                evidence_store.add(ref)
+            grounding_reports = annotate_findings(findings)
+            evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
 
         report = ResearchReport(
             brief_id=brief.id,
@@ -123,7 +170,7 @@ class IdeaToCouncilPipeline:
             evidence_refs=evidence_refs,
             open_questions=["What evidence should be collected next?"],
             confidence=0.6,
-            limitations=["mock-first skeleton; not a real autoresearch run yet"],
+            limitations=_report_limitations(require_live=self.require_live),
         )
         state.record_artifact("report_id", report.id)
 
@@ -147,13 +194,18 @@ class IdeaToCouncilPipeline:
 
         state.advance(Stage.REPORT)
         report_md = _compose_six_chapter_report(brief, report, council, targeting_map)
+        self._require_live_report(report_md)
         self._emit(state, Stage.REPORT)
 
         hitl_results["report"] = self.hitl_adapter.gate_report(report_md)
+        self._require_approved_gate("report", hitl_results["report"])
 
         state.advance(Stage.VAULT)
         vault_path = self._save_to_vault(brief.id, report_md)
         state.record_artifact("vault_path", str(vault_path))
+        retrospective = self._maybe_record_learning(report, council, evidence_summary)
+        if retrospective is not None:
+            state.record_artifact("learning_count", str(len(retrospective.learnings)))
         self._emit(state, Stage.VAULT)
 
         state.advance(Stage.DONE)
@@ -162,8 +214,11 @@ class IdeaToCouncilPipeline:
         return IdeaToCouncilResult(
             state=state,
             brief=brief,
+            design_doc=design_doc,
+            consensus_plan=consensus_plan,
             targeting_map=targeting_map,
             evidence_refs=evidence_refs,
+            evidence_summary=evidence_summary,
             report=report,
             report_md=report_md,
             vault_path=vault_path,
@@ -171,22 +226,56 @@ class IdeaToCouncilPipeline:
             progress_events=list(self.progress_events),
             agents=agents,
             council=council,
+            retrospective=retrospective,
         )
 
-    def _brief_from_interview(self, interview: InterviewSession, raw_text: str) -> ResearchBrief:
-        interview.answer("research_question", raw_text)
-        interview.answer("purpose", "decide next action")
-        interview.answer("context", "muchanipo")
+    def _require_approved_gate(self, gate_name: str, result: HITLResult) -> None:
+        if self.require_live:
+            assert_live_hitl(gate_name, result)
+
+    def _require_live_evidence(self, evidence_summary: dict[str, Any], refs: list[EvidenceRef]) -> None:
+        if self.require_live:
+            assert_live_evidence(evidence_summary, refs)
+
+    def _require_live_report(self, report_md: str) -> None:
+        if self.require_live:
+            assert_live_report(report_md)
+
+    def _brief_from_interview(
+        self,
+        interview: InterviewSession,
+        raw_text: str,
+        design_doc: DesignDoc,
+    ) -> ResearchBrief:
+        interview.answer("research_question", design_doc.pain_root or raw_text)
+        interview.answer("purpose", design_doc.demand_reality or "decide next action")
+        interview.answer("context", design_doc.contrary_framing or design_doc.status_quo)
         interview.answer("deliverable_type", "research report")
-        interview.answer("quality_bar", "evidence-backed and council-ready")
-        return interview.to_brief()
+        interview.answer(
+            "quality_bar",
+            "source-backed, council-ready, and scoped by OfficeHours forcing questions",
+        )
+        brief = interview.to_brief()
+        brief.known_facts = list(design_doc.implicit_capabilities)
+        brief.constraints = list(design_doc.challenged_premises)
+        brief.success_criteria = [
+            design_doc.narrowest_wedge,
+            design_doc.future_fit,
+        ]
+        return brief
 
     def _emit(self, state: PipelineState, stage: Stage) -> None:
+        contract = contract_for_stage(stage)
         event = {
             "run_id": state.run_id,
             "stage": stage.value,
             "artifacts": dict(state.artifacts),
         }
+        if contract is not None:
+            event["reference_step"] = contract.step
+            event["reference_stage_name"] = contract.name
+            event["reference_projects"] = list(contract.references)
+            event["reference_notes"] = list(contract.notes)
         self.progress_events.append(event)
         if self.progress_callback is not None:
             self.progress_callback(event)
@@ -196,6 +285,41 @@ class IdeaToCouncilPipeline:
         path = self.vault_dir / f"{brief_id}.md"
         path.write_text(report_md, encoding="utf-8")
         return path
+
+    def _maybe_record_learning(
+        self,
+        report: ResearchReport,
+        council: KarpathySession,
+        evidence_summary: dict[str, Any],
+    ) -> Retrospective | None:
+        if not self.enable_learning:
+            return None
+        log = LearningsLog(log_path=self.learning_log_path) if self.learning_log_path else LearningsLog()
+        score = min(100.0, max(0.0, report.confidence * 100.0))
+        verdict = "PASS" if evidence_summary.get("unsupported_finding_count", 0) == 0 else "UNCERTAIN"
+        return Retro(log=log).summarize(
+            council_id=report.id,
+            topic=report.title,
+            verdict=verdict,
+            score=score,
+            eval_result={
+                "scores": {},
+                "grounding": {
+                    "verified_claim_ratio": evidence_summary.get("verified_claim_ratio", 0.0),
+                    "unsupported_critical_claim_count": evidence_summary.get("unsupported_finding_count", 0),
+                },
+            },
+            council_report={
+                "consensus": report.executive_summary,
+                "open_questions": list(report.open_questions),
+                "personas": [
+                    {"name": getattr(persona, "name", ""), "confidence": 0.0}
+                    for persona in getattr(council, "personas", [])
+                ],
+            },
+            rounds=len(getattr(council, "rounds", [])),
+            duration_minutes=0.0,
+        )
 
 
 def _compose_six_chapter_report(
@@ -290,8 +414,46 @@ def _coerce_gateway_v2(model_gateway: ModelGateway | None) -> GatewayV2:
     )
 
 
+def _use_real_research_from_env() -> bool:
+    return live_requested_from_env()
+
+
+def _report_limitations(*, require_live: bool) -> list[str]:
+    if require_live:
+        return ["live run; source coverage, recency, and rate-limit gaps must be reviewed before external use"]
+    return ["mock-first skeleton; not a real autoresearch run yet"]
+
+
+def _evidence_validation_summary(
+    evidence_store: EvidenceStore,
+    grounding_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    base = evidence_store.summary()
+    ratios = [
+        float(report.get("verified_claim_ratio", 0.0))
+        for report in grounding_reports
+    ]
+    verified_ratio = sum(ratios) / len(ratios) if ratios else 0.0
+    unsupported = sum(1 for ratio in ratios if ratio < 1.0)
+    return {
+        **base,
+        "verified_claim_ratio": round(verified_ratio, 4),
+        "unsupported_finding_count": unsupported,
+    }
+
+
+def _dedupe_evidence_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
+    out: list[EvidenceRef] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        out.append(ref)
+    return out
+
+
 def _detect_offline_mode() -> bool:
-    import os
     import shutil
 
     if os.environ.get("MUCHANIPO_OFFLINE", "").strip().lower() in ("1", "true", "yes"):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from collections import Counter
 
 from .artifact import EvidenceRef
 
@@ -68,3 +69,19 @@ class EvidenceStore:
 
     def provenance_failures(self) -> int:
         return sum(1 for ok in self._provenance_flags.values() if not ok)
+
+    def summary(self) -> dict[str, Any]:
+        """Return a serializable evidence health summary for pipeline events."""
+        grades = Counter(ref.source_grade for ref in self._items.values())
+        trusted_ids = [
+            ref.id
+            for rid, ref in self._items.items()
+            if self._provenance_flags.get(rid, True)
+        ]
+        return {
+            "total": len(self._items),
+            "trusted": len(trusted_ids),
+            "provenance_failures": self.provenance_failures(),
+            "grades": dict(sorted(grades.items())),
+            "trusted_ids": trusted_ids,
+        }
