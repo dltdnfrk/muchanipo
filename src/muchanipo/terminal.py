@@ -24,6 +24,8 @@ from src.pipeline.runner import run_pipeline
 
 
 JSON_SCHEMA_VERSION = 1
+HOME_RECENT_RUN_LIMIT = 3
+HOME_FAILURE_SCAN_LIMIT = 50
 
 STAGE_LABELS: dict[str, str] = {
     "intake": "아이디어 접수",
@@ -742,6 +744,26 @@ def runs_report(
     }
 
 
+def home_snapshot(
+    *,
+    runs_dir: Path | None = None,
+    recent_limit: int = HOME_RECENT_RUN_LIMIT,
+    failure_scan_limit: int = HOME_FAILURE_SCAN_LIMIT,
+) -> dict[str, Any]:
+    """Return the run summary shown on the terminal home screen."""
+    root = runs_dir or _default_runs_dir()
+    safe_recent_limit = max(1, recent_limit)
+    safe_scan_limit = max(safe_recent_limit, failure_scan_limit)
+    scanned_runs = list_runs(runs_dir=root, limit=safe_scan_limit)
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo home",
+        "runs_dir": str(root),
+        "recent_runs": scanned_runs[:safe_recent_limit],
+        "last_failure": _first_failed_run(scanned_runs),
+    }
+
+
 def render_runs(
     *,
     stdout: IO[str] | None = None,
@@ -763,6 +785,13 @@ def render_runs(
     out.write("\n")
     out.flush()
     return records
+
+
+def _first_failed_run(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in records:
+        if str(item.get("status") or "").lower() == "failed":
+            return item
+    return None
 
 
 def _resolve_cli_path(name: str, env_var: str) -> str | None:
@@ -830,17 +859,51 @@ def _resolve_paths(
     )
 
 
-def _render_home(out: IO[str]) -> None:
+def _render_home(out: IO[str], *, runs_dir: Path | None = None) -> None:
+    snapshot = home_snapshot(runs_dir=runs_dir)
     out.write("\nMuchanipo\n")
     out.write("---------\n")
-    out.write(f"Runs dir: {_default_runs_dir()}\n")
+    out.write(f"Runs dir: {snapshot['runs_dir']}\n")
     out.write("Tip: type a topic directly to start research.\n\n")
+    _render_home_runs(out, snapshot=snapshot)
     out.write("1. New research\n")
     out.write("2. Runs\n")
     out.write("3. CLI status\n")
     out.write("4. Help\n")
     out.write("q. Quit\n\n")
     out.flush()
+
+
+def _render_home_runs(out: IO[str], *, snapshot: dict[str, Any]) -> None:
+    recent_runs = list(snapshot.get("recent_runs") or [])
+    last_failure = snapshot.get("last_failure")
+    if not recent_runs:
+        out.write("Recent runs: none yet\n\n")
+        return
+
+    out.write("Recent runs\n")
+    for idx, item in enumerate(recent_runs, start=1):
+        status = str(item.get("status") or "unknown")
+        topic = _truncate(str(item.get("topic") or "(untitled)"), 72)
+        completed_at = str(item.get("completed_at") or "-")
+        out.write(f"{idx}. [{status}] {topic}\n")
+        out.write(f"   run: {item.get('run_id', '-')} | completed: {completed_at}\n")
+
+    if isinstance(last_failure, dict):
+        topic = _truncate(str(last_failure.get("topic") or "(untitled)"), 72)
+        error_type = str(last_failure.get("error_type") or "Error")
+        message = _truncate(str(last_failure.get("message") or "no error message recorded"), 96)
+        out.write("\nLast failure\n")
+        out.write(f"[failed] {topic}\n")
+        out.write(f"   {error_type}: {message}\n")
+        out.write(f"   run: {last_failure.get('run_id', '-')}\n")
+    out.write("\n")
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _render_help(out: IO[str]) -> None:

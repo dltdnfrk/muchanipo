@@ -452,6 +452,66 @@ def test_render_runs_lists_summaries_newest_first(tmp_path: Path):
     assert text.index("newer topic") < text.index("older topic")
 
 
+def test_home_snapshot_and_render_home_surface_recent_runs_and_last_failure(tmp_path: Path):
+    root = tmp_path / "runs"
+    completed = root / "completed"
+    failed = root / "failed"
+    older = root / "older"
+    completed.mkdir(parents=True)
+    failed.mkdir(parents=True)
+    older.mkdir(parents=True)
+    (older / "summary.json").write_text(
+        json.dumps({
+            "topic": "older topic",
+            "run_id": "older",
+            "status": "completed",
+            "completed_at": "2026-01-01T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    (failed / "summary.json").write_text(
+        json.dumps({
+            "topic": "failed topic",
+            "run_id": "failed",
+            "status": "failed",
+            "error_type": "RuntimeError",
+            "message": "provider blocked",
+            "completed_at": "2026-01-03T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    (completed / "summary.json").write_text(
+        json.dumps({
+            "topic": "completed topic",
+            "run_id": "completed",
+            "status": "completed",
+            "completed_at": "2026-01-04T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+
+    snapshot = terminal_mod.home_snapshot(runs_dir=root, recent_limit=2)
+    stdout = io.StringIO()
+    terminal_mod._render_home(stdout, runs_dir=root)
+
+    assert snapshot["schema_version"] == 1
+    assert [item["run_id"] for item in snapshot["recent_runs"]] == ["completed", "failed"]
+    assert snapshot["last_failure"]["run_id"] == "failed"
+    text = stdout.getvalue()
+    assert "Recent runs" in text
+    assert text.index("completed topic") < text.index("failed topic")
+    assert "Last failure" in text
+    assert "RuntimeError: provider blocked" in text
+
+
+def test_render_home_handles_empty_run_history(tmp_path: Path):
+    stdout = io.StringIO()
+
+    terminal_mod._render_home(stdout, runs_dir=tmp_path / "runs")
+
+    assert "Recent runs: none yet" in stdout.getvalue()
+
+
 def test_main_no_args_opens_terminal_app(monkeypatch):
     calls = []
 

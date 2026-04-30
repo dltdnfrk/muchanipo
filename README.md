@@ -149,6 +149,9 @@ muchanipo status --json
 muchanipo runs --json --limit 5
 ```
 
+The no-argument home screen reads the same run summaries and shows the latest
+runs plus the most recent failed run before the command menu.
+
 JSON inspection commands return stable objects with `schema_version`,
 `command`, and command-specific payloads:
 
