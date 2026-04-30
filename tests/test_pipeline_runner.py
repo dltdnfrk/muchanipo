@@ -120,3 +120,26 @@ def test_run_pipeline_selects_plannotator_when_configured(monkeypatch):
         runner_mod.run_pipeline("plannotator topic", offline=True)
 
     assert captured_modes == ["plannotator"]
+
+
+def test_run_pipeline_explicit_require_live_uses_live_hitl_gate(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    captured: list[tuple[str, bool]] = []
+
+    class _StopAfterInitPipeline:
+        def __init__(self, *, hitl_adapter, require_live, **kwargs):
+            captured.append((hitl_adapter.mode, require_live))
+
+        def run(self, topic):
+            raise RuntimeError("stop after init")
+
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterInitPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+
+    with pytest.raises(RuntimeError, match="stop after init"):
+        runner_mod.run_pipeline("explicit live", offline=False, require_live=True)
+
+    assert captured == [("markdown", True)]

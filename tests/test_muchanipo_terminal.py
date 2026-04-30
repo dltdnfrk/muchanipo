@@ -39,7 +39,7 @@ def _run_muchanipo(
     )
 
 
-def _fake_run_pipeline(topic, *, progress_callback=None, offline=None):
+def _fake_run_pipeline(topic, *, progress_callback=None, offline=None, require_live=None):
     assert topic
     assert offline is True
     if progress_callback:
@@ -126,7 +126,7 @@ def test_conduct_interview_merges_show_prd_answers_into_pipeline_input():
 
 
 def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monkeypatch):
-    def boom(topic, *, progress_callback=None, offline=None):
+    def boom(topic, *, progress_callback=None, offline=None, require_live=None):
         if progress_callback:
             progress_callback({"event": "stage_started", "stage": "research"})
         raise RuntimeError("provider blocked")
@@ -147,7 +147,7 @@ def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monk
 
 
 def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Path, monkeypatch):
-    def interrupt(topic, *, progress_callback=None, offline=None):
+    def interrupt(topic, *, progress_callback=None, offline=None, require_live=None):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(terminal_mod, "run_pipeline", interrupt)
@@ -421,6 +421,7 @@ def test_main_direct_topic_shortcut_accepts_online_and_report_path(tmp_path: Pat
         str(tmp_path / "REPORT.md"),
     ]) == 0
     assert calls[0][1]["offline"] is False
+    assert calls[0][1]["require_live"] is True
     assert calls[0][1]["report_path"] == tmp_path / "REPORT.md"
 
 

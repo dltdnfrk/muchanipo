@@ -131,6 +131,7 @@ def terminal_run(
     jsonl: bool = False,
     dashboard: bool = False,
     pipeline_input: str | None = None,
+    require_live: bool = False,
 ) -> TerminalRunResult:
     """Run the full pipeline as a terminal-native command.
 
@@ -171,6 +172,7 @@ def terminal_run(
             "report_path": str(paths.report_path),
             "events_path": str(paths.events_path),
             "offline": offline,
+            "require_live": require_live,
             "pipeline_input": pipeline_topic if pipeline_topic != topic else None,
             "created_at": _now_iso(),
         },
@@ -183,7 +185,12 @@ def terminal_run(
         _render_dashboard(out, topic=topic, paths=paths, status=status, event=None)
 
     try:
-        result = run_pipeline(pipeline_topic, progress_callback=emit_terminal, offline=offline)
+        result = run_pipeline(
+            pipeline_topic,
+            progress_callback=emit_terminal,
+            offline=offline,
+            require_live=require_live,
+        )
     except KeyboardInterrupt as exc:
         status["finalize"] = "error"
         _record_terminal_failure(
@@ -233,6 +240,7 @@ def terminal_run(
         "report_path": str(paths.report_path),
         "events_path": str(paths.events_path),
         "offline": offline,
+        "require_live": require_live,
         "duration_sec": round(time.time() - started_at, 3),
         "round_count": len(result.get("rounds") or []),
         "brief_id": getattr(result.get("brief"), "id", None),
@@ -343,6 +351,7 @@ def _run_from_app(
     out: IO[str],
     offline: bool | None,
     interview: bool,
+    require_live: bool = False,
 ) -> None:
     try:
         capture = conduct_interview(topic, stdin=inp, stdout=out) if interview else None
@@ -352,6 +361,7 @@ def _run_from_app(
             offline=offline,
             dashboard=_supports_dashboard(out),
             pipeline_input=capture.pipeline_input if capture else None,
+            require_live=require_live,
         )
     except KeyboardInterrupt:
         out.write("\nRun interrupted; returning to Muchanipo home.\n")

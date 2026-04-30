@@ -543,6 +543,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             jsonl=shortcut_options["jsonl"],
             dashboard=shortcut_options["dashboard"],
             interview=shortcut_options["interview"],
+            require_live=shortcut_options["require_live"],
         )
 
     parser = _build_parser()
@@ -556,6 +557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.interview and args.no_interview:
             parser.error("--interview and --no-interview are mutually exclusive")
         offline = True if args.offline else False if args.online else None
+        require_live = bool(args.online)
         default_interview = _default_interview_enabled(jsonl=bool(getattr(args, "jsonl", False)))
         interview = True if args.interview else False if args.no_interview else default_interview
         return _run_terminal_safely(
@@ -566,6 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             jsonl=bool(getattr(args, "jsonl", False)),
             dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
             interview=interview,
+            require_live=require_live,
         )
 
     if args.command == "runs":
@@ -603,6 +606,7 @@ def _run_terminal_safely(
     jsonl: bool,
     dashboard: bool,
     interview: bool,
+    require_live: bool,
 ) -> int:
     from src.muchanipo.terminal import conduct_interview, terminal_run
 
@@ -621,6 +625,7 @@ def _run_terminal_safely(
             jsonl=jsonl,
             dashboard=dashboard,
             pipeline_input=capture.pipeline_input if capture else None,
+            require_live=require_live,
         )
         return 0
     except KeyboardInterrupt:
@@ -640,6 +645,7 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
         "jsonl": False,
         "dashboard": bool(getattr(sys.stdout, "isatty", lambda: False)()),
         "interview": _default_interview_enabled(jsonl=False),
+        "require_live": False,
         "error": "",
     }
     idx = 0
@@ -655,6 +661,7 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
                 options["error"] = "--offline and --online are mutually exclusive"
                 break
             options["offline"] = False
+            options["require_live"] = True
         elif arg == "--jsonl":
             options["jsonl"] = True
             options["dashboard"] = False

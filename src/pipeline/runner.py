@@ -106,6 +106,7 @@ def run_pipeline(
     *,
     progress_callback: ProgressCallback | None = None,
     offline: bool | None = None,
+    require_live: bool | None = None,
 ) -> dict[str, Any]:
     """Run idea -> research -> council -> report -> vault and return report inputs.
 
@@ -116,7 +117,7 @@ def run_pipeline(
     if offline is None:
         from src.muchanipo.server import _detect_offline_mode
         offline = _detect_offline_mode()
-    live_required = live_requested_from_env()
+    live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
     started_stages: set[str] = set()
