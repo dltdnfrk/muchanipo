@@ -243,6 +243,7 @@ class IdeaToCouncilPipeline:
             targeting_map,
             evidence_summary=evidence_summary,
             reference_runtime_artifacts=reference_runtime_artifacts,
+            require_live=self.require_live,
         )
         self._require_live_report(report_md)
         self._emit(state, Stage.REPORT)
@@ -390,8 +391,9 @@ def _compose_six_chapter_report(
     *,
     evidence_summary: dict[str, Any] | None = None,
     reference_runtime_artifacts: dict[str, Any] | None = None,
+    require_live: bool = False,
 ) -> str:
-    digests = _round_digests(council, report.evidence_refs)
+    digests = _round_digests(council, report.evidence_refs, require_live=require_live)
     chapters = PyramidFormatter().reorder_all(ChapterMapper().map(digests))
     chapter_evidence = _chapter_evidence_map(digests, report.evidence_refs)
     grounding_rows: list[tuple[int, str, list[str]]] = []
@@ -595,7 +597,12 @@ def _append_gbrain_snapshot(lines: list[str], gbrain: dict[str, Any]) -> None:
     ])
 
 
-def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -> list[RoundDigest]:
+def _round_digests(
+    council: KarpathySession,
+    evidence_refs: list[EvidenceRef],
+    *,
+    require_live: bool = False,
+) -> list[RoundDigest]:
     evidence_ids = [ref.id for ref in evidence_refs]
     digests: list[RoundDigest] = []
     for idx in range(1, 11):
@@ -617,11 +624,16 @@ def _round_digests(council: KarpathySession, evidence_refs: list[EvidenceRef]) -
         round_mapping = round_record if isinstance(round_record, dict) else {}
         results = list(round_mapping.get("results", []))
         first = results[0] if results else {}
-        analysis = str(first.get("analysis") or round_mapping.get("consensus") or f"Round {idx} synthesis")
+        analysis = str(first.get("analysis") or round_mapping.get("consensus") or "")
+        if require_live and not analysis.strip():
+            raise LiveModeViolation(
+                f"live mode requires structured council synthesis for layer L{idx}; got synthetic fallback"
+            )
+        analysis = analysis or f"Round {idx} synthesis"
         key_points = [str(point) for point in first.get("key_points", []) if point]
         digests.append(
             RoundDigest(
-                layer_id=f"L{idx}_mock",
+                layer_id=f"L{idx}_fallback",
                 chapter_title=f"Layer {idx}",
                 key_claim=analysis,
                 body_claims=key_points or [analysis],

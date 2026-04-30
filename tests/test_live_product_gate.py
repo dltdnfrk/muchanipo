@@ -11,7 +11,7 @@ from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway, ModelResult
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter
-from src.pipeline.idea_to_council import IdeaToCouncilPipeline
+from src.pipeline.idea_to_council import IdeaToCouncilPipeline, _round_digests
 from src.runtime.live_mode import LiveModeViolation, assert_live_report
 
 
@@ -389,3 +389,17 @@ def test_live_vault_save_uses_run_version_suffix(tmp_path: Path):
 
     assert path.name == "brief-123-run-abc-123.md"
     assert path.read_text(encoding="utf-8") == "# report\n"
+
+
+def test_live_council_digest_rejects_synthetic_round_fallback():
+    ref = EvidenceRef(
+        id="openalex:live-council",
+        source_url="https://doi.org/10.123/live-council",
+        source_title="Live council source",
+        quote="source-backed claim",
+        source_grade="A",
+        provenance={"kind": "openalex", "source_text": "source-backed claim"},
+    )
+
+    with pytest.raises(LiveModeViolation, match="structured council synthesis"):
+        _round_digests(SimpleNamespace(rounds=[]), [ref], require_live=True)
