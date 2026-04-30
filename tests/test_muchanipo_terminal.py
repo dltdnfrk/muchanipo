@@ -353,6 +353,35 @@ def test_main_direct_topic_shortcut_accepts_common_flags(tmp_path: Path, monkeyp
     assert calls[0][1]["dashboard"] is False
 
 
+def test_main_direct_topic_shortcut_accepts_online_and_report_path(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main([
+        "딸기 시장성",
+        "--online",
+        "--report-path",
+        str(tmp_path / "REPORT.md"),
+    ]) == 0
+    assert calls[0][1]["offline"] is False
+    assert calls[0][1]["report_path"] == tmp_path / "REPORT.md"
+
+
+def test_main_direct_topic_shortcut_rejects_bad_flags(capsys):
+    assert server_mod.main(["딸기", "--offline", "--online"]) == 2
+    assert "--offline and --online are mutually exclusive" in capsys.readouterr().err
+
+    assert server_mod.main(["딸기", "--unknown"]) == 2
+    assert "unknown shortcut option: --unknown" in capsys.readouterr().err
+
+    assert server_mod.main(["딸기", "--run-dir"]) == 2
+    assert "--run-dir requires a value" in capsys.readouterr().err
+
+
 def test_main_terminal_failure_returns_exit_code(monkeypatch, capsys):
     def fail_terminal_run(topic, **kwargs):
         raise RuntimeError("provider unavailable")

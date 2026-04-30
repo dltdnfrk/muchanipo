@@ -524,8 +524,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     known_commands = {"run", "tui", "serve", "runs", "status"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
-        from src.muchanipo.terminal import terminal_run
-
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
             sys.stderr.write("muchanipo: topic is required\n")
@@ -545,8 +543,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
     if args.command in {"run", "tui"}:
-        from src.muchanipo.terminal import terminal_run
-
         topic = (args.topic_opt or args.topic_arg or "").strip()
         if not topic:
             parser.error(f"{args.command} requires a topic")
