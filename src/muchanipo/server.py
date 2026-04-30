@@ -71,6 +71,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
     tui.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
 
+    runs = sub.add_parser("runs", help="List recent terminal runs")
+    runs.add_argument("--limit", type=int, default=10, help="Maximum runs to show")
+
+    sub.add_parser("status", help="Show local provider CLI status")
+
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
     serve.add_argument(
@@ -507,8 +512,36 @@ def serve(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        from src.muchanipo.terminal import terminal_app
+
+        return terminal_app(stdin=sys.stdin, stdout=sys.stdout)
+
+    known_commands = {"run", "tui", "serve", "runs", "status"}
+    if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
+        from src.muchanipo.terminal import terminal_run
+
+        topic, shortcut_options = _parse_topic_shortcut(raw_argv)
+        if not topic:
+            sys.stderr.write("muchanipo: topic is required\n")
+            return 2
+        if shortcut_options["error"]:
+            sys.stderr.write(f"muchanipo: {shortcut_options['error']}\n")
+            return 2
+        terminal_run(
+            topic,
+            stdout=sys.stdout,
+            report_path=shortcut_options["report_path"],
+            run_dir=shortcut_options["run_dir"],
+            offline=shortcut_options["offline"],
+            jsonl=shortcut_options["jsonl"],
+            dashboard=shortcut_options["dashboard"],
+        )
+        return 0
+
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     if args.command in {"run", "tui"}:
         from src.muchanipo.terminal import terminal_run
 
@@ -529,6 +562,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "runs":
+        from src.muchanipo.terminal import render_runs
+
+        render_runs(stdout=sys.stdout, limit=max(1, args.limit))
+        return 0
+
+    if args.command == "status":
+        from src.muchanipo.terminal import render_cli_status
+
+        render_cli_status(stdout=sys.stdout)
+        return 0
+
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")
 
@@ -541,6 +586,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         stdin=sys.stdin,
         pipeline=args.pipeline,
     )
+
+
+def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    topic_parts: list[str] = []
+    options: dict[str, Any] = {
+        "offline": None,
+        "run_dir": None,
+        "report_path": None,
+        "jsonl": False,
+        "dashboard": bool(getattr(sys.stdout, "isatty", lambda: False)()),
+        "error": "",
+    }
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--offline":
+            if options["offline"] is False:
+                options["error"] = "--offline and --online are mutually exclusive"
+                break
+            options["offline"] = True
+        elif arg == "--online":
+            if options["offline"] is True:
+                options["error"] = "--offline and --online are mutually exclusive"
+                break
+            options["offline"] = False
+        elif arg == "--jsonl":
+            options["jsonl"] = True
+            options["dashboard"] = False
+        elif arg == "--plain":
+            options["dashboard"] = False
+        elif arg in {"--run-dir", "--report-path"}:
+            if idx + 1 >= len(argv):
+                options["error"] = f"{arg} requires a value"
+                break
+            value = Path(argv[idx + 1])
+            if arg == "--run-dir":
+                options["run_dir"] = value
+            else:
+                options["report_path"] = value
+            idx += 1
+        elif arg.startswith("--"):
+            options["error"] = f"unknown shortcut option: {arg}"
+            break
+        else:
+            topic_parts.append(arg)
+        idx += 1
+    return " ".join(topic_parts).strip(), options
 
 
 if __name__ == "__main__":

@@ -130,14 +130,17 @@ Muchanipo's product core is the Python CLI/TUI runner. The Tauri app is a
 viewer/control shell over the same event stream.
 
 ```bash
-# Full local pipeline, CLI-first when installed CLIs are available
-python3 -m muchanipo run "딸기 농가용 저비용 분자진단 키트 시장성"
+# Open the terminal app home, like codex/claude/kimi/opencode
+muchanipo
 
-# Terminal dashboard over the same core
-python3 -m muchanipo tui "딸기 농가용 저비용 분자진단 키트 시장성"
+# Direct topic shortcut
+muchanipo "딸기 농가용 저비용 분자진단 키트 시장성"
 
-# Machine-readable events for scripts or external viewers
-python3 -m muchanipo run "딸기 진단키트 시장성" --jsonl
+# Explicit modes
+muchanipo run "딸기 진단키트 시장성" --offline
+muchanipo tui "딸기 진단키트 시장성" --online
+muchanipo status
+muchanipo runs
 ```
 
 Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by

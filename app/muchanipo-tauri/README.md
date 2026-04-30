@@ -29,8 +29,9 @@ A native macOS window titled **Muchanipo** opens with a blank React screen.
 For terminal-first usage without Tauri:
 
 ```bash
-python3 -m muchanipo run "딸기 진단키트 시장성"
-python3 -m muchanipo tui "딸기 진단키트 시장성"
+muchanipo
+muchanipo "딸기 진단키트 시장성"
+muchanipo tui "딸기 진단키트 시장성"
 ```
 
 ## Build (release)

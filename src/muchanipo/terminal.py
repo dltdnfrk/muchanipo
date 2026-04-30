@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -55,6 +57,60 @@ class TerminalRunResult:
     summary_path: Path
     offline: bool | None
     stage_status: dict[str, str] = field(default_factory=dict)
+
+
+def terminal_app(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+) -> int:
+    """Interactive Muchanipo home for `muchanipo` with no arguments."""
+    inp = stdin or sys.stdin
+    out = stdout or sys.stdout
+    _render_home(out)
+    while True:
+        raw_choice = _read_prompt(inp, out, "muchanipo> ")
+        if raw_choice is None:
+            out.write("bye\n")
+            out.flush()
+            return 0
+        topic_or_choice = raw_choice.strip()
+        choice = topic_or_choice.lower()
+        if choice == "":
+            _render_home(out)
+            continue
+        if choice in {"q", "quit", "exit", "5"}:
+            out.write("bye\n")
+            out.flush()
+            return 0
+        if choice in {"1", "new", "n"}:
+            raw_topic = _read_prompt(inp, out, "topic> ")
+            if raw_topic is None:
+                out.write("bye\n")
+                out.flush()
+                return 0
+            topic = raw_topic.strip()
+            if not topic:
+                out.write("topic is required\n")
+                out.flush()
+                continue
+            raw_mode = _read_prompt(inp, out, "mode [auto/offline/online] (auto)> ")
+            mode = (raw_mode or "").strip().lower()
+            offline = _offline_from_mode(mode)
+            terminal_run(topic, stdout=out, offline=offline, dashboard=_supports_dashboard(out))
+            _render_home(out)
+            continue
+        if choice in {"2", "runs", "r"}:
+            render_runs(stdout=out)
+            continue
+        if choice in {"3", "status", "s"}:
+            render_cli_status(stdout=out)
+            continue
+        if choice in {"4", "help", "h", "?"}:
+            _render_help(out)
+            continue
+        terminal_run(topic_or_choice, stdout=out, offline=None, dashboard=_supports_dashboard(out))
+        _render_home(out)
 
 
 def terminal_run(
@@ -183,6 +239,123 @@ def terminal_run(
     )
 
 
+def cli_statuses() -> list[dict[str, Any]]:
+    """Return installed/version status for local provider CLIs."""
+    specs = [
+        ("claude", "CLAUDE_BIN", ["--version"]),
+        ("codex", "CODEX_BIN", ["--version"]),
+        ("gemini", "GEMINI_BIN", ["--version"]),
+        ("kimi", "KIMI_BIN", ["--version"]),
+        ("opencode", "OPENCODE_BIN", ["--version"]),
+    ]
+    statuses: list[dict[str, Any]] = []
+    for name, env_var, version_args in specs:
+        path = _resolve_cli_path(name, env_var)
+        record: dict[str, Any] = {
+            "name": name,
+            "installed": bool(path),
+            "path": path,
+            "version": None,
+            "error": None,
+        }
+        if path:
+            try:
+                proc = subprocess.run(
+                    [path, *version_args],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                text = (proc.stdout or proc.stderr or "").strip()
+                if proc.returncode == 0:
+                    record["version"] = text.splitlines()[0] if text else "installed"
+                else:
+                    record["error"] = _first_error_line(text) or f"exit {proc.returncode}"
+            except Exception as exc:  # pragma: no cover - host CLI behavior varies.
+                record["error"] = _first_error_line(str(exc))
+        statuses.append(record)
+    return statuses
+
+
+def render_cli_status(*, stdout: IO[str] | None = None) -> list[dict[str, Any]]:
+    out = stdout or sys.stdout
+    statuses = cli_statuses()
+    out.write("\nCLI status\n")
+    out.write("----------\n")
+    for item in statuses:
+        marker = "OK" if item["installed"] else "--"
+        detail = item.get("version")
+        if not detail and item["installed"] and item.get("error"):
+            detail = f"installed; version probe failed: {item['error']}"
+        detail = detail or "not found"
+        path = item.get("path") or "-"
+        out.write(f"[{marker}] {item['name']:<8} {detail}\n")
+        out.write(f"     {path}\n")
+    out.write("\n")
+    out.flush()
+    return statuses
+
+
+def list_runs(*, runs_dir: Path | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    root = runs_dir or _default_runs_dir()
+    if not root.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for summary_path in root.glob("*/summary.json"):
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(summary, dict):
+            summary.setdefault("run_dir", str(summary_path.parent))
+            records.append(summary)
+    records.sort(key=lambda item: str(item.get("completed_at") or item.get("run_id") or ""), reverse=True)
+    return records[:limit]
+
+
+def render_runs(
+    *,
+    stdout: IO[str] | None = None,
+    runs_dir: Path | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    out = stdout or sys.stdout
+    records = list_runs(runs_dir=runs_dir, limit=limit)
+    out.write("\nRuns\n")
+    out.write("----\n")
+    if not records:
+        out.write("No runs yet.\n\n")
+        out.flush()
+        return records
+    for idx, item in enumerate(records, start=1):
+        out.write(f"{idx}. {item.get('topic', '(untitled)')}\n")
+        out.write(f"   run: {item.get('run_id', '-')}\n")
+        out.write(f"   report: {item.get('report_path', '-')}\n")
+    out.write("\n")
+    out.flush()
+    return records
+
+
+def _resolve_cli_path(name: str, env_var: str) -> str | None:
+    explicit = os.environ.get(env_var)
+    if explicit:
+        return explicit
+    if name == "codex":
+        for candidate in ("/opt/homebrew/bin/codex", "/usr/local/bin/codex", shutil.which("codex")):
+            if candidate and Path(candidate).exists():
+                return candidate
+        return None
+    return shutil.which(name)
+
+
+def _first_error_line(text: str) -> str:
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line[:160]
+    return ""
+
+
 def _resolve_paths(
     *,
     topic: str,
@@ -199,6 +372,50 @@ def _resolve_paths(
         report_path=report,
         summary_path=base / "summary.json",
     )
+
+
+def _render_home(out: IO[str]) -> None:
+    out.write("\nMuchanipo\n")
+    out.write("---------\n")
+    out.write(f"Runs dir: {_default_runs_dir()}\n")
+    out.write("Tip: type a topic directly to start research.\n\n")
+    out.write("1. New research\n")
+    out.write("2. Runs\n")
+    out.write("3. CLI status\n")
+    out.write("4. Help\n")
+    out.write("q. Quit\n\n")
+    out.flush()
+
+
+def _render_help(out: IO[str]) -> None:
+    out.write("\nCommands\n")
+    out.write("--------\n")
+    out.write("muchanipo                         open this terminal app\n")
+    out.write("muchanipo \"topic\"                 start a dashboard run\n")
+    out.write("muchanipo run \"topic\"             line-by-line run\n")
+    out.write("muchanipo tui \"topic\"             dashboard run\n")
+    out.write("muchanipo runs                    list previous runs\n")
+    out.write("muchanipo status                  show local CLI provider status\n\n")
+    out.flush()
+
+
+def _read_prompt(inp: IO[str], out: IO[str], prompt: str) -> str | None:
+    out.write(prompt)
+    out.flush()
+    line = inp.readline()
+    return line if line else None
+
+
+def _offline_from_mode(mode: str) -> bool | None:
+    if mode in {"offline", "off", "mock", "m"}:
+        return True
+    if mode in {"online", "live", "on", "l"}:
+        return False
+    return None
+
+
+def _supports_dashboard(out: IO[str]) -> bool:
+    return bool(getattr(out, "isatty", lambda: False)())
 
 
 def _default_runs_dir() -> Path:
