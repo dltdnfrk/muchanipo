@@ -53,6 +53,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
     run.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
     run.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    run.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
+    run.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
 
     tui = sub.add_parser("tui", help="Run the terminal dashboard over the full pipeline")
     tui.add_argument("topic_arg", nargs="?", help="Research topic")
@@ -70,6 +72,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
     tui.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
     tui.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    tui.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
+    tui.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
 
     runs = sub.add_parser("runs", help="List recent terminal runs")
     runs.add_argument("--limit", type=int, default=10, help="Maximum runs to show")
@@ -538,6 +542,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             offline=shortcut_options["offline"],
             jsonl=shortcut_options["jsonl"],
             dashboard=shortcut_options["dashboard"],
+            interview=shortcut_options["interview"],
         )
 
     parser = _build_parser()
@@ -548,7 +553,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"{args.command} requires a topic")
         if args.offline and args.online:
             parser.error("--offline and --online are mutually exclusive")
+        if args.interview and args.no_interview:
+            parser.error("--interview and --no-interview are mutually exclusive")
         offline = True if args.offline else False if args.online else None
+        default_interview = _default_interview_enabled(jsonl=bool(getattr(args, "jsonl", False)))
+        interview = True if args.interview else False if args.no_interview else default_interview
         return _run_terminal_safely(
             topic,
             report_path=Path(args.report_path) if args.report_path else None,
@@ -556,6 +565,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             offline=offline,
             jsonl=bool(getattr(args, "jsonl", False)),
             dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
+            interview=interview,
         )
 
     if args.command == "runs":
@@ -592,10 +602,16 @@ def _run_terminal_safely(
     offline: bool | None,
     jsonl: bool,
     dashboard: bool,
+    interview: bool,
 ) -> int:
-    from src.muchanipo.terminal import terminal_run
+    from src.muchanipo.terminal import conduct_interview, terminal_run
 
     try:
+        capture = (
+            conduct_interview(topic, stdin=sys.stdin, stdout=sys.stdout)
+            if interview
+            else None
+        )
         terminal_run(
             topic,
             stdout=sys.stdout,
@@ -604,6 +620,7 @@ def _run_terminal_safely(
             offline=offline,
             jsonl=jsonl,
             dashboard=dashboard,
+            pipeline_input=capture.pipeline_input if capture else None,
         )
         return 0
     except KeyboardInterrupt:
@@ -622,6 +639,7 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
         "report_path": None,
         "jsonl": False,
         "dashboard": bool(getattr(sys.stdout, "isatty", lambda: False)()),
+        "interview": _default_interview_enabled(jsonl=False),
         "error": "",
     }
     idx = 0
@@ -640,8 +658,20 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
         elif arg == "--jsonl":
             options["jsonl"] = True
             options["dashboard"] = False
+            if "--interview" not in argv:
+                options["interview"] = False
         elif arg == "--plain":
             options["dashboard"] = False
+        elif arg == "--interview":
+            if "--no-interview" in argv:
+                options["error"] = "--interview and --no-interview are mutually exclusive"
+                break
+            options["interview"] = True
+        elif arg == "--no-interview":
+            if "--interview" in argv:
+                options["error"] = "--interview and --no-interview are mutually exclusive"
+                break
+            options["interview"] = False
         elif arg in {"--run-dir", "--report-path"}:
             if idx + 1 >= len(argv):
                 options["error"] = f"{arg} requires a value"
@@ -659,6 +689,12 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
             topic_parts.append(arg)
         idx += 1
     return " ".join(topic_parts).strip(), options
+
+
+def _default_interview_enabled(*, jsonl: bool) -> bool:
+    if jsonl:
+        return False
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
 
 
 if __name__ == "__main__":

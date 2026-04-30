@@ -59,6 +59,14 @@ class TerminalRunResult:
     stage_status: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class InterviewCapture:
+    original_topic: str
+    pipeline_input: str
+    mode: str
+    answered: int
+
+
 def terminal_app(
     *,
     stdin: IO[str] | None = None,
@@ -97,7 +105,7 @@ def terminal_app(
             raw_mode = _read_prompt(inp, out, "mode [auto/offline/online] (auto)> ")
             mode = (raw_mode or "").strip().lower()
             offline = _offline_from_mode(mode)
-            _run_from_app(topic, out=out, offline=offline)
+            _run_from_app(topic, inp=inp, out=out, offline=offline, interview=True)
             _render_home(out)
             continue
         if choice in {"2", "runs", "r"}:
@@ -109,7 +117,7 @@ def terminal_app(
         if choice in {"4", "help", "h", "?"}:
             _render_help(out)
             continue
-        _run_from_app(topic_or_choice, out=out, offline=None)
+        _run_from_app(topic_or_choice, inp=inp, out=out, offline=None, interview=True)
         _render_home(out)
 
 
@@ -122,6 +130,7 @@ def terminal_run(
     offline: bool | None = None,
     jsonl: bool = False,
     dashboard: bool = False,
+    pipeline_input: str | None = None,
 ) -> TerminalRunResult:
     """Run the full pipeline as a terminal-native command.
 
@@ -130,6 +139,7 @@ def terminal_run(
     dependency on a TUI framework.
     """
     out = stdout or sys.stdout
+    pipeline_topic = pipeline_input or topic
     paths = _resolve_paths(topic=topic, run_dir=run_dir, report_path=report_path)
     paths.run_dir.mkdir(parents=True, exist_ok=True)
     events_file = paths.events_path.open("w", encoding="utf-8")
@@ -161,6 +171,7 @@ def terminal_run(
             "report_path": str(paths.report_path),
             "events_path": str(paths.events_path),
             "offline": offline,
+            "pipeline_input": pipeline_topic if pipeline_topic != topic else None,
             "created_at": _now_iso(),
         },
     )
@@ -172,7 +183,7 @@ def terminal_run(
         _render_dashboard(out, topic=topic, paths=paths, status=status, event=None)
 
     try:
-        result = run_pipeline(topic, progress_callback=emit_terminal, offline=offline)
+        result = run_pipeline(pipeline_topic, progress_callback=emit_terminal, offline=offline)
     except KeyboardInterrupt as exc:
         status["finalize"] = "error"
         _record_terminal_failure(
@@ -218,6 +229,7 @@ def terminal_run(
         "topic": topic,
         "run_id": paths.run_id,
         "status": "completed",
+        "pipeline_input": pipeline_topic if pipeline_topic != topic else None,
         "report_path": str(paths.report_path),
         "events_path": str(paths.events_path),
         "offline": offline,
@@ -258,15 +270,109 @@ def terminal_run(
     )
 
 
-def _run_from_app(topic: str, *, out: IO[str], offline: bool | None) -> None:
+def conduct_interview(
+    topic: str,
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+) -> InterviewCapture:
+    """Run the show-me-the-prd style intake interview before research starts."""
+    from src.intake.idea_dump import IdeaDump
+    from src.intent.interview_prompts import forcing_questions_korean, merge_answers_to_text
+    from src.interview.session import InterviewSession
+
+    inp = stdin or sys.stdin
+    out = stdout or sys.stdout
+    session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
+    plan = session.plan
+    mode = plan.mode if plan is not None else "deep"
+    if mode == "quick":
+        questions = session.clarifications_for_quick_mode()
+    else:
+        questions = forcing_questions_korean()
+
+    out.write("\n아이디어 심층 인터뷰\n")
+    out.write("------------------\n")
+    out.write("show-me-the-prd 방식으로 요구사항을 먼저 좁힌 뒤 리서치를 시작합니다.\n")
+    out.write("빈 줄 또는 'skip'은 해당 질문을 건너뜁니다.\n\n")
+    out.flush()
+
+    qa_pairs: list[dict[str, str]] = []
+    for idx, item in enumerate(questions, start=1):
+        qid = str(item.get("id") or f"Q{idx}")
+        question = str(item.get("question") or "").strip()
+        out.write(f"{question}\n")
+        answer = _read_prompt(inp, out, "answer> ")
+        if answer is None:
+            out.write("\n인터뷰 입력이 종료되어 현재 답변까지만 반영합니다.\n")
+            out.flush()
+            break
+        cleaned = answer.strip()
+        if not cleaned or cleaned.lower() in {"skip", "pass", "건너뛰기"}:
+            out.write("skipped\n\n")
+            out.flush()
+            continue
+        label = _interview_answer_label(qid)
+        if label:
+            session.answer(label, cleaned)
+        qa_pairs.append({"id": qid, "answer": cleaned})
+        out.write("\n")
+        out.flush()
+
+    if not qa_pairs:
+        out.write("인터뷰 답변이 없어 원 토픽으로 진행합니다.\n\n")
+        out.flush()
+        return InterviewCapture(original_topic=topic, pipeline_input=topic, mode=mode, answered=0)
+
+    pipeline_input = merge_answers_to_text(topic, qa_pairs)
+    out.write(f"인터뷰 반영 완료: {len(qa_pairs)}개 답변, coverage={session.coverage_score:.2f}\n")
+    out.write("이제 리서치 파이프라인을 시작합니다.\n\n")
+    out.flush()
+    return InterviewCapture(
+        original_topic=topic,
+        pipeline_input=pipeline_input,
+        mode=mode,
+        answered=len(qa_pairs),
+    )
+
+
+def _run_from_app(
+    topic: str,
+    *,
+    inp: IO[str],
+    out: IO[str],
+    offline: bool | None,
+    interview: bool,
+) -> None:
     try:
-        terminal_run(topic, stdout=out, offline=offline, dashboard=_supports_dashboard(out))
+        capture = conduct_interview(topic, stdin=inp, stdout=out) if interview else None
+        terminal_run(
+            topic,
+            stdout=out,
+            offline=offline,
+            dashboard=_supports_dashboard(out),
+            pipeline_input=capture.pipeline_input if capture else None,
+        )
     except KeyboardInterrupt:
         out.write("\nRun interrupted; returning to Muchanipo home.\n")
         out.flush()
     except Exception as exc:
         out.write(f"\nRun failed; returning to Muchanipo home: {type(exc).__name__}: {exc}\n")
-        out.flush()
+    out.flush()
+
+
+def _interview_answer_label(qid: str) -> str | None:
+    return {
+        "Q1_research_question": "research_question",
+        "Q2_purpose": "purpose",
+        "Q3_context": "context",
+        "Q5_deliverable": "deliverable_type",
+        "Q6_quality": "quality_bar",
+        "clarify_timeframe": "quality_bar",
+        "clarify_domain": "context",
+        "clarify_evaluation": "quality_bar",
+        "clarify_comparison": "context",
+    }.get(qid)
 
 
 def _record_terminal_failure(

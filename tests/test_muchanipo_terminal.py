@@ -101,6 +101,30 @@ def test_terminal_run_jsonl_prints_machine_events(tmp_path: Path, monkeypatch):
     ]
 
 
+def test_conduct_interview_merges_show_prd_answers_into_pipeline_input():
+    stdout = io.StringIO()
+
+    capture = terminal_mod.conduct_interview(
+        "딸기 무병묘 시장성",
+        stdin=io.StringIO(
+            "한국 딸기 농가용 무병묘 시장 규모\n"
+            "투자 검토\n"
+            "한국 AgTech\n"
+            "기존 조직배양 업체는 알고 있음\n"
+            "정량 수치 + 출처\n"
+            "학술 논문과 정부 통계 우선\n"
+        ),
+        stdout=stdout,
+    )
+
+    assert capture.original_topic == "딸기 무병묘 시장성"
+    assert capture.mode == "deep"
+    assert capture.answered == 6
+    assert "[원 요청] 딸기 무병묘 시장성" in capture.pipeline_input
+    assert "[Q1_research_question] 한국 딸기 농가용 무병묘 시장 규모" in capture.pipeline_input
+    assert "아이디어 심층 인터뷰" in stdout.getvalue()
+
+
 def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monkeypatch):
     def boom(topic, *, progress_callback=None, offline=None):
         if progress_callback:
@@ -214,6 +238,7 @@ def test_terminal_app_new_research_uses_terminal_run(monkeypatch):
     assert rc == 0
     assert calls[0][0] == "딸기 시장성"
     assert calls[0][1]["offline"] is True
+    assert "[Q1_research_question] q" in calls[0][1]["pipeline_input"]
 
 
 def test_terminal_app_treats_unknown_nonempty_input_as_topic(monkeypatch):
@@ -232,6 +257,7 @@ def test_terminal_app_treats_unknown_nonempty_input_as_topic(monkeypatch):
     assert rc == 0
     assert calls[0][0] == "딸기 시장성 바로 시작"
     assert calls[0][1]["offline"] is None
+    assert "[Q1_research_question] q" in calls[0][1]["pipeline_input"]
 
 
 def test_terminal_app_returns_home_after_run_failure(monkeypatch):
@@ -351,6 +377,33 @@ def test_main_direct_topic_shortcut_accepts_common_flags(tmp_path: Path, monkeyp
     assert calls[0][1]["offline"] is True
     assert calls[0][1]["run_dir"] == tmp_path / "runs"
     assert calls[0][1]["dashboard"] is False
+
+
+def test_main_direct_topic_shortcut_can_force_interview(monkeypatch):
+    calls = []
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("좁힌 질문\n투자 판단\n한국 농업\n없음\n비교표\n강한 출처\n"))
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기 시장성", "--interview"]) == 0
+    assert calls[0][0] == "딸기 시장성"
+    assert "[Q1_research_question] 좁힌 질문" in calls[0][1]["pipeline_input"]
+
+
+def test_main_direct_topic_shortcut_no_interview_keeps_raw_topic(monkeypatch):
+    calls = []
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기 시장성", "--no-interview"]) == 0
+    assert calls[0][0] == "딸기 시장성"
+    assert calls[0][1]["pipeline_input"] is None
 
 
 def test_main_direct_topic_shortcut_accepts_online_and_report_path(tmp_path: Path, monkeypatch):
