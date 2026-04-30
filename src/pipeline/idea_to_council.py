@@ -207,6 +207,7 @@ class IdeaToCouncilPipeline:
             gateway=self.gateway_v2,
             consensus_plan=consensus_plan,
             targeting_map=targeting_map,
+            require_live=self.require_live,
         )
 
         state.advance(Stage.COUNCIL)
@@ -797,6 +798,7 @@ def _generate_council_personas(
     gateway: GatewayV2,
     consensus_plan: ConsensusPlan,
     targeting_map: TargetingMap,
+    require_live: bool = False,
 ) -> tuple[list[Any], dict[str, Any]]:
     ontology = {
         **consensus_plan.to_ontology(),
@@ -835,8 +837,15 @@ def _generate_council_personas(
         topic=report.title,
     )
     persona_telemetry = _persona_generation_telemetry(finals, telemetry)
+    fallback_count = int(telemetry.get("fallbacks_used", 0) or 0)
+    if require_live and fallback_count > 0:
+        raise LiveModeViolation(
+            f"live mode rejected fallback council personas: {fallback_count} generated"
+        )
     if finals:
         return finals, persona_telemetry
+    if require_live:
+        raise LiveModeViolation("live mode requires generated council personas")
     return [debate_agent_to_council_persona(agent) for agent in agents], persona_telemetry
 
 
