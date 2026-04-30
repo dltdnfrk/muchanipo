@@ -784,7 +784,12 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
     contracts = report["contracts"]
     assert report["schema_version"] == 1
     assert report["command"] == "muchanipo contracts"
-    assert set(contracts) == {"muchanipo doctor", "muchanipo status", "muchanipo runs"}
+    assert set(contracts) == {
+        "muchanipo doctor",
+        "muchanipo status",
+        "muchanipo runs",
+        "muchanipo references",
+    }
     assert contracts["muchanipo doctor"]["required_top_level_keys"] == [
         "schema_version",
         "command",
@@ -794,6 +799,14 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
         "checks",
         "cli_statuses",
         "recommendations",
+    ]
+    assert contracts["muchanipo references"]["required_top_level_keys"] == [
+        "schema_version",
+        "command",
+        "stages",
+        "references",
+        "gaps",
+        "license_warnings",
     ]
 
 
@@ -827,6 +840,31 @@ def test_render_json_contracts_formats_human_summary():
     assert "CLI JSON contracts" in text
     assert "muchanipo doctor --json" in text
     assert "required keys: schema_version, command, ok" in text
+
+
+def test_main_references_json_and_human_output(capsys):
+    assert server_mod.main(["references", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["schema_version"] == 1
+    assert report["command"] == "muchanipo references"
+    assert [stage["step"] for stage in report["stages"]] == [1, 2, 3, 4, 5, 6]
+    assert any(item["name"] == "MiroFish" for item in report["license_warnings"])
+    assert any(item["name"] == "MemPalace" for item in report["gaps"])
+
+    assert server_mod.main(["references"]) == 0
+    text = capsys.readouterr().out
+    assert "Reference runtime readiness" in text
+    assert "License warnings" in text
+    assert "Known gaps" in text
+
+
+def test_references_report_satisfies_documented_contract():
+    report = terminal_mod.references_report()
+    contract = terminal_mod.json_contracts_report()["contracts"]["muchanipo references"]
+
+    assert report["schema_version"] == contract["schema_version"]
+    assert set(contract["required_top_level_keys"]).issubset(report)
 
 
 def test_cli_statuses_records_nonzero_version_probe(monkeypatch):

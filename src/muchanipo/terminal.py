@@ -64,6 +64,19 @@ CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
         ),
         "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
     },
+    "muchanipo references": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "Reference-project implementation inventory and six-stage readiness.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "stages",
+            "references",
+            "gaps",
+            "license_warnings",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
 }
 
 STAGE_LABELS: dict[str, str] = {
@@ -638,6 +651,39 @@ def render_json_contracts(*, stdout: IO[str] | None = None) -> dict[str, Any]:
     return report
 
 
+def references_report() -> dict[str, Any]:
+    """Return six-stage reference implementation readiness."""
+    from src.pipeline.reference_inventory import reference_readiness_report
+
+    return reference_readiness_report(repo_root=_repo_root())
+
+
+def render_references(*, stdout: IO[str] | None = None) -> dict[str, Any]:
+    out = stdout or sys.stdout
+    report = references_report()
+    out.write("\nReference runtime readiness\n")
+    out.write("---------------------------\n")
+    for stage in report["stages"]:
+        out.write(
+            f"{stage['step']}. {stage['name']}: "
+            f"{stage['implemented_count']}/{stage['reference_count']} runtime-backed"
+        )
+        if stage["gap_count"]:
+            out.write(f", {stage['gap_count']} gap(s)")
+        out.write("\n")
+    if report["license_warnings"]:
+        out.write("\nLicense warnings\n")
+        for item in report["license_warnings"]:
+            out.write(f"- {item['name']}: {item['warning']}\n")
+    if report["gaps"]:
+        out.write("\nKnown gaps\n")
+        for item in report["gaps"]:
+            out.write(f"- {item['name']}: {item['gap']}\n")
+    out.write("\n")
+    out.flush()
+    return report
+
+
 def doctor_report(*, runs_dir: Path | None = None) -> dict[str, Any]:
     """Return local readiness checks for the TUI-first CLI runtime."""
     root = runs_dir or _default_runs_dir()
@@ -988,6 +1034,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo runs                    list previous runs\n")
     out.write("muchanipo status                  show local CLI provider status\n\n")
     out.write("muchanipo contracts               show CLI JSON contracts\n")
+    out.write("muchanipo references              show reference runtime readiness\n")
     out.write("muchanipo doctor                  check local runtime readiness\n\n")
     out.write("Interactive slash commands\n")
     out.write("  /new, /run        start a new research run\n")

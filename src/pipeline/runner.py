@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterator
 
 from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
@@ -169,7 +170,8 @@ def run_pipeline(
         require_live=live_required,
     )
     emit_stage_started("intake", {"topic": topic})
-    result = pipeline.run(topic)
+    with _academic_targeting_policy(live_enabled=bool(live_required or not offline)):
+        result = pipeline.run(topic)
 
     rounds = _digests_from_result(result)
     return {
@@ -180,6 +182,20 @@ def run_pipeline(
         "vault_path": result.vault_path,
         "pipeline_result": result,
     }
+
+
+@contextmanager
+def _academic_targeting_policy(*, live_enabled: bool) -> Iterator[None]:
+    """Keep academic targeting deterministic unless the pipeline is in live mode."""
+    previous = os.environ.get("MUCHANIPO_ACADEMIC_TARGETING")
+    os.environ["MUCHANIPO_ACADEMIC_TARGETING"] = "1" if live_enabled else "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("MUCHANIPO_ACADEMIC_TARGETING", None)
+        else:
+            os.environ["MUCHANIPO_ACADEMIC_TARGETING"] = previous
 
 
 def _hitl_mode_from_env(*, live_required: bool) -> str:

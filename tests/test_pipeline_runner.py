@@ -143,3 +143,53 @@ def test_run_pipeline_explicit_require_live_uses_live_hitl_gate(monkeypatch):
         runner_mod.run_pipeline("explicit live", offline=False, require_live=True)
 
     assert captured == [("markdown", True)]
+
+
+def test_run_pipeline_offline_disables_live_academic_targeting(monkeypatch):
+    import src.pipeline.runner as runner_mod
+    import src.research.academic.openalex as openalex_mod
+
+    class _StopAfterPolicyPipeline:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, topic):
+            assert openalex_mod._skip_live_targeting() is True
+            raise RuntimeError("stop after policy")
+
+    def fail_http_client(*args, **kwargs):
+        raise AssertionError("offline pipeline must not instantiate OpenAlex targeting HTTP client")
+
+    monkeypatch.delenv("MUCHANIPO_ACADEMIC_TARGETING", raising=False)
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterPolicyPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+    monkeypatch.setattr(openalex_mod.httpx, "Client", fail_http_client)
+
+    with pytest.raises(RuntimeError, match="stop after policy"):
+        runner_mod.run_pipeline("offline topic", offline=True)
+
+    assert "MUCHANIPO_ACADEMIC_TARGETING" not in runner_mod.os.environ
+
+
+def test_run_pipeline_offline_overrides_stale_live_academic_targeting_env(monkeypatch):
+    import src.pipeline.runner as runner_mod
+    import src.research.academic.openalex as openalex_mod
+
+    class _StopAfterPolicyPipeline:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, topic):
+            assert openalex_mod._skip_live_targeting() is True
+            raise RuntimeError("stop after policy")
+
+    monkeypatch.setenv("MUCHANIPO_ACADEMIC_TARGETING", "1")
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterPolicyPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+
+    with pytest.raises(RuntimeError, match="stop after policy"):
+        runner_mod.run_pipeline("offline topic", offline=True)
+
+    assert runner_mod.os.environ["MUCHANIPO_ACADEMIC_TARGETING"] == "1"

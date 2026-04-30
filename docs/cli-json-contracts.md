@@ -54,3 +54,17 @@ Required top-level keys:
 
 Purpose: list recent terminal run summaries loaded from `summary.json`
 artifacts.
+
+## `muchanipo references --json`
+
+Required top-level keys:
+
+- `schema_version`
+- `command`
+- `stages`
+- `references`
+- `gaps`
+- `license_warnings`
+
+Purpose: inspect six-stage reference-project readiness, local runtime-backed
+modules, known gaps, and license-sensitive boundaries.

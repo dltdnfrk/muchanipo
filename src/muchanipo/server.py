@@ -88,6 +88,9 @@ def _build_parser() -> argparse.ArgumentParser:
     contracts = sub.add_parser("contracts", help="Show stable CLI JSON output contracts")
     contracts.add_argument("--json", action="store_true", help="Print JSON contracts as JSON")
 
+    references = sub.add_parser("references", help="Show reference-project runtime readiness")
+    references.add_argument("--json", action="store_true", help="Print reference readiness as JSON")
+
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
     serve.add_argument(
@@ -534,7 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write("muchanipo: interrupted\n")
             return 130
 
-    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts"}
+    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts", "references"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
@@ -615,6 +618,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_json(json_contracts_report())
         else:
             render_json_contracts(stdout=sys.stdout)
+        return 0
+
+    if args.command == "references":
+        from src.muchanipo.terminal import references_report, render_references
+
+        if args.json:
+            _write_json(references_report())
+        else:
+            render_references(stdout=sys.stdout)
         return 0
 
     if args.command != "serve":
