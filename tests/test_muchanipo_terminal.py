@@ -11,6 +11,7 @@ import pytest
 
 from src.muchanipo import server as server_mod
 from src.muchanipo import terminal as terminal_mod
+from src.research.depth import depth_profile
 from src.runtime.live_mode import LiveModeViolation
 
 
@@ -40,9 +41,10 @@ def _run_muchanipo(
     )
 
 
-def _fake_run_pipeline(topic, *, progress_callback=None, offline=None, require_live=None):
+def _fake_run_pipeline(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
     assert topic
     assert offline is True
+    assert depth in {"shallow", "deep", "max"}
     if progress_callback:
         progress_callback({"event": "stage_started", "stage": "intake"})
         progress_callback({"event": "stage_completed", "stage": "intake"})
@@ -53,6 +55,9 @@ def _fake_run_pipeline(topic, *, progress_callback=None, offline=None, require_l
         "rounds": [object()],
         "brief": type("Brief", (), {"id": "brief-test"})(),
         "vault_path": Path("/tmp/muchanipo-vault-test.md"),
+        "depth": depth,
+        "depth_profile": depth_profile(depth),
+        "executed_council_round_count": 10,
     }
 
 
@@ -75,13 +80,17 @@ def test_terminal_run_writes_report_events_and_summary(tmp_path: Path, monkeypat
     assert result.report_path.read_text(encoding="utf-8").startswith("# 터미널 중심 테스트")
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     assert summary["brief_id"] == "brief-test"
+    assert summary["depth"] == "deep"
+    assert summary["target_runtime_seconds"] == 900
+    assert summary["executed_council_round_count"] == 10
     events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
     assert events[0]["event"] == "terminal_run_started"
+    assert events[0]["depth"] == "deep"
     assert events[-1]["event"] == "terminal_run_done"
 
 
 def test_terminal_run_persists_canonical_stage_order_to_events_jsonl(tmp_path: Path, monkeypatch):
-    def full_stage_run(topic, *, progress_callback=None, offline=None, require_live=None):
+    def full_stage_run(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
         assert progress_callback is not None
         for stage in terminal_mod.STAGE_ORDER:
             progress_callback({"event": "stage_started", "stage": stage})
@@ -162,7 +171,7 @@ def test_conduct_interview_merges_show_prd_answers_into_pipeline_input():
 
 
 def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monkeypatch):
-    def boom(topic, *, progress_callback=None, offline=None, require_live=None):
+    def boom(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
         if progress_callback:
             progress_callback({"event": "stage_started", "stage": "research"})
         raise RuntimeError("provider blocked")
@@ -183,7 +192,7 @@ def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monk
 
 
 def test_run_online_live_violation_fails_closed_and_persists_failure_artifacts(tmp_path: Path, monkeypatch, capsys):
-    def live_gate_failure(topic, *, progress_callback=None, offline=None, require_live=None):
+    def live_gate_failure(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
         assert offline is False
         assert require_live is True
         if progress_callback:
@@ -214,7 +223,7 @@ def test_run_online_live_violation_fails_closed_and_persists_failure_artifacts(t
 
 
 def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Path, monkeypatch):
-    def interrupt(topic, *, progress_callback=None, offline=None, require_live=None):
+    def interrupt(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(terminal_mod, "run_pipeline", interrupt)
@@ -384,6 +393,7 @@ def test_terminal_app_supports_slash_demo(monkeypatch):
     assert rc == 0
     assert calls[0][0] == terminal_mod.DEMO_TOPIC
     assert calls[0][1]["offline"] is True
+    assert calls[0][1]["depth"] == "shallow"
     assert calls[0][1]["pipeline_input"] is None
 
 
@@ -627,6 +637,21 @@ def test_main_direct_topic_shortcut_accepts_common_flags(tmp_path: Path, monkeyp
     assert calls[0][1]["offline"] is True
     assert calls[0][1]["run_dir"] == tmp_path / "runs"
     assert calls[0][1]["dashboard"] is False
+    assert calls[0][1]["depth"] == "deep"
+
+
+def test_main_direct_topic_shortcut_accepts_depth_flag(monkeypatch):
+    calls = []
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기 시장성", "--depth", "max", "--no-interview"]) == 0
+
+    assert calls[0][0] == "딸기 시장성"
+    assert calls[0][1]["depth"] == "max"
 
 
 def test_main_direct_topic_shortcut_can_force_interview(monkeypatch):
@@ -733,6 +758,12 @@ def test_main_direct_topic_shortcut_rejects_bad_flags(capsys):
     assert server_mod.main(["딸기", "--run-dir"]) == 2
     assert "--run-dir requires a value" in capsys.readouterr().err
 
+    assert server_mod.main(["딸기", "--depth"]) == 2
+    assert "--depth requires a value" in capsys.readouterr().err
+
+    assert server_mod.main(["딸기", "--depth", "huge"]) == 2
+    assert "--depth must be one of: shallow|deep|max" in capsys.readouterr().err
+
 
 def test_main_terminal_failure_returns_exit_code(monkeypatch, capsys):
     def fail_terminal_run(topic, **kwargs):
@@ -793,6 +824,7 @@ def test_main_demo_command_runs_offline_without_interview(tmp_path: Path, monkey
     assert calls[0][1]["offline"] is True
     assert calls[0][1]["jsonl"] is True
     assert calls[0][1]["dashboard"] is False
+    assert calls[0][1]["depth"] == "shallow"
     assert calls[0][1]["pipeline_input"] is None
     assert calls[0][1]["run_dir"] == tmp_path / "demo"
 

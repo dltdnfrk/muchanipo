@@ -142,6 +142,7 @@ muchanipo "딸기 농가용 저비용 분자진단 키트 시장성"
 # Explicit modes
 muchanipo run "딸기 진단키트 시장성" --offline
 muchanipo tui "딸기 진단키트 시장성" --online
+muchanipo run "딸기 진단키트 시장성" --depth shallow --offline
 muchanipo doctor
 muchanipo status
 muchanipo runs
@@ -173,6 +174,11 @@ current required top-level keys.
 `muchanipo demo` is the fastest product smoke path. It runs a deterministic
 offline topic, skips the interview, and writes the same `REPORT.md`,
 `events.jsonl`, and `summary.json` artifacts as normal runs.
+
+Autoresearch depth is explicit: `--depth shallow` targets a quick interactive
+pass, `--depth deep` keeps the default full ten-layer council budget, and
+`--depth max` records extended test-time-compute intent for comprehensive
+background runs. The six-stage Muchanipo flow remains intact at every depth.
 
 `muchanipo references` reports which reference-project ideas are backed by
 local runtime code, which are still gaps, and which carry license warnings. It

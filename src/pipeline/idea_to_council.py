@@ -31,6 +31,7 @@ from src.intent.plan_review import ConsensusPlan, PlanReview
 from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
 from src.interview.session import InterviewSession
+from src.research.depth import depth_profile, normalize_depth
 from src.research.planner import ResearchPlanner
 from src.research.runner import MockResearchRunner, build_runner
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
@@ -88,8 +89,11 @@ class IdeaToCouncilPipeline:
         learning_log_path: Path | str | None = None,
         progress_callback: ProgressCallback | None = None,
         require_live: bool | None = None,
+        depth: str = "deep",
     ) -> None:
         self.require_live = live_requested_from_env() if require_live is None else require_live
+        self.depth = normalize_depth(depth)
+        self.depth_profile = depth_profile(self.depth)
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
         self.research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
         self.gateway_v2 = _coerce_gateway_v2(
@@ -105,6 +109,15 @@ class IdeaToCouncilPipeline:
 
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
+        state.record_artifact("research_depth", self.depth)
+        state.record_artifact("research_depth_description", self.depth_profile.description)
+        state.record_artifact("research_query_limit", str(self.depth_profile.query_limit))
+        state.record_artifact("council_round_budget", str(self.depth_profile.council_round_budget))
+        state.record_artifact("target_runtime_seconds", str(self.depth_profile.target_runtime_seconds))
+        state.record_artifact(
+            "extended_test_time_compute",
+            "enabled" if self.depth_profile.extended_test_time_compute else "disabled",
+        )
 
         idea = capture_idea(raw_idea)
         self._emit(state, Stage.IDEA_DUMP)
@@ -151,7 +164,7 @@ class IdeaToCouncilPipeline:
             setattr(brief, "targeting_map", targeting_map)
 
         state.advance(Stage.RESEARCH)
-        plan = ResearchPlanner().plan(brief)
+        plan = ResearchPlanner().plan(brief, max_queries=self.depth_profile.query_limit)
         state.record_artifact("research_query_count", str(len(plan.queries)))
         state.record_artifact("research_memory_store", "MemPalace")
         state.record_artifact("research_memory_key", brief.id)
@@ -215,7 +228,7 @@ class IdeaToCouncilPipeline:
             state.record_artifact(key, str(value))
         council = KarpathySession(
             gateway=self.gateway_v2,
-            layers=list(DEFAULT_LAYERS),
+            layers=list(DEFAULT_LAYERS[: self.depth_profile.council_round_budget]),
             personas=personas,
         )
         council.run_all()
@@ -639,7 +652,7 @@ def _round_digests(
                 key_claim=analysis,
                 body_claims=key_points or [analysis],
                 evidence_ref_ids=evidence_ids,
-                confidence=float(first.get("confidence") or round_record.get("confidence") or 0.6),
+                confidence=float(first.get("confidence") or round_mapping.get("confidence") or 0.6),
             )
         )
     return digests

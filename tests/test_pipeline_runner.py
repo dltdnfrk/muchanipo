@@ -35,6 +35,8 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
     result = run_pipeline("딸기 진단키트 시장성", progress_callback=events.append, offline=True)
 
     assert len(result["rounds"]) == 10
+    assert result["depth"] == "deep"
+    assert result["executed_council_round_count"] == 10
     assert result["brief"].is_ready
     assert Path(result["vault_path"]).exists()
     assert Path(result["report_path"]).exists()
@@ -70,6 +72,55 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
         if event["event"] == "stage_started" and event["stage"] == "targeting"
     )
     assert "reference_step" not in started_targeting
+
+
+def test_run_pipeline_shallow_depth_reduces_internal_autoresearch_budget():
+    result = run_pipeline("딸기 진단키트 시장성", offline=True, depth="shallow")
+    artifacts = result["pipeline_result"].state.artifacts
+
+    assert result["depth"] == "shallow"
+    assert len(result["rounds"]) == 10
+    assert result["executed_council_round_count"] == 6
+    assert artifacts["research_depth"] == "shallow"
+    assert artifacts["research_query_limit"] == "4"
+    assert artifacts["council_round_budget"] == "6"
+    assert artifacts["target_runtime_seconds"] == "120"
+    assert artifacts["extended_test_time_compute"] == "disabled"
+
+
+def test_run_pipeline_max_depth_records_extended_compute_without_new_dependency(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    captured: list[tuple[str, str, str, str]] = []
+
+    class _StopAfterInitPipeline:
+        def __init__(self, *, depth, **kwargs):
+            self.depth = depth
+
+        def run(self, topic):
+            from src.pipeline.state import PipelineState
+
+            state = PipelineState(run_id="run-depth-max")
+            state.record_artifact("research_depth", self.depth)
+            state.record_artifact("research_query_limit", "12")
+            state.record_artifact("council_round_budget", "10")
+            state.record_artifact("extended_test_time_compute", "enabled")
+            captured.append((
+                state.artifacts["research_depth"],
+                state.artifacts["research_query_limit"],
+                state.artifacts["council_round_budget"],
+                state.artifacts["extended_test_time_compute"],
+            ))
+            raise RuntimeError("stop after depth metadata")
+
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterInitPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", lambda **kwargs: object())
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+
+    with pytest.raises(RuntimeError, match="stop after depth metadata"):
+        runner_mod.run_pipeline("max topic", offline=True, depth="max")
+
+    assert captured == [("max", "12", "10", "enabled")]
 
 
 def test_run_pipeline_uses_human_gate_only_when_live_requested(monkeypatch):

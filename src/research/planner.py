@@ -19,7 +19,7 @@ class ResearchPlan:
 
 
 class ResearchPlanner:
-    def plan(self, brief: ResearchBrief) -> ResearchPlan:
+    def plan(self, brief: ResearchBrief, *, max_queries: int = 8) -> ResearchPlan:
         query = brief.research_question.strip() or brief.raw_idea.strip()
         queries = expand_query(
             query,
@@ -27,7 +27,7 @@ class ResearchPlanner:
             quality_bar=brief.quality_bar,
         ) or [query]
         targeting_queries = _queries_from_targeting_map(brief)
-        queries = _dedupe(queries + targeting_queries, limit=8)
+        queries = _dedupe(queries + targeting_queries, limit=max(1, max_queries))
         return ResearchPlan(
             brief_id=brief.id,
             queries=queries,

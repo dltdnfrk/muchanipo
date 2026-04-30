@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, IO, List, Sequence
 
 from .events import Action, emit, parse_action
+from src.research.depth import VALID_DEPTHS
 
 
 # ---- argparse ------------------------------------------------------------
@@ -58,6 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
     run.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
     run.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    run.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
     run.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
     run.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
 
@@ -77,6 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
     tui.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
     tui.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    tui.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
     tui.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
     tui.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
 
@@ -110,6 +113,7 @@ def _build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
     demo.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
     demo.add_argument("--offline", action="store_true", help="Accepted for symmetry; demo always runs offline")
+    demo.add_argument("--depth", choices=VALID_DEPTHS, default="shallow", help="Demo depth budget")
 
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
@@ -575,6 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dashboard=shortcut_options["dashboard"],
             interview=shortcut_options["interview"],
             require_live=shortcut_options["require_live"],
+            depth=shortcut_options["depth"],
         )
 
     parser = _build_parser()
@@ -600,6 +605,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
             interview=interview,
             require_live=require_live,
+            depth=args.depth,
         )
 
     if args.command == "runs":
@@ -661,6 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dashboard=(not bool(args.plain) and not bool(args.jsonl) and bool(getattr(sys.stdout, "isatty", lambda: False)())),
             interview=False,
             require_live=False,
+            depth=args.depth,
         )
 
     if args.command != "serve":
@@ -687,6 +694,7 @@ def _run_terminal_safely(
     dashboard: bool,
     interview: bool,
     require_live: bool,
+    depth: str,
 ) -> int:
     from src.muchanipo.terminal import conduct_interview, terminal_run
 
@@ -706,6 +714,7 @@ def _run_terminal_safely(
             dashboard=dashboard,
             pipeline_input=capture.pipeline_input if capture else None,
             require_live=require_live,
+            depth=depth,
         )
         return 0
     except KeyboardInterrupt:
@@ -726,6 +735,7 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
         "dashboard": bool(getattr(sys.stdout, "isatty", lambda: False)()),
         "interview": _default_interview_enabled(jsonl=False),
         "require_live": False,
+        "depth": "deep",
         "error": "",
     }
     idx = 0
@@ -759,6 +769,16 @@ def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
                 options["error"] = "--interview and --no-interview are mutually exclusive"
                 break
             options["interview"] = False
+        elif arg == "--depth":
+            if idx + 1 >= len(argv):
+                options["error"] = "--depth requires a value"
+                break
+            value = argv[idx + 1].strip().lower()
+            if value not in VALID_DEPTHS:
+                options["error"] = f"--depth must be one of: {'|'.join(VALID_DEPTHS)}"
+                break
+            options["depth"] = value
+            idx += 1
         elif arg in {"--run-dir", "--report-path"}:
             if idx + 1 >= len(argv):
                 options["error"] = f"{arg} requires a value"

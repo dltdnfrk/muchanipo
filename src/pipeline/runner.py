@@ -11,6 +11,7 @@ from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
+from src.research.depth import depth_profile, normalize_depth
 from src.research.runner import build_runner
 from src.report.chapter_mapper import RoundDigest
 from src.runtime.live_mode import live_requested_from_env
@@ -108,6 +109,7 @@ def run_pipeline(
     progress_callback: ProgressCallback | None = None,
     offline: bool | None = None,
     require_live: bool | None = None,
+    depth: str = "deep",
 ) -> dict[str, Any]:
     """Run idea -> research -> council -> report -> vault and return report inputs.
 
@@ -118,6 +120,8 @@ def run_pipeline(
     if offline is None:
         from src.muchanipo.server import _detect_offline_mode
         offline = _detect_offline_mode()
+    normalized_depth = normalize_depth(depth)
+    profile = depth_profile(normalized_depth)
     live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
@@ -168,6 +172,7 @@ def run_pipeline(
         council_log_dir=scratch / "council",
         progress_callback=handle_progress,
         require_live=live_required,
+        depth=normalized_depth,
     )
     emit_stage_started("intake", {"topic": topic})
     with _academic_targeting_policy(live_enabled=bool(live_required or not offline)):
@@ -181,6 +186,9 @@ def run_pipeline(
         "brief": result.brief,
         "vault_path": result.vault_path,
         "pipeline_result": result,
+        "depth": normalized_depth,
+        "depth_profile": profile,
+        "executed_council_round_count": len(result.council.rounds),
     }
 
 

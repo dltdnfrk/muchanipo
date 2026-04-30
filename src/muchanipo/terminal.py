@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, IO
 
 from src.pipeline.runner import run_pipeline
+from src.research.depth import normalize_depth
 
 
 JSON_SCHEMA_VERSION = 1
@@ -163,11 +164,11 @@ def terminal_app(
             raw_mode = _read_prompt(inp, out, "mode [auto/offline/online] (auto)> ")
             mode = (raw_mode or "").strip().lower()
             offline = _offline_from_mode(mode)
-            _run_from_app(topic, inp=inp, out=out, offline=offline, interview=True)
+            _run_from_app(topic, inp=inp, out=out, offline=offline, interview=True, depth="deep")
             _render_home(out)
             continue
         if command == "demo":
-            _run_from_app(DEMO_TOPIC, inp=inp, out=out, offline=True, interview=False)
+            _run_from_app(DEMO_TOPIC, inp=inp, out=out, offline=True, interview=False, depth="shallow")
             _render_home(out)
             continue
         if command == "runs":
@@ -196,7 +197,7 @@ def terminal_app(
             out.write("type /help for commands\n")
             out.flush()
             continue
-        _run_from_app(topic_or_choice, inp=inp, out=out, offline=None, interview=True)
+        _run_from_app(topic_or_choice, inp=inp, out=out, offline=None, interview=True, depth="deep")
         _render_home(out)
 
 
@@ -211,6 +212,7 @@ def terminal_run(
     dashboard: bool = False,
     pipeline_input: str | None = None,
     require_live: bool = False,
+    depth: str = "deep",
 ) -> TerminalRunResult:
     """Run the full pipeline as a terminal-native command.
 
@@ -219,6 +221,7 @@ def terminal_run(
     dependency on a TUI framework.
     """
     out = stdout or sys.stdout
+    normalized_depth = normalize_depth(depth)
     pipeline_topic = pipeline_input or topic
     paths = _resolve_paths(topic=topic, run_dir=run_dir, report_path=report_path)
     paths.run_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +255,7 @@ def terminal_run(
             "events_path": str(paths.events_path),
             "offline": offline,
             "require_live": require_live,
+            "depth": normalized_depth,
             "pipeline_input": pipeline_topic if pipeline_topic != topic else None,
             "created_at": _now_iso(),
         },
@@ -269,6 +273,7 @@ def terminal_run(
             progress_callback=emit_terminal,
             offline=offline,
             require_live=require_live,
+            depth=normalized_depth,
         )
     except KeyboardInterrupt as exc:
         status["finalize"] = "error"
@@ -283,6 +288,7 @@ def terminal_run(
             jsonl=jsonl,
             dashboard=dashboard,
             require_live=require_live,
+            depth=normalized_depth,
             event_name="terminal_run_interrupted",
             error_type="KeyboardInterrupt",
             message="interrupted by user",
@@ -301,6 +307,7 @@ def terminal_run(
             jsonl=jsonl,
             dashboard=dashboard,
             require_live=require_live,
+            depth=normalized_depth,
             event_name="terminal_run_error",
             error_type=type(exc).__name__,
             message=str(exc),
@@ -322,8 +329,11 @@ def terminal_run(
         "events_path": str(paths.events_path),
         "offline": offline,
         "require_live": require_live,
+        "depth": normalized_depth,
+        "target_runtime_seconds": getattr(result.get("depth_profile"), "target_runtime_seconds", None),
         "duration_sec": round(time.time() - started_at, 3),
         "round_count": len(result.get("rounds") or []),
+        "executed_council_round_count": int(result.get("executed_council_round_count") or 0),
         "brief_id": getattr(result.get("brief"), "id", None),
         "vault_path": str(result.get("vault_path") or ""),
         "completed_at": _now_iso(),
@@ -432,6 +442,7 @@ def _run_from_app(
     out: IO[str],
     offline: bool | None,
     interview: bool,
+    depth: str,
     require_live: bool = False,
 ) -> None:
     try:
@@ -443,6 +454,7 @@ def _run_from_app(
             dashboard=_supports_dashboard(out),
             pipeline_input=capture.pipeline_input if capture else None,
             require_live=require_live,
+            depth=depth,
         )
     except KeyboardInterrupt:
         out.write("\nRun interrupted; returning to Muchanipo home.\n")
@@ -531,6 +543,7 @@ def _record_terminal_failure(
     jsonl: bool,
     dashboard: bool,
     require_live: bool,
+    depth: str,
     event_name: str,
     error_type: str,
     message: str,
@@ -553,6 +566,7 @@ def _record_terminal_failure(
         "events_path": str(paths.events_path),
         "offline": offline,
         "require_live": require_live,
+        "depth": depth,
         "duration_sec": round(time.time() - started_at, 3),
         "error_type": error_type,
         "message": message,
