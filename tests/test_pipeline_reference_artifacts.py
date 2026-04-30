@@ -19,6 +19,7 @@ def korean_agtech_topic() -> str:
 class RecordingReferenceRunner:
     def __init__(self) -> None:
         self.last_plan = None
+        self.completed = False
 
     def run(self, plan):
         self.last_plan = plan
@@ -37,6 +38,7 @@ class RecordingReferenceRunner:
             )
             for idx, query in enumerate(plan.queries[:4], start=1)
         ]
+        self.completed = True
         return [Finding(claim=ref.quote or "", support=[ref], confidence=0.8) for ref in refs]
 
 
@@ -104,6 +106,10 @@ def reference_pipeline_run(tmp_path: Path, monkeypatch, korean_agtech_topic: str
 
     events = []
     runner = RecordingReferenceRunner()
+
+    def record_event(event):
+        events.append({**event, "_research_runner_completed": runner.completed})
+
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=HITLAdapter(mode="auto_approve"),
         research_runner=runner,
@@ -111,7 +117,7 @@ def reference_pipeline_run(tmp_path: Path, monkeypatch, korean_agtech_topic: str
         council_log_dir=tmp_path / "council",
         enable_learning=True,
         learning_log_path=tmp_path / "learnings.jsonl",
-        progress_callback=events.append,
+        progress_callback=record_event,
     )
     result = pipeline.run(korean_agtech_topic)
     return result, events, runner, captured_ontology, tmp_path
@@ -163,6 +169,7 @@ def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_ru
     assert "prefer academic APIs, official statistics, and local vault before general web snippets" in runner.last_plan.collection_rules
     assert event["artifacts"]["research_memory_store"] == "MemPalace"
     assert event["artifacts"]["research_memory_key"] == result.brief.id
+    assert event["_research_runner_completed"] is True
 
 
 def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipeline_run):
@@ -190,6 +197,7 @@ def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run
     assert event["artifacts"]["persona_validation_framework"] == "HACHIMI"
     assert event["artifacts"]["persona_diversity_framework"] == "MAP-Elites"
     assert event["artifacts"]["council_protocol"] == "OASIS / CAMEL-AI"
+    assert event["artifacts"]["council_id"] == result.report.id
     assert result.council.rounds
 
 

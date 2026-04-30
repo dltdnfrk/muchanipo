@@ -157,8 +157,8 @@ class IdeaToCouncilPipeline:
         state.record_artifact("research_memory_key", brief.id)
         state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
         state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
-        self._emit(state, Stage.RESEARCH)
         findings = list(self.research_runner.run(plan))
+        self._emit(state, Stage.RESEARCH)
 
         state.advance(Stage.EVIDENCE)
         evidence_store = EvidenceStore(require_live=self.require_live)
@@ -212,7 +212,6 @@ class IdeaToCouncilPipeline:
         state.advance(Stage.COUNCIL)
         for key, value in persona_telemetry.items():
             state.record_artifact(key, str(value))
-        self._emit(state, Stage.COUNCIL)
         council = KarpathySession(
             gateway=self.gateway_v2,
             layers=list(DEFAULT_LAYERS),
@@ -220,6 +219,7 @@ class IdeaToCouncilPipeline:
         )
         council.run_all()
         state.record_artifact("council_id", report.id)
+        self._emit(state, Stage.COUNCIL)
 
         reference_runtime_artifacts = build_reference_runtime_artifacts(
             report=report,
