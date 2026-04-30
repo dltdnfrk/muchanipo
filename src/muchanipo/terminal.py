@@ -26,6 +26,7 @@ from src.pipeline.runner import run_pipeline
 JSON_SCHEMA_VERSION = 1
 HOME_RECENT_RUN_LIMIT = 3
 HOME_FAILURE_SCAN_LIMIT = 50
+DEMO_TOPIC = "딸기 농가용 저비용 분자진단 키트 시장성"
 CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
     "muchanipo doctor": {
         "schema_version": JSON_SCHEMA_VERSION,
@@ -165,11 +166,21 @@ def terminal_app(
             _run_from_app(topic, inp=inp, out=out, offline=offline, interview=True)
             _render_home(out)
             continue
+        if command == "demo":
+            _run_from_app(DEMO_TOPIC, inp=inp, out=out, offline=True, interview=False)
+            _render_home(out)
+            continue
         if command == "runs":
             render_runs(stdout=out)
             continue
         if command == "status":
             render_cli_status(stdout=out)
+            continue
+        if command == "references":
+            render_references(stdout=out)
+            continue
+        if command == "contracts":
+            render_json_contracts(stdout=out)
             continue
         if command == "doctor":
             render_doctor(stdout=out)
@@ -463,9 +474,13 @@ def _normalize_home_command(choice: str) -> str | None:
         "/bye": "exit",
         "/new": "new",
         "/run": "new",
+        "/demo": "demo",
         "/runs": "runs",
         "/history": "runs",
         "/status": "status",
+        "/references": "references",
+        "/refs": "references",
+        "/contracts": "contracts",
         "/doctor": "doctor",
         "/help": "help",
         "/h": "help",
@@ -477,19 +492,26 @@ def _normalize_home_command(choice: str) -> str | None:
         "q": "exit",
         "quit": "exit",
         "exit": "exit",
-        "5": "exit",
         "1": "new",
         "new": "new",
         "n": "new",
-        "2": "runs",
+        "2": "demo",
+        "demo": "demo",
+        "3": "runs",
         "runs": "runs",
         "r": "runs",
-        "3": "status",
+        "4": "status",
         "status": "status",
         "s": "status",
+        "5": "references",
+        "references": "references",
+        "refs": "references",
+        "6": "contracts",
+        "contracts": "contracts",
+        "7": "doctor",
         "doctor": "doctor",
         "d": "doctor",
-        "4": "help",
+        "8": "help",
         "help": "help",
         "h": "help",
         "?": "help",
@@ -985,9 +1007,13 @@ def _render_home(out: IO[str], *, runs_dir: Path | None = None) -> None:
     out.write("Tip: type a topic directly to start research.\n\n")
     _render_home_runs(out, snapshot=snapshot)
     out.write("1. New research\n")
-    out.write("2. Runs\n")
-    out.write("3. CLI status\n")
-    out.write("4. Help\n")
+    out.write("2. Demo run\n")
+    out.write("3. Runs\n")
+    out.write("4. CLI status\n")
+    out.write("5. Reference readiness\n")
+    out.write("6. JSON contracts\n")
+    out.write("7. Doctor\n")
+    out.write("8. Help\n")
     out.write("q. Quit\n\n")
     out.flush()
 
@@ -1028,6 +1054,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("\nCommands\n")
     out.write("--------\n")
     out.write("muchanipo                         open this terminal app\n")
+    out.write("muchanipo demo                    run a deterministic offline demo\n")
     out.write("muchanipo \"topic\"                 start a dashboard run\n")
     out.write("muchanipo run \"topic\"             line-by-line run\n")
     out.write("muchanipo tui \"topic\"             dashboard run\n")
@@ -1038,8 +1065,11 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo doctor                  check local runtime readiness\n\n")
     out.write("Interactive slash commands\n")
     out.write("  /new, /run        start a new research run\n")
+    out.write("  /demo             run the deterministic offline demo\n")
     out.write("  /runs, /history   list previous runs\n")
     out.write("  /status           show local CLI provider status\n")
+    out.write("  /references       show reference runtime readiness\n")
+    out.write("  /contracts        show CLI JSON contracts\n")
     out.write("  /doctor           check local runtime readiness\n")
     out.write("  /help             show this help\n")
     out.write("  /clear, /home     redraw the home screen\n")

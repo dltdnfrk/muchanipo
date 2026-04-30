@@ -1,6 +1,10 @@
 """Muchanipo command line entrypoint.
 
 Modes:
+    demo
+        Deterministic offline sample run. Writes the same report, event log,
+        and summary artifacts as a normal run without asking interview
+        questions or requiring provider credentials.
     run
         Terminal-first full pipeline runner. Writes a report, event log, and
         summary under the local runs directory.
@@ -16,8 +20,9 @@ Modes:
         composes a real MBB 6-chapter document via ChapterMapper +
         PyramidFormatter and writes it to REPORT.md.
 
-Both modes use offline mock LLM providers (no network) so the Tauri shell
-can be exercised end-to-end without API keys.
+Offline mode and demo use mock providers so the CLI/TUI and Tauri shell can be
+exercised end-to-end without API keys. Online mode requires provider CLIs or
+API credentials and fails closed when live providers are requested but absent.
 """
 
 from __future__ import annotations
@@ -90,6 +95,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     references = sub.add_parser("references", help="Show reference-project runtime readiness")
     references.add_argument("--json", action="store_true", help="Print reference readiness as JSON")
+
+    demo = sub.add_parser("demo", help="Run a deterministic offline demo topic")
+    demo.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    demo.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    demo.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
+    demo.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
+    demo.add_argument("--offline", action="store_true", help="Accepted for symmetry; demo always runs offline")
 
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
@@ -537,7 +557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write("muchanipo: interrupted\n")
             return 130
 
-    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts", "references"}
+    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts", "references", "demo"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
@@ -628,6 +648,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             render_references(stdout=sys.stdout)
         return 0
+
+    if args.command == "demo":
+        from src.muchanipo.terminal import DEMO_TOPIC
+
+        return _run_terminal_safely(
+            DEMO_TOPIC,
+            report_path=Path(args.report_path) if args.report_path else None,
+            run_dir=Path(args.run_dir) if args.run_dir else None,
+            offline=True,
+            jsonl=bool(args.jsonl),
+            dashboard=(not bool(args.plain) and not bool(args.jsonl) and bool(getattr(sys.stdout, "isatty", lambda: False)())),
+            interview=False,
+            require_live=False,
+        )
 
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")

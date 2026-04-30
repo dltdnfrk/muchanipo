@@ -341,6 +341,52 @@ def test_terminal_app_supports_slash_doctor(monkeypatch):
     assert "fake doctor" in stdout.getvalue()
 
 
+def test_terminal_app_supports_references_and_contracts(monkeypatch):
+    calls = []
+
+    def fake_render_references(**kwargs):
+        calls.append(("references", kwargs))
+        kwargs["stdout"].write("fake references\n")
+        return {"schema_version": 1}
+
+    def fake_render_json_contracts(**kwargs):
+        calls.append(("contracts", kwargs))
+        kwargs["stdout"].write("fake contracts\n")
+        return {"schema_version": 1}
+
+    monkeypatch.setattr(terminal_mod, "render_references", fake_render_references)
+    monkeypatch.setattr(terminal_mod, "render_json_contracts", fake_render_json_contracts)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/references\n/contracts\n/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert [call[0] for call in calls] == ["references", "contracts"]
+    assert "fake references" in stdout.getvalue()
+    assert "fake contracts" in stdout.getvalue()
+
+
+def test_terminal_app_supports_slash_demo(monkeypatch):
+    calls = []
+
+    def fake_conduct_interview(*args, **kwargs):
+        raise AssertionError("demo must not conduct an interactive interview")
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "conduct_interview", fake_conduct_interview)
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/demo\nq\n"), stdout=stdout)
+
+    assert rc == 0
+    assert calls[0][0] == terminal_mod.DEMO_TOPIC
+    assert calls[0][1]["offline"] is True
+    assert calls[0][1]["pipeline_input"] is None
+
+
 def test_terminal_app_unknown_slash_command_does_not_start_research(monkeypatch):
     def fail_terminal_run(*args, **kwargs):
         raise AssertionError("unknown slash commands must not start research")
@@ -729,6 +775,28 @@ def test_main_runs_and_status_commands(monkeypatch):
     assert calls[1][0] == "status"
 
 
+def test_main_demo_command_runs_offline_without_interview(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_conduct_interview(*args, **kwargs):
+        raise AssertionError("demo must not conduct an interactive interview")
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "conduct_interview", fake_conduct_interview)
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["demo", "--jsonl", "--run-dir", str(tmp_path / "demo")]) == 0
+
+    assert calls[0][0] == terminal_mod.DEMO_TOPIC
+    assert calls[0][1]["offline"] is True
+    assert calls[0][1]["jsonl"] is True
+    assert calls[0][1]["dashboard"] is False
+    assert calls[0][1]["pipeline_input"] is None
+    assert calls[0][1]["run_dir"] == tmp_path / "demo"
+
+
 def test_main_doctor_command_returns_report_status(monkeypatch):
     calls = []
 
@@ -1037,3 +1105,21 @@ def test_subprocess_direct_topic_shortcut_can_force_offline(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert "Muchanipo run started: 서브프로세스 직접 실행" in proc.stdout
     assert (run_dir / "REPORT.md").exists()
+
+
+def test_subprocess_demo_command_completes_offline(tmp_path: Path):
+    run_dir = tmp_path / "demo"
+    proc = _run_muchanipo([
+        "demo",
+        "--plain",
+        "--run-dir",
+        str(run_dir),
+    ])
+
+    assert proc.returncode == 0, proc.stderr
+    assert f"Muchanipo run started: {terminal_mod.DEMO_TOPIC}" in proc.stdout
+    assert "Muchanipo run completed." in proc.stdout
+    assert (run_dir / "REPORT.md").exists()
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "completed"
+    assert summary["offline"] is True
