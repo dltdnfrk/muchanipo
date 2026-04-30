@@ -77,8 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     runs = sub.add_parser("runs", help="List recent terminal runs")
     runs.add_argument("--limit", type=int, default=10, help="Maximum runs to show")
+    runs.add_argument("--json", action="store_true", help="Print run summaries as JSON")
 
-    sub.add_parser("status", help="Show local provider CLI status")
+    status = sub.add_parser("status", help="Show local provider CLI status")
+    status.add_argument("--json", action="store_true", help="Print provider CLI status as JSON")
+
+    doctor = sub.add_parser("doctor", help="Check local runtime readiness")
+    doctor.add_argument("--json", action="store_true", help="Print readiness checks as JSON")
 
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
@@ -526,7 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write("muchanipo: interrupted\n")
             return 130
 
-    known_commands = {"run", "tui", "serve", "runs", "status"}
+    known_commands = {"run", "tui", "serve", "runs", "status", "doctor"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
@@ -572,16 +577,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     if args.command == "runs":
-        from src.muchanipo.terminal import render_runs
+        from src.muchanipo.terminal import render_runs, runs_report
 
-        render_runs(stdout=sys.stdout, limit=max(1, args.limit))
+        limit = max(1, args.limit)
+        if args.json:
+            _write_json(runs_report(limit=limit))
+        else:
+            render_runs(stdout=sys.stdout, limit=limit)
         return 0
 
     if args.command == "status":
-        from src.muchanipo.terminal import render_cli_status
+        from src.muchanipo.terminal import render_cli_status, status_report
 
-        render_cli_status(stdout=sys.stdout)
+        if args.json:
+            _write_json(status_report())
+        else:
+            render_cli_status(stdout=sys.stdout)
         return 0
+
+    if args.command == "doctor":
+        from src.muchanipo.terminal import doctor_report, render_doctor
+
+        if args.json:
+            report = doctor_report()
+            _write_json(report)
+        else:
+            report = render_doctor(stdout=sys.stdout)
+        return 0 if report["ok"] else 1
 
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")
@@ -702,6 +724,12 @@ def _default_interview_enabled(*, jsonl: bool) -> bool:
     if jsonl:
         return False
     return bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _write_json(value: Any) -> None:
+    import json
+
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 if __name__ == "__main__":

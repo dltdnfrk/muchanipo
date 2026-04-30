@@ -23,6 +23,8 @@ from typing import Any, IO
 from src.pipeline.runner import run_pipeline
 
 
+JSON_SCHEMA_VERSION = 1
+
 STAGE_LABELS: dict[str, str] = {
     "intake": "아이디어 접수",
     "interview": "인터뷰 / 요구사항 정리",
@@ -114,6 +116,9 @@ def terminal_app(
             continue
         if command == "status":
             render_cli_status(stdout=out)
+            continue
+        if command == "doctor":
+            render_doctor(stdout=out)
             continue
         if command == "help":
             _render_help(out)
@@ -407,7 +412,7 @@ def _normalize_home_command(choice: str) -> str | None:
         "/runs": "runs",
         "/history": "runs",
         "/status": "status",
-        "/doctor": "status",
+        "/doctor": "doctor",
         "/help": "help",
         "/h": "help",
         "/?": "help",
@@ -428,6 +433,8 @@ def _normalize_home_command(choice: str) -> str | None:
         "3": "status",
         "status": "status",
         "s": "status",
+        "doctor": "doctor",
+        "d": "doctor",
         "4": "help",
         "help": "help",
         "h": "help",
@@ -548,6 +555,160 @@ def render_cli_status(*, stdout: IO[str] | None = None) -> list[dict[str, Any]]:
     return statuses
 
 
+def status_report() -> dict[str, Any]:
+    """Return provider CLI status in a stable JSON shape."""
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo status",
+        "providers": cli_statuses(),
+    }
+
+
+def doctor_report(*, runs_dir: Path | None = None) -> dict[str, Any]:
+    """Return local readiness checks for the TUI-first CLI runtime."""
+    root = runs_dir or _default_runs_dir()
+    cli_records = cli_statuses()
+    installed_clis = [item["name"] for item in cli_records if item.get("installed")]
+    checks = [
+        _python_check(),
+        _entrypoint_check(),
+        _runs_dir_check(root),
+        {
+            "name": "provider_clis",
+            "ok": bool(installed_clis),
+            "severity": "warning",
+            "detail": ", ".join(installed_clis) if installed_clis else "no provider CLIs found; offline mode remains available",
+            "hint": "Install/login to claude, codex, gemini, kimi, or opencode for online runs.",
+        },
+        _provider_probe_check(cli_records),
+        _execution_mode_check(cli_records),
+    ]
+    status = _overall_status(checks)
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo doctor",
+        "ok": all(item["ok"] or item["severity"] != "error" for item in checks),
+        "status": status,
+        "runs_dir": str(root),
+        "checks": checks,
+        "cli_statuses": cli_records,
+        "recommendations": _doctor_recommendations(checks),
+    }
+
+
+def render_doctor(
+    *,
+    stdout: IO[str] | None = None,
+    runs_dir: Path | None = None,
+) -> dict[str, Any]:
+    out = stdout or sys.stdout
+    report = doctor_report(runs_dir=runs_dir)
+    out.write("\nDoctor\n")
+    out.write("------\n")
+    out.write(f"Runs dir: {report['runs_dir']}\n")
+    for item in report["checks"]:
+        marker = "OK" if item["ok"] else "WARN" if item["severity"] == "warning" else "FAIL"
+        out.write(f"[{marker}] {item['name']}: {item['detail']}\n")
+        if not item["ok"] and item.get("hint"):
+            out.write(f"       {item['hint']}\n")
+    out.write("\n")
+    out.flush()
+    return report
+
+
+def _python_check() -> dict[str, Any]:
+    ok = sys.version_info >= (3, 11)
+    return {
+        "name": "python",
+        "ok": ok,
+        "severity": "warning",
+        "detail": sys.version.split()[0] if ok else f"{sys.version.split()[0]} works for tests; package target is 3.11+",
+        "hint": "Use Python 3.11 or newer for packaged installs.",
+    }
+
+
+def _entrypoint_check() -> dict[str, Any]:
+    installed = shutil.which("muchanipo")
+    local_script = _repo_root() / "bin" / "muchanipo"
+    ok = bool(installed or local_script.exists())
+    detail = installed or (str(local_script) if local_script.exists() else "not found")
+    return {
+        "name": "entrypoint",
+        "ok": ok,
+        "severity": "warning",
+        "detail": detail,
+        "hint": "Install the package or run via bin/muchanipo / python3 -m muchanipo.",
+    }
+
+
+def _provider_probe_check(records: list[dict[str, Any]]) -> dict[str, Any]:
+    failed = [
+        f"{item['name']}: {item['error']}"
+        for item in records
+        if item.get("installed") and item.get("error")
+    ]
+    return {
+        "name": "provider_probe",
+        "ok": not failed,
+        "severity": "warning",
+        "detail": "; ".join(failed) if failed else "installed provider CLIs responded to version probes",
+        "hint": "Run the affected provider CLI directly and complete login/setup.",
+    }
+
+
+def _execution_mode_check(records: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        from src.muchanipo.server import _detect_offline_mode
+
+        offline_default = _detect_offline_mode()
+    except Exception:
+        offline_default = True
+    installed = [item["name"] for item in records if item.get("installed")]
+    api_envs = [
+        key
+        for key in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENAI_API_KEY",
+            "KIMI_API_KEY",
+            "MOONSHOT_API_KEY",
+        )
+        if os.environ.get(key)
+    ]
+    if offline_default:
+        detail = "default mode is offline/mock; online runs need provider CLI or API setup"
+    else:
+        sources = installed or api_envs
+        detail = "default mode is online-capable"
+        if sources:
+            detail += f" via {', '.join(sources)}"
+    return {
+        "name": "execution_mode",
+        "ok": True,
+        "severity": "info",
+        "detail": detail,
+        "hint": "Use --offline for deterministic mock runs or --online to require live providers.",
+    }
+
+
+def _overall_status(checks: list[dict[str, Any]]) -> str:
+    if any(not item["ok"] and item["severity"] == "error" for item in checks):
+        return "fail"
+    if any(not item["ok"] and item["severity"] == "warning" for item in checks):
+        return "warning"
+    return "ok"
+
+
+def _doctor_recommendations(checks: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(item.get("hint") or "")
+        for item in checks
+        if not item.get("ok") and item.get("hint")
+    ]
+
+
 def list_runs(*, runs_dir: Path | None = None, limit: int = 10) -> list[dict[str, Any]]:
     root = runs_dir or _default_runs_dir()
     if not root.exists():
@@ -563,6 +724,22 @@ def list_runs(*, runs_dir: Path | None = None, limit: int = 10) -> list[dict[str
             records.append(summary)
     records.sort(key=lambda item: str(item.get("completed_at") or item.get("run_id") or ""), reverse=True)
     return records[:limit]
+
+
+def runs_report(
+    *,
+    runs_dir: Path | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    root = runs_dir or _default_runs_dir()
+    safe_limit = max(1, limit)
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo runs",
+        "runs_dir": str(root),
+        "limit": safe_limit,
+        "runs": list_runs(runs_dir=root, limit=safe_limit),
+    }
 
 
 def render_runs(
@@ -608,6 +785,33 @@ def _first_error_line(text: str) -> str:
     return ""
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _runs_dir_check(root: Path) -> dict[str, Any]:
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".muchanipo-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except Exception as exc:
+        return {
+            "name": "runs_dir",
+            "ok": False,
+            "severity": "error",
+            "detail": f"{root} is not writable: {_first_error_line(str(exc))}",
+            "hint": "Set MUCHANIPO_RUNS_DIR to a writable directory.",
+        }
+    return {
+        "name": "runs_dir",
+        "ok": True,
+        "severity": "error",
+        "detail": f"{root} is writable",
+        "hint": "",
+    }
+
+
 def _resolve_paths(
     *,
     topic: str,
@@ -648,10 +852,12 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo tui \"topic\"             dashboard run\n")
     out.write("muchanipo runs                    list previous runs\n")
     out.write("muchanipo status                  show local CLI provider status\n\n")
+    out.write("muchanipo doctor                  check local runtime readiness\n\n")
     out.write("Interactive slash commands\n")
     out.write("  /new, /run        start a new research run\n")
     out.write("  /runs, /history   list previous runs\n")
-    out.write("  /status, /doctor  show local CLI provider status\n")
+    out.write("  /status           show local CLI provider status\n")
+    out.write("  /doctor           check local runtime readiness\n")
     out.write("  /help             show this help\n")
     out.write("  /clear, /home     redraw the home screen\n")
     out.write("  /exit, /quit, /q  exit Muchanipo\n\n")

@@ -139,9 +139,22 @@ muchanipo "딸기 농가용 저비용 분자진단 키트 시장성"
 # Explicit modes
 muchanipo run "딸기 진단키트 시장성" --offline
 muchanipo tui "딸기 진단키트 시장성" --online
+muchanipo doctor
 muchanipo status
 muchanipo runs
+
+# Scriptable inspection
+muchanipo doctor --json
+muchanipo status --json
+muchanipo runs --json --limit 5
 ```
+
+JSON inspection commands return stable objects with `schema_version`,
+`command`, and command-specific payloads:
+
+- `doctor --json`: `status`, `checks`, `cli_statuses`, `recommendations`
+- `status --json`: `providers`
+- `runs --json`: `runs_dir`, `limit`, `runs`
 
 Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by
 default:

@@ -323,6 +323,24 @@ def test_terminal_app_supports_slash_status_and_runs(monkeypatch):
     assert "fake status" in stdout.getvalue()
 
 
+def test_terminal_app_supports_slash_doctor(monkeypatch):
+    calls = []
+
+    def fake_render_doctor(**kwargs):
+        calls.append(kwargs)
+        kwargs["stdout"].write("fake doctor\n")
+        return {"ok": True}
+
+    monkeypatch.setattr(terminal_mod, "render_doctor", fake_render_doctor)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/doctor\n/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert calls
+    assert "fake doctor" in stdout.getvalue()
+
+
 def test_terminal_app_unknown_slash_command_does_not_start_research(monkeypatch):
     def fail_terminal_run(*args, **kwargs):
         raise AssertionError("unknown slash commands must not start research")
@@ -651,6 +669,54 @@ def test_main_runs_and_status_commands(monkeypatch):
     assert calls[1][0] == "status"
 
 
+def test_main_doctor_command_returns_report_status(monkeypatch):
+    calls = []
+
+    def fake_render_doctor(**kwargs):
+        calls.append(kwargs)
+        return {"ok": False}
+
+    monkeypatch.setattr(terminal_mod, "render_doctor", fake_render_doctor)
+
+    assert server_mod.main(["doctor"]) == 1
+    assert calls
+
+
+def test_main_runs_status_and_doctor_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        terminal_mod,
+        "list_runs",
+        lambda **kwargs: [{"run_id": "run-json", "topic": "json topic"}],
+    )
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_statuses",
+        lambda: [{"name": "claude", "installed": True, "path": "/bin/claude"}],
+    )
+    monkeypatch.setattr(
+        terminal_mod,
+        "doctor_report",
+        lambda: {"schema_version": 1, "ok": True, "status": "ok", "runs_dir": "/tmp/runs", "checks": []},
+    )
+
+    assert server_mod.main(["runs", "--json"]) == 0
+    runs = json.loads(capsys.readouterr().out)
+    assert runs["schema_version"] == 1
+    assert runs["command"] == "muchanipo runs"
+    assert runs["runs"][0]["run_id"] == "run-json"
+
+    assert server_mod.main(["status", "--json"]) == 0
+    statuses = json.loads(capsys.readouterr().out)
+    assert statuses["schema_version"] == 1
+    assert statuses["command"] == "muchanipo status"
+    assert statuses["providers"][0]["name"] == "claude"
+
+    assert server_mod.main(["doctor", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert report["schema_version"] == 1
+
+
 def test_cli_statuses_records_nonzero_version_probe(monkeypatch):
     def fake_resolve(name, env_var):
         return f"/fake/{name}" if name == "claude" else None
@@ -717,6 +783,69 @@ def test_render_cli_status_formats_installed_errors_and_missing(monkeypatch):
     assert "[OK] claude" in text
     assert "installed; version probe failed: auth missing" in text
     assert "[--] codex" in text
+
+
+def test_render_doctor_reports_runs_dir_and_warning(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(terminal_mod, "cli_statuses", lambda: [])
+    stdout = io.StringIO()
+
+    report = terminal_mod.render_doctor(stdout=stdout, runs_dir=tmp_path / "runs")
+
+    text = stdout.getvalue()
+    assert report["ok"] is True
+    assert report["schema_version"] == 1
+    assert report["command"] == "muchanipo doctor"
+    assert report["status"] == "warning"
+    assert "Doctor" in text
+    assert "[OK] runs_dir" in text
+    assert "[WARN] provider_clis" in text
+
+
+def test_doctor_report_marks_provider_probe_failures_as_warning(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_statuses",
+        lambda: [
+            {
+                "name": "claude",
+                "installed": True,
+                "path": "/bin/claude",
+                "version": None,
+                "error": "auth missing",
+            }
+        ],
+    )
+
+    report = terminal_mod.doctor_report(runs_dir=tmp_path / "runs")
+
+    probe = next(item for item in report["checks"] if item["name"] == "provider_probe")
+    assert report["ok"] is True
+    assert report["status"] == "warning"
+    assert probe["ok"] is False
+    assert "auth missing" in probe["detail"]
+
+
+def test_status_and_runs_reports_have_stable_json_shape(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_statuses",
+        lambda: [{"name": "codex", "installed": True, "path": "/bin/codex"}],
+    )
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps({"run_id": "r1", "topic": "shape test", "completed_at": "2026-04-30T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    status = terminal_mod.status_report()
+    runs = terminal_mod.runs_report(runs_dir=tmp_path / "runs", limit=5)
+
+    assert status["schema_version"] == 1
+    assert status["providers"][0]["name"] == "codex"
+    assert runs["schema_version"] == 1
+    assert runs["limit"] == 5
+    assert runs["runs"][0]["run_id"] == "r1"
 
 
 def test_subprocess_no_args_menu_quits_without_hanging(tmp_path: Path):
