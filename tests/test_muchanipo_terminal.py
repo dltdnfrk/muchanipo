@@ -278,6 +278,65 @@ def test_terminal_app_quits_cleanly_on_q():
     assert "bye" in stdout.getvalue()
 
 
+def test_terminal_app_supports_slash_exit():
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert "bye" in stdout.getvalue()
+
+
+def test_terminal_app_supports_slash_help_and_clear():
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/help\n/clear\n/exit\n"), stdout=stdout)
+
+    text = stdout.getvalue()
+    assert rc == 0
+    assert "Interactive slash commands" in text
+    assert text.count("Muchanipo") >= 2
+
+
+def test_terminal_app_supports_slash_status_and_runs(monkeypatch):
+    calls = []
+
+    def fake_render_runs(**kwargs):
+        calls.append(("runs", kwargs))
+        kwargs["stdout"].write("fake runs\n")
+        return []
+
+    def fake_render_cli_status(**kwargs):
+        calls.append(("status", kwargs))
+        kwargs["stdout"].write("fake status\n")
+        return []
+
+    monkeypatch.setattr(terminal_mod, "render_runs", fake_render_runs)
+    monkeypatch.setattr(terminal_mod, "render_cli_status", fake_render_cli_status)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/runs\n/status\n/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert [call[0] for call in calls] == ["runs", "status"]
+    assert "fake runs" in stdout.getvalue()
+    assert "fake status" in stdout.getvalue()
+
+
+def test_terminal_app_unknown_slash_command_does_not_start_research(monkeypatch):
+    def fail_terminal_run(*args, **kwargs):
+        raise AssertionError("unknown slash commands must not start research")
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fail_terminal_run)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/wat\n/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert "unknown command: /wat" in stdout.getvalue()
+    assert "type /help for commands" in stdout.getvalue()
+
+
 def test_terminal_app_exits_cleanly_on_piped_eof():
     stdout = io.StringIO()
 

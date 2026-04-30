@@ -87,11 +87,12 @@ def terminal_app(
         if choice == "":
             _render_home(out)
             continue
-        if choice in {"q", "quit", "exit", "5"}:
+        command = _normalize_home_command(choice)
+        if command == "exit":
             out.write("bye\n")
             out.flush()
             return 0
-        if choice in {"1", "new", "n"}:
+        if command == "new":
             raw_topic = _read_prompt(inp, out, "topic> ")
             if raw_topic is None:
                 out.write("bye\n")
@@ -108,14 +109,22 @@ def terminal_app(
             _run_from_app(topic, inp=inp, out=out, offline=offline, interview=True)
             _render_home(out)
             continue
-        if choice in {"2", "runs", "r"}:
+        if command == "runs":
             render_runs(stdout=out)
             continue
-        if choice in {"3", "status", "s"}:
+        if command == "status":
             render_cli_status(stdout=out)
             continue
-        if choice in {"4", "help", "h", "?"}:
+        if command == "help":
             _render_help(out)
+            continue
+        if command == "home":
+            _render_home(out)
+            continue
+        if choice.startswith("/"):
+            out.write(f"unknown command: {topic_or_choice}\n")
+            out.write("type /help for commands\n")
+            out.flush()
             continue
         _run_from_app(topic_or_choice, inp=inp, out=out, offline=None, interview=True)
         _render_home(out)
@@ -387,6 +396,46 @@ def _interview_answer_label(qid: str) -> str | None:
     }.get(qid)
 
 
+def _normalize_home_command(choice: str) -> str | None:
+    slash_aliases = {
+        "/q": "exit",
+        "/quit": "exit",
+        "/exit": "exit",
+        "/bye": "exit",
+        "/new": "new",
+        "/run": "new",
+        "/runs": "runs",
+        "/history": "runs",
+        "/status": "status",
+        "/doctor": "status",
+        "/help": "help",
+        "/h": "help",
+        "/?": "help",
+        "/clear": "home",
+        "/home": "home",
+    }
+    plain_aliases = {
+        "q": "exit",
+        "quit": "exit",
+        "exit": "exit",
+        "5": "exit",
+        "1": "new",
+        "new": "new",
+        "n": "new",
+        "2": "runs",
+        "runs": "runs",
+        "r": "runs",
+        "3": "status",
+        "status": "status",
+        "s": "status",
+        "4": "help",
+        "help": "help",
+        "h": "help",
+        "?": "help",
+    }
+    return slash_aliases.get(choice) or plain_aliases.get(choice)
+
+
 def _record_terminal_failure(
     *,
     paths: TerminalRunPaths,
@@ -599,6 +648,13 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo tui \"topic\"             dashboard run\n")
     out.write("muchanipo runs                    list previous runs\n")
     out.write("muchanipo status                  show local CLI provider status\n\n")
+    out.write("Interactive slash commands\n")
+    out.write("  /new, /run        start a new research run\n")
+    out.write("  /runs, /history   list previous runs\n")
+    out.write("  /status, /doctor  show local CLI provider status\n")
+    out.write("  /help             show this help\n")
+    out.write("  /clear, /home     redraw the home screen\n")
+    out.write("  /exit, /quit, /q  exit Muchanipo\n\n")
     out.flush()
 
 
