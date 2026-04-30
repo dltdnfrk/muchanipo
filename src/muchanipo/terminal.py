@@ -26,6 +26,45 @@ from src.pipeline.runner import run_pipeline
 JSON_SCHEMA_VERSION = 1
 HOME_RECENT_RUN_LIMIT = 3
 HOME_FAILURE_SCAN_LIMIT = 50
+CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
+    "muchanipo doctor": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "Local runtime readiness for the TUI-first CLI.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "ok",
+            "status",
+            "runs_dir",
+            "checks",
+            "cli_statuses",
+            "recommendations",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
+    "muchanipo status": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "Installed/version status for provider CLIs.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "providers",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
+    "muchanipo runs": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "Recent terminal run summaries loaded from summary.json artifacts.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "runs_dir",
+            "limit",
+            "runs",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
+}
 
 STAGE_LABELS: dict[str, str] = {
     "intake": "아이디어 접수",
@@ -566,6 +605,39 @@ def status_report() -> dict[str, Any]:
     }
 
 
+def json_contracts_report() -> dict[str, Any]:
+    """Return the documented CLI JSON contracts in a stable JSON shape."""
+    contracts: dict[str, Any] = {}
+    for command, contract in CLI_JSON_CONTRACTS_V1.items():
+        contracts[command] = {
+            "schema_version": contract["schema_version"],
+            "description": contract["description"],
+            "required_top_level_keys": list(contract["required_top_level_keys"]),
+            "compatibility": contract["compatibility"],
+        }
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo contracts",
+        "contracts": contracts,
+    }
+
+
+def render_json_contracts(*, stdout: IO[str] | None = None) -> dict[str, Any]:
+    out = stdout or sys.stdout
+    report = json_contracts_report()
+    out.write("\nCLI JSON contracts\n")
+    out.write("------------------\n")
+    for command, contract in report["contracts"].items():
+        keys = ", ".join(contract["required_top_level_keys"])
+        out.write(f"{command} --json\n")
+        out.write(f"  schema_version: {contract['schema_version']}\n")
+        out.write(f"  required keys: {keys}\n")
+        out.write(f"  compatibility: {contract['compatibility']}\n")
+    out.write("\n")
+    out.flush()
+    return report
+
+
 def doctor_report(*, runs_dir: Path | None = None) -> dict[str, Any]:
     """Return local readiness checks for the TUI-first CLI runtime."""
     root = runs_dir or _default_runs_dir()
@@ -915,6 +987,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo tui \"topic\"             dashboard run\n")
     out.write("muchanipo runs                    list previous runs\n")
     out.write("muchanipo status                  show local CLI provider status\n\n")
+    out.write("muchanipo contracts               show CLI JSON contracts\n")
     out.write("muchanipo doctor                  check local runtime readiness\n\n")
     out.write("Interactive slash commands\n")
     out.write("  /new, /run        start a new research run\n")

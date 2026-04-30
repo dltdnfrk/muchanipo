@@ -777,6 +777,58 @@ def test_main_runs_status_and_doctor_json(monkeypatch, capsys):
     assert report["schema_version"] == 1
 
 
+def test_main_contracts_json_documents_cli_json_contracts(capsys):
+    assert server_mod.main(["contracts", "--json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    contracts = report["contracts"]
+    assert report["schema_version"] == 1
+    assert report["command"] == "muchanipo contracts"
+    assert set(contracts) == {"muchanipo doctor", "muchanipo status", "muchanipo runs"}
+    assert contracts["muchanipo doctor"]["required_top_level_keys"] == [
+        "schema_version",
+        "command",
+        "ok",
+        "status",
+        "runs_dir",
+        "checks",
+        "cli_statuses",
+        "recommendations",
+    ]
+
+
+def test_cli_json_reports_satisfy_documented_contracts(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_statuses",
+        lambda: [{"name": "codex", "installed": True, "path": "/bin/codex"}],
+    )
+    reports = {
+        "muchanipo doctor": terminal_mod.doctor_report(runs_dir=tmp_path / "runs"),
+        "muchanipo status": terminal_mod.status_report(),
+        "muchanipo runs": terminal_mod.runs_report(runs_dir=tmp_path / "runs"),
+    }
+    contracts = terminal_mod.json_contracts_report()["contracts"]
+
+    for command, report in reports.items():
+        contract = contracts[command]
+        assert report["schema_version"] == contract["schema_version"]
+        assert report["command"] == command
+        assert set(contract["required_top_level_keys"]).issubset(report)
+
+
+def test_render_json_contracts_formats_human_summary():
+    stdout = io.StringIO()
+
+    report = terminal_mod.render_json_contracts(stdout=stdout)
+
+    assert report["schema_version"] == 1
+    text = stdout.getvalue()
+    assert "CLI JSON contracts" in text
+    assert "muchanipo doctor --json" in text
+    assert "required keys: schema_version, command, ok" in text
+
+
 def test_cli_statuses_records_nonzero_version_probe(monkeypatch):
     def fake_resolve(name, env_var):
         return f"/fake/{name}" if name == "claude" else None

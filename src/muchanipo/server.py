@@ -85,6 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Check local runtime readiness")
     doctor.add_argument("--json", action="store_true", help="Print readiness checks as JSON")
 
+    contracts = sub.add_parser("contracts", help="Show stable CLI JSON output contracts")
+    contracts.add_argument("--json", action="store_true", help="Print JSON contracts as JSON")
+
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
     serve.add_argument(
@@ -531,7 +534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write("muchanipo: interrupted\n")
             return 130
 
-    known_commands = {"run", "tui", "serve", "runs", "status", "doctor"}
+    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
@@ -604,6 +607,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             report = render_doctor(stdout=sys.stdout)
         return 0 if report["ok"] else 1
+
+    if args.command == "contracts":
+        from src.muchanipo.terminal import json_contracts_report, render_json_contracts
+
+        if args.json:
+            _write_json(json_contracts_report())
+        else:
+            render_json_contracts(stdout=sys.stdout)
+        return 0
 
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")

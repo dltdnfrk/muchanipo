@@ -142,11 +142,13 @@ muchanipo tui "딸기 진단키트 시장성" --online
 muchanipo doctor
 muchanipo status
 muchanipo runs
+muchanipo contracts
 
 # Scriptable inspection
 muchanipo doctor --json
 muchanipo status --json
 muchanipo runs --json --limit 5
+muchanipo contracts --json
 ```
 
 The no-argument home screen reads the same run summaries and shows the latest
@@ -158,6 +160,9 @@ JSON inspection commands return stable objects with `schema_version`,
 - `doctor --json`: `status`, `checks`, `cli_statuses`, `recommendations`
 - `status --json`: `providers`
 - `runs --json`: `runs_dir`, `limit`, `runs`
+
+See `docs/cli-json-contracts.md` or `muchanipo contracts --json` for the
+current required top-level keys.
 
 Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by
 default:
