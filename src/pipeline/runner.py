@@ -43,6 +43,19 @@ STAGE_MAP = {
     "done": "finalize",
 }
 
+PROGRESS_STAGE_ORDER: tuple[str, ...] = (
+    "intake",
+    "interview",
+    "targeting",
+    "research",
+    "evidence",
+    "council",
+    "report",
+    "vault",
+    "agents",
+    "finalize",
+)
+
 
 def round_result_to_digest(
     round_result: Any,
@@ -106,17 +119,40 @@ def run_pipeline(
     live_required = live_requested_from_env()
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
+    started_stages: set[str] = set()
+
+    def emit_stage_started(stage: str, event: dict[str, Any] | None = None) -> None:
+        if progress_callback is None or stage in started_stages:
+            return
+        started_stages.add(stage)
+        payload = {"stage": stage}
+        if event:
+            payload.update({key: value for key, value in event.items() if key != "stage"})
+            payload["stage"] = stage
+        progress_callback({"event": "stage_started", **payload})
+
+    def next_progress_stage(stage: str) -> str | None:
+        try:
+            idx = PROGRESS_STAGE_ORDER.index(stage)
+        except ValueError:
+            return None
+        if idx + 1 >= len(PROGRESS_STAGE_ORDER):
+            return None
+        return PROGRESS_STAGE_ORDER[idx + 1]
 
     def handle_progress(event: dict[str, Any]) -> None:
         raw_stage = str(event.get("stage") or "")
         stage = STAGE_MAP.get(raw_stage)
         if stage is None or stage in emitted_stages:
             return
+        emit_stage_started(stage, event)
         emitted_stages.add(stage)
         if progress_callback is not None:
             payload = {**event, "stage": stage}
-            progress_callback({"event": "stage_started", **payload})
             progress_callback({"event": "stage_completed", **payload})
+            next_stage = next_progress_stage(stage)
+            if next_stage is not None:
+                emit_stage_started(next_stage, {"run_id": event.get("run_id")})
 
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
@@ -131,6 +167,7 @@ def run_pipeline(
         progress_callback=handle_progress,
         require_live=live_required,
     )
+    emit_stage_started("intake", {"topic": topic})
     result = pipeline.run(topic)
 
     rounds = _digests_from_result(result)

@@ -56,6 +56,20 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
     ]
     completed = [event["stage"] for event in events if event["event"] == "stage_completed"]
     assert completed == started
+    assert [
+        (event["event"], event["stage"])
+        for event in events[:4]
+    ] == [
+        ("stage_started", "intake"),
+        ("stage_completed", "intake"),
+        ("stage_started", "interview"),
+        ("stage_completed", "interview"),
+    ]
+    started_targeting = next(
+        event for event in events
+        if event["event"] == "stage_started" and event["stage"] == "targeting"
+    )
+    assert "reference_step" not in started_targeting
 
 
 def test_run_pipeline_uses_human_gate_only_when_live_requested(monkeypatch):
