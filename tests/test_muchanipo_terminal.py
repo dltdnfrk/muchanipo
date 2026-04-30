@@ -11,6 +11,7 @@ import pytest
 
 from src.muchanipo import server as server_mod
 from src.muchanipo import terminal as terminal_mod
+from src.runtime.live_mode import LiveModeViolation
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -79,6 +80,41 @@ def test_terminal_run_writes_report_events_and_summary(tmp_path: Path, monkeypat
     assert events[-1]["event"] == "terminal_run_done"
 
 
+def test_terminal_run_persists_canonical_stage_order_to_events_jsonl(tmp_path: Path, monkeypatch):
+    def full_stage_run(topic, *, progress_callback=None, offline=None, require_live=None):
+        assert progress_callback is not None
+        for stage in terminal_mod.STAGE_ORDER:
+            progress_callback({"event": "stage_started", "stage": stage})
+            progress_callback({"event": "stage_completed", "stage": stage})
+        return {
+            "report_md": "# stage ordered\n",
+            "rounds": [],
+            "brief": type("Brief", (), {"id": "brief-stage"})(),
+            "vault_path": Path("/tmp/stage-vault.md"),
+        }
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", full_stage_run)
+
+    result = terminal_mod.terminal_run(
+        "단계 순서 검증",
+        stdout=io.StringIO(),
+        run_dir=tmp_path / "run",
+        offline=True,
+    )
+
+    events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
+    stage_events = [event for event in events if event.get("stage")]
+    expected = [
+        {"event": event_name, "stage": stage}
+        for stage in terminal_mod.STAGE_ORDER
+        for event_name in ("stage_started", "stage_completed")
+    ]
+    assert [{"event": event["event"], "stage": event["stage"]} for event in stage_events] == expected
+    assert events[0]["event"] == "terminal_run_started"
+    assert events[-1]["event"] == "terminal_run_done"
+    assert set(result.stage_status.values()) == {"done"}
+
+
 def test_terminal_run_jsonl_prints_machine_events(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(terminal_mod, "run_pipeline", _fake_run_pipeline)
     stdout = io.StringIO()
@@ -144,6 +180,37 @@ def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monk
     assert summary["error_type"] == "RuntimeError"
     assert events[-1]["event"] == "terminal_run_error"
     assert "Partial artifacts were saved." in stdout.getvalue()
+
+
+def test_run_online_live_violation_fails_closed_and_persists_failure_artifacts(tmp_path: Path, monkeypatch, capsys):
+    def live_gate_failure(topic, *, progress_callback=None, offline=None, require_live=None):
+        assert offline is False
+        assert require_live is True
+        if progress_callback:
+            progress_callback({"event": "stage_started", "stage": "evidence"})
+        raise LiveModeViolation("live evidence missing")
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", live_gate_failure)
+    run_dir = tmp_path / "online-failed"
+
+    rc = server_mod.main([
+        "run",
+        "live gate topic",
+        "--online",
+        "--run-dir",
+        str(run_dir),
+    ])
+
+    assert rc == 1
+    assert "muchanipo: run failed: LiveModeViolation: live evidence missing" in capsys.readouterr().err
+    assert not (run_dir / "REPORT.md").exists()
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert summary["status"] == "failed"
+    assert summary["offline"] is False
+    assert summary["require_live"] is True
+    assert summary["error_type"] == "LiveModeViolation"
+    assert events[-1]["event"] == "terminal_run_error"
 
 
 def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Path, monkeypatch):
@@ -393,6 +460,35 @@ def test_main_direct_topic_shortcut_can_force_interview(monkeypatch):
     assert "[Q1_research_question] 좁힌 질문" in calls[0][1]["pipeline_input"]
 
 
+def test_main_direct_topic_shortcut_forced_interview_runs_before_terminal_run(monkeypatch):
+    calls = []
+
+    def fake_conduct_interview(topic, **kwargs):
+        calls.append(("conduct_interview", topic, kwargs))
+        return terminal_mod.InterviewCapture(
+            original_topic=topic,
+            pipeline_input="[원 요청] 딸기 시장성\n[Q1_research_question] 좁힌 질문\n[Q6_quality] 강한 출처",
+            mode="deep",
+            answered=2,
+        )
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append(("terminal_run", topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "conduct_interview", fake_conduct_interview)
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기 시장성", "--interview"]) == 0
+
+    assert [call[0] for call in calls] == ["conduct_interview", "terminal_run"]
+    assert calls[1][1] == "딸기 시장성"
+    pipeline_input = calls[1][2]["pipeline_input"]
+    assert pipeline_input != "딸기 시장성"
+    assert "[원 요청] 딸기 시장성" in pipeline_input
+    assert "[Q1_research_question] 좁힌 질문" in pipeline_input
+    assert "[Q6_quality] 강한 출처" in pipeline_input
+
+
 def test_main_direct_topic_shortcut_no_interview_keeps_raw_topic(monkeypatch):
     calls = []
 
@@ -403,6 +499,25 @@ def test_main_direct_topic_shortcut_no_interview_keeps_raw_topic(monkeypatch):
 
     assert server_mod.main(["딸기 시장성", "--no-interview"]) == 0
     assert calls[0][0] == "딸기 시장성"
+    assert calls[0][1]["pipeline_input"] is None
+
+
+def test_main_direct_topic_shortcut_jsonl_disables_interview_and_never_reads_stdin(monkeypatch):
+    calls = []
+
+    def fail_interview(*args, **kwargs):
+        raise AssertionError("jsonl shortcut must not conduct an interactive interview")
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(terminal_mod, "conduct_interview", fail_interview)
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기 시장성", "--jsonl"]) == 0
+
+    assert calls[0][0] == "딸기 시장성"
+    assert calls[0][1]["jsonl"] is True
     assert calls[0][1]["pipeline_input"] is None
 
 
@@ -508,6 +623,21 @@ def test_cli_statuses_records_timeout(monkeypatch):
     kimi = next(item for item in terminal_mod.cli_statuses() if item["name"] == "kimi")
     assert kimi["installed"] is True
     assert "timed out" in kimi["error"]
+
+
+def test_cli_statuses_records_oserror_without_crashing(monkeypatch):
+    def fake_resolve(name, env_var):
+        return f"/fake/{name}" if name == "codex" else None
+
+    def fake_run(args, **kwargs):
+        raise OSError("Exec format error")
+
+    monkeypatch.setattr(terminal_mod, "_resolve_cli_path", fake_resolve)
+    monkeypatch.setattr(terminal_mod.subprocess, "run", fake_run)
+
+    codex = next(item for item in terminal_mod.cli_statuses() if item["name"] == "codex")
+    assert codex["installed"] is True
+    assert "Exec format error" in codex["error"]
 
 
 def test_render_cli_status_formats_installed_errors_and_missing(monkeypatch):

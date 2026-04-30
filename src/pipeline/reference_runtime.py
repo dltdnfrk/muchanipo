@@ -109,6 +109,7 @@ def _build_gbrain_artifacts(
         "content_hash": content_hash,
         "compiled_truth": compiled_truth,
         "timeline_entry": vault_mod.build_timeline_entry(eval_result, report.id).strip(),
+        "evidence_summary": dict(evidence_summary),
     }
 
 

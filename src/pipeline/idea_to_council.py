@@ -241,6 +241,7 @@ class IdeaToCouncilPipeline:
             report,
             council,
             targeting_map,
+            evidence_summary=evidence_summary,
             reference_runtime_artifacts=reference_runtime_artifacts,
         )
         self._require_live_report(report_md)
@@ -387,10 +388,13 @@ def _compose_six_chapter_report(
     council: KarpathySession,
     targeting_map: TargetingMap,
     *,
+    evidence_summary: dict[str, Any] | None = None,
     reference_runtime_artifacts: dict[str, Any] | None = None,
 ) -> str:
     digests = _round_digests(council, report.evidence_refs)
     chapters = PyramidFormatter().reorder_all(ChapterMapper().map(digests))
+    chapter_evidence = _chapter_evidence_map(digests, report.evidence_refs)
+    grounding_rows: list[tuple[int, str, list[str]]] = []
     lines = [
         f"# {report.title}",
         "",
@@ -409,24 +413,129 @@ def _compose_six_chapter_report(
         "## Evidence Index",
         "",
     ])
+    _append_evidence_health(lines, evidence_summary or {}, report.evidence_refs)
     for ref in report.evidence_refs:
-        lines.append(f"- `{ref.id}` {ref.source_title or ref.source_url or ref.quote or ''}")
+        lines.extend(_evidence_index_lines(ref))
     lines.append("")
 
     for chapter in chapters:
+        evidence_ids = chapter_evidence.get(chapter.chapter_no, [])
+        lead_claim = _claim_with_evidence(chapter.lead_claim, evidence_ids)
+        grounding_rows.append((chapter.chapter_no, chapter.lead_claim, evidence_ids))
         lines.extend([
             f"## Chapter {chapter.chapter_no}: {chapter.title}",
             "",
-            chapter.lead_claim,
+            lead_claim,
             "",
         ])
         for claim in chapter.body_claims:
-            lines.append(f"- {claim}")
+            lines.append(f"- {_claim_with_evidence(claim, evidence_ids)}")
+            grounding_rows.append((chapter.chapter_no, claim, evidence_ids))
         lines.append("")
+    _append_claim_grounding_matrix(lines, grounding_rows)
     if reference_runtime_artifacts:
         _append_react_plan(lines, reference_runtime_artifacts.get("react", {}))
         _append_gbrain_snapshot(lines, reference_runtime_artifacts.get("gbrain", {}))
     return "\n".join(lines).strip() + "\n"
+
+
+def _chapter_evidence_map(
+    digests: list[RoundDigest],
+    evidence_refs: list[EvidenceRef],
+) -> dict[int, list[str]]:
+    mapper = ChapterMapper()
+    fallback_ids = [ref.id for ref in evidence_refs]
+    out: dict[int, list[str]] = {}
+    for digest in digests:
+        chapter = mapper.layer_to_chapter.get(digest.layer_id.split("_", 1)[0])
+        if chapter is None:
+            continue
+        ids = [evidence_id for evidence_id in digest.evidence_ref_ids if evidence_id]
+        out.setdefault(chapter, [])
+        out[chapter].extend(ids or fallback_ids)
+    for chapter, ids in list(out.items()):
+        out[chapter] = _dedupe_strings(ids)
+    return out
+
+
+def _append_evidence_health(
+    lines: list[str],
+    evidence_summary: dict[str, Any],
+    evidence_refs: list[EvidenceRef],
+) -> None:
+    grade_counts: dict[str, int] = {}
+    for ref in evidence_refs:
+        grade = str(ref.source_grade or "?").upper()
+        grade_counts[grade] = grade_counts.get(grade, 0) + 1
+    grade_text = ", ".join(f"{grade}:{count}" for grade, count in sorted(grade_counts.items())) or "none"
+    lines.extend([
+        "### Evidence Health",
+        "",
+        f"- Trusted evidence: {int(evidence_summary.get('trusted', 0) or 0)} / {len(evidence_refs)}",
+        f"- Verified claim ratio: {float(evidence_summary.get('verified_claim_ratio', 0.0) or 0.0):.2f}",
+        f"- Unsupported finding count: {int(evidence_summary.get('unsupported_finding_count', 0) or 0)}",
+        f"- Source grade counts: {grade_text}",
+        "",
+        "### Sources",
+        "",
+    ])
+
+
+def _evidence_index_lines(ref: EvidenceRef) -> list[str]:
+    provenance = ref.provenance or {}
+    provenance_kind = str(provenance.get("kind") or "unknown")
+    provenance_source = str(provenance.get("source") or provenance.get("url") or "").strip()
+    source = ref.source_url or provenance_source or "-"
+    title = ref.source_title or "(untitled source)"
+    quote = _snippet(ref.quote or str(provenance.get("source_text") or ""), limit=180)
+    lines = [
+        f"- `{ref.id}` {title}",
+        f"  - URL: {source}",
+        f"  - Grade: {ref.source_grade}",
+        f"  - Provenance: {provenance_kind}",
+    ]
+    if provenance_source and provenance_source != source:
+        lines.append(f"  - Provenance source: {provenance_source}")
+    if quote:
+        lines.append(f"  - Quote: {quote}")
+    return lines
+
+
+def _snippet(value: str, *, limit: int) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "..."
+
+
+def _claim_with_evidence(claim: str, evidence_ids: list[str]) -> str:
+    cleaned = claim.strip()
+    if not cleaned:
+        cleaned = "추가 검증이 필요한 빈 주장"
+    if not evidence_ids:
+        return f"{cleaned} (Evidence: none)"
+    refs = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids)
+    return f"{cleaned} (Evidence: {refs})"
+
+
+def _append_claim_grounding_matrix(
+    lines: list[str],
+    grounding_rows: list[tuple[int, str, list[str]]],
+) -> None:
+    lines.extend([
+        "## Claim Grounding Matrix",
+        "",
+        "| Chapter | Claim | Evidence |",
+        "| --- | --- | --- |",
+    ])
+    for chapter_no, claim, evidence_ids in grounding_rows:
+        evidence = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids) if evidence_ids else "none"
+        lines.append(f"| {chapter_no} | {_table_cell(claim)} | {evidence} |")
+    lines.append("")
+
+
+def _table_cell(value: str) -> str:
+    return " ".join(value.replace("|", "\\|").split())
 
 
 def _append_react_plan(lines: list[str], react: dict[str, Any]) -> None:
@@ -467,6 +576,18 @@ def _append_gbrain_snapshot(lines: list[str], gbrain: dict[str, Any]) -> None:
         f"- Content hash: `{gbrain.get('content_hash', '')}`",
         f"- Timeline entry: {gbrain.get('timeline_entry', '')}",
         "",
+    ])
+    summary = gbrain.get("evidence_summary") or {}
+    if isinstance(summary, dict):
+        lines.extend([
+            "### Evidence Summary",
+            "",
+            f"- Trusted evidence: {summary.get('trusted', 0)}",
+            f"- Verified claim ratio: {summary.get('verified_claim_ratio', 0.0)}",
+            f"- Unsupported finding count: {summary.get('unsupported_finding_count', 0)}",
+            "",
+        ])
+    lines.extend([
         "### Compiled Truth Snapshot",
         "",
         str(gbrain.get("compiled_truth", "")).strip(),
@@ -588,6 +709,17 @@ def _dedupe_evidence_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
             continue
         seen.add(ref.id)
         out.append(ref)
+    return out
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
     return out
 
 

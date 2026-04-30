@@ -7,6 +7,7 @@ silently publishing mock model output or empty evidence as a product result.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 
@@ -92,3 +93,9 @@ def assert_live_report(report_md: str) -> None:
     for marker in _MOCK_TEXT_MARKERS:
         if marker.lower() in lowered:
             raise LiveModeViolation(f"live mode rejected report marker: {marker}")
+    if "## evidence index" not in lowered:
+        raise LiveModeViolation("live mode requires an Evidence Index section in the report")
+    if "## claim grounding matrix" not in lowered:
+        raise LiveModeViolation("live mode requires a Claim Grounding Matrix section in the report")
+    if not re.search(r"Evidence:\s*`[^`]+`", report_md):
+        raise LiveModeViolation("live mode requires chapter claims with explicit evidence citations")

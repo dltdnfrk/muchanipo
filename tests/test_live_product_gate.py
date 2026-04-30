@@ -287,7 +287,64 @@ def test_live_report_guard_rejects_mock_markers():
 
 
 def test_live_report_guard_allows_non_mock_fallback_language():
-    assert_live_report("# Report\n\nAnthropic fallback provider returned a cited answer.\n")
+    assert_live_report(
+        "\n".join([
+            "# Report",
+            "",
+            "## Evidence Index",
+            "",
+            "- `E1` Cited source",
+            "",
+            "## Chapter 1: Executive Summary",
+            "",
+            "Anthropic fallback provider returned a cited answer. (Evidence: `E1`)",
+            "",
+            "## Claim Grounding Matrix",
+            "",
+            "| Chapter | Claim | Evidence |",
+            "| --- | --- | --- |",
+            "| 1 | Anthropic fallback provider returned a cited answer. | `E1` |",
+            "",
+        ])
+    )
+
+
+def test_live_report_guard_rejects_uncited_real_sounding_report():
+    with pytest.raises(LiveModeViolation, match="Evidence Index"):
+        assert_live_report(
+            "\n".join([
+                "# Report",
+                "",
+                "## Chapter 1: Executive Summary",
+                "",
+                "The market is attractive and the product should launch.",
+                "",
+            ])
+        )
+
+
+def test_live_report_guard_rejects_claims_without_explicit_evidence_refs():
+    with pytest.raises(LiveModeViolation, match="explicit evidence citations"):
+        assert_live_report(
+            "\n".join([
+                "# Report",
+                "",
+                "## Evidence Index",
+                "",
+                "- `E1` Cited source",
+                "",
+                "## Chapter 1: Executive Summary",
+                "",
+                "The market is attractive and the product should launch.",
+                "",
+                "## Claim Grounding Matrix",
+                "",
+                "| Chapter | Claim | Evidence |",
+                "| --- | --- | --- |",
+                "| 1 | The market is attractive. | `E1` |",
+                "",
+            ])
+        )
 
 
 def test_offline_report_limitations_do_not_self_trip_live_guard():

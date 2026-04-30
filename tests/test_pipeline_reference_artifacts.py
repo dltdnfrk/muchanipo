@@ -218,10 +218,18 @@ def test_step6_report_vault_agents_done_record_learning_outputs(reference_pipeli
     assert "GStack learnings_log" in done_event["reference_projects"]
     assert f"Brief ID: `{result.brief.id}`" in result.report_md
     assert "## Evidence Index" in result.report_md
+    assert "### Evidence Health" in result.report_md
+    assert "- Trusted evidence: 4 / 4" in result.report_md
+    assert "URL: https://example.org/strawberry-kit/1" in result.report_md
+    assert "Grade: A" in result.report_md
+    assert "Provenance: openalex" in result.report_md
+    assert "## Claim Grounding Matrix" in result.report_md
+    assert "(Evidence: `ref-" in result.report_md
     assert "## Chapter 1:" in result.report_md
     assert "## Chapter 6:" in result.report_md
     assert "## ReACT Execution Plan" in result.report_md
     assert "## GBrain Compiled Truth + Timeline" in result.report_md
+    assert "### Evidence Summary" in result.report_md
     assert vault_event["artifacts"]["vault_path"] == str(result.vault_path)
     assert done_event["artifacts"]["learning_count"] == str(len(result.retrospective.learnings))
     first_learning = json.loads((tmp_path / "learnings.jsonl").read_text(encoding="utf-8").splitlines()[0])
