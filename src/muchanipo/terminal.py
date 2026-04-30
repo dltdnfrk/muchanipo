@@ -97,7 +97,7 @@ def terminal_app(
             raw_mode = _read_prompt(inp, out, "mode [auto/offline/online] (auto)> ")
             mode = (raw_mode or "").strip().lower()
             offline = _offline_from_mode(mode)
-            terminal_run(topic, stdout=out, offline=offline, dashboard=_supports_dashboard(out))
+            _run_from_app(topic, out=out, offline=offline)
             _render_home(out)
             continue
         if choice in {"2", "runs", "r"}:
@@ -109,7 +109,7 @@ def terminal_app(
         if choice in {"4", "help", "h", "?"}:
             _render_help(out)
             continue
-        terminal_run(topic_or_choice, stdout=out, offline=None, dashboard=_supports_dashboard(out))
+        _run_from_app(topic_or_choice, out=out, offline=None)
         _render_home(out)
 
 
@@ -173,21 +173,39 @@ def terminal_run(
 
     try:
         result = run_pipeline(topic, progress_callback=emit_terminal, offline=offline)
+    except KeyboardInterrupt as exc:
+        status["finalize"] = "error"
+        _record_terminal_failure(
+            paths=paths,
+            events_file=events_file,
+            out=out,
+            status=status,
+            started_at=started_at,
+            topic=topic,
+            offline=offline,
+            jsonl=jsonl,
+            dashboard=dashboard,
+            event_name="terminal_run_interrupted",
+            error_type="KeyboardInterrupt",
+            message="interrupted by user",
+        )
+        raise exc
     except Exception as exc:
         status["finalize"] = "error"
-        error_event = {
-            "event": "terminal_run_error",
-            "topic": topic,
-            "run_id": paths.run_id,
-            "message": str(exc),
-            "error_type": type(exc).__name__,
-        }
-        _write_event(events_file, error_event)
-        if jsonl:
-            out.write(json.dumps(error_event, ensure_ascii=False) + "\n")
-        else:
-            out.write(f"\nERROR: {type(exc).__name__}: {exc}\n")
-        out.flush()
+        _record_terminal_failure(
+            paths=paths,
+            events_file=events_file,
+            out=out,
+            status=status,
+            started_at=started_at,
+            topic=topic,
+            offline=offline,
+            jsonl=jsonl,
+            dashboard=dashboard,
+            event_name="terminal_run_error",
+            error_type=type(exc).__name__,
+            message=str(exc),
+        )
         raise
     finally:
         events_file.flush()
@@ -199,6 +217,7 @@ def terminal_run(
     summary = {
         "topic": topic,
         "run_id": paths.run_id,
+        "status": "completed",
         "report_path": str(paths.report_path),
         "events_path": str(paths.events_path),
         "offline": offline,
@@ -238,6 +257,70 @@ def terminal_run(
         stage_status=dict(status),
     )
 
+
+def _run_from_app(topic: str, *, out: IO[str], offline: bool | None) -> None:
+    try:
+        terminal_run(topic, stdout=out, offline=offline, dashboard=_supports_dashboard(out))
+    except KeyboardInterrupt:
+        out.write("\nRun interrupted; returning to Muchanipo home.\n")
+        out.flush()
+    except Exception as exc:
+        out.write(f"\nRun failed; returning to Muchanipo home: {type(exc).__name__}: {exc}\n")
+        out.flush()
+
+
+def _record_terminal_failure(
+    *,
+    paths: TerminalRunPaths,
+    events_file: IO[str],
+    out: IO[str],
+    status: dict[str, str],
+    started_at: float,
+    topic: str,
+    offline: bool | None,
+    jsonl: bool,
+    dashboard: bool,
+    event_name: str,
+    error_type: str,
+    message: str,
+) -> None:
+    event = {
+        "event": event_name,
+        "topic": topic,
+        "run_id": paths.run_id,
+        "message": message,
+        "error_type": error_type,
+        "created_at": _now_iso(),
+    }
+    _write_event(events_file, event)
+    failure_status = "interrupted" if event_name == "terminal_run_interrupted" else "failed"
+    summary = {
+        "topic": topic,
+        "run_id": paths.run_id,
+        "status": failure_status,
+        "report_path": str(paths.report_path),
+        "events_path": str(paths.events_path),
+        "offline": offline,
+        "duration_sec": round(time.time() - started_at, 3),
+        "error_type": error_type,
+        "message": message,
+        "completed_at": _now_iso(),
+    }
+    paths.summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if jsonl:
+        out.write(json.dumps(event, ensure_ascii=False) + "\n")
+    elif dashboard:
+        _render_dashboard(out, topic=topic, paths=paths, status=status, event=event)
+        out.write("\n")
+    elif event_name == "terminal_run_interrupted":
+        out.write("\nINTERRUPTED: run stopped by user. Partial artifacts were saved.\n")
+    else:
+        out.write(f"\nERROR: {error_type}: {message}\n")
+        out.write("Partial artifacts were saved.\n")
+    out.flush()
 
 def cli_statuses() -> list[dict[str, Any]]:
     """Return installed/version status for local provider CLIs."""

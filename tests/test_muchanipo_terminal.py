@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from src.muchanipo import server as server_mod
 from src.muchanipo import terminal as terminal_mod
 
@@ -97,6 +99,45 @@ def test_terminal_run_jsonl_prints_machine_events(tmp_path: Path, monkeypatch):
         "stage_completed",
         "terminal_run_done",
     ]
+
+
+def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monkeypatch):
+    def boom(topic, *, progress_callback=None, offline=None):
+        if progress_callback:
+            progress_callback({"event": "stage_started", "stage": "research"})
+        raise RuntimeError("provider blocked")
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", boom)
+    stdout = io.StringIO()
+    run_dir = tmp_path / "failed"
+
+    with pytest.raises(RuntimeError, match="provider blocked"):
+        terminal_mod.terminal_run("실패 보존 테스트", stdout=stdout, run_dir=run_dir, offline=False)
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert summary["status"] == "failed"
+    assert summary["error_type"] == "RuntimeError"
+    assert events[-1]["event"] == "terminal_run_error"
+    assert "Partial artifacts were saved." in stdout.getvalue()
+
+
+def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Path, monkeypatch):
+    def interrupt(topic, *, progress_callback=None, offline=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", interrupt)
+    stdout = io.StringIO()
+    run_dir = tmp_path / "interrupted"
+
+    with pytest.raises(KeyboardInterrupt):
+        terminal_mod.terminal_run("중단 보존 테스트", stdout=stdout, run_dir=run_dir, offline=None)
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert summary["status"] == "interrupted"
+    assert events[-1]["event"] == "terminal_run_interrupted"
+    assert "INTERRUPTED" in stdout.getvalue()
 
 
 def test_run_command_delegates_to_terminal_core(tmp_path: Path, monkeypatch):
@@ -193,6 +234,21 @@ def test_terminal_app_treats_unknown_nonempty_input_as_topic(monkeypatch):
     assert calls[0][1]["offline"] is None
 
 
+def test_terminal_app_returns_home_after_run_failure(monkeypatch):
+    def fail_terminal_run(topic, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fail_terminal_run)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("실패 후 홈\nq\n"), stdout=stdout)
+
+    text = stdout.getvalue()
+    assert rc == 0
+    assert "Run failed; returning to Muchanipo home" in text
+    assert text.count("Muchanipo") >= 2
+
+
 def test_render_runs_lists_summaries_newest_first(tmp_path: Path):
     root = tmp_path / "runs"
     older = root / "older"
@@ -251,6 +307,31 @@ def test_main_direct_topic_shortcut_delegates_to_terminal_run(monkeypatch):
     assert calls[0][0] == "딸기 시장성"
 
 
+def test_main_direct_topic_shortcut_uses_dashboard_when_stdout_is_tty(monkeypatch):
+    calls = []
+
+    class TtyStdout(io.StringIO):
+        def isatty(self):
+            return True
+
+    def fake_terminal_run(topic, **kwargs):
+        calls.append((topic, kwargs))
+
+    monkeypatch.setattr(sys, "stdout", TtyStdout())
+    monkeypatch.setattr(terminal_mod, "terminal_run", fake_terminal_run)
+
+    assert server_mod.main(["딸기"]) == 0
+    assert calls[0][1]["dashboard"] is True
+
+
+def test_main_does_not_treat_dash_help_as_topic(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        server_mod.main(["--help"])
+
+    assert excinfo.value.code == 0
+    assert "usage: muchanipo" in capsys.readouterr().out
+
+
 def test_main_direct_topic_shortcut_accepts_common_flags(tmp_path: Path, monkeypatch):
     calls = []
 
@@ -272,6 +353,26 @@ def test_main_direct_topic_shortcut_accepts_common_flags(tmp_path: Path, monkeyp
     assert calls[0][1]["dashboard"] is False
 
 
+def test_main_terminal_failure_returns_exit_code(monkeypatch, capsys):
+    def fail_terminal_run(topic, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", fail_terminal_run)
+
+    assert server_mod.main(["딸기"]) == 1
+    assert "muchanipo: run failed: RuntimeError: provider unavailable" in capsys.readouterr().err
+
+
+def test_main_terminal_interrupt_returns_130(monkeypatch, capsys):
+    def interrupt_terminal_run(topic, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(terminal_mod, "terminal_run", interrupt_terminal_run)
+
+    assert server_mod.main(["딸기"]) == 130
+    assert "muchanipo: interrupted" in capsys.readouterr().err
+
+
 def test_main_runs_and_status_commands(monkeypatch):
     calls = []
 
@@ -291,6 +392,59 @@ def test_main_runs_and_status_commands(monkeypatch):
     assert calls[0][0] == "runs"
     assert calls[0][1]["limit"] == 3
     assert calls[1][0] == "status"
+
+
+def test_cli_statuses_records_nonzero_version_probe(monkeypatch):
+    def fake_resolve(name, env_var):
+        return f"/fake/{name}" if name == "claude" else None
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="auth missing\nextra")
+
+    monkeypatch.setattr(terminal_mod, "_resolve_cli_path", fake_resolve)
+    monkeypatch.setattr(terminal_mod.subprocess, "run", fake_run)
+
+    statuses = terminal_mod.cli_statuses()
+    claude = next(item for item in statuses if item["name"] == "claude")
+    codex = next(item for item in statuses if item["name"] == "codex")
+    assert claude["installed"] is True
+    assert claude["error"] == "auth missing"
+    assert codex["installed"] is False
+
+
+def test_cli_statuses_records_timeout(monkeypatch):
+    def fake_resolve(name, env_var):
+        return f"/fake/{name}" if name == "kimi" else None
+
+    def fake_run(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, timeout=5)
+
+    monkeypatch.setattr(terminal_mod, "_resolve_cli_path", fake_resolve)
+    monkeypatch.setattr(terminal_mod.subprocess, "run", fake_run)
+
+    kimi = next(item for item in terminal_mod.cli_statuses() if item["name"] == "kimi")
+    assert kimi["installed"] is True
+    assert "timed out" in kimi["error"]
+
+
+def test_render_cli_status_formats_installed_errors_and_missing(monkeypatch):
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_statuses",
+        lambda: [
+            {"name": "claude", "installed": True, "path": "/bin/claude", "version": "1.0", "error": None},
+            {"name": "kimi", "installed": True, "path": "/bin/kimi", "version": None, "error": "auth missing"},
+            {"name": "codex", "installed": False, "path": None, "version": None, "error": None},
+        ],
+    )
+    stdout = io.StringIO()
+
+    terminal_mod.render_cli_status(stdout=stdout)
+
+    text = stdout.getvalue()
+    assert "[OK] claude" in text
+    assert "installed; version probe failed: auth missing" in text
+    assert "[--] codex" in text
 
 
 def test_subprocess_no_args_menu_quits_without_hanging(tmp_path: Path):

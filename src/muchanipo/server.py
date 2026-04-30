@@ -516,7 +516,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not raw_argv:
         from src.muchanipo.terminal import terminal_app
 
-        return terminal_app(stdin=sys.stdin, stdout=sys.stdout)
+        try:
+            return terminal_app(stdin=sys.stdin, stdout=sys.stdout)
+        except KeyboardInterrupt:
+            sys.stderr.write("muchanipo: interrupted\n")
+            return 130
 
     known_commands = {"run", "tui", "serve", "runs", "status"}
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
@@ -529,16 +533,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if shortcut_options["error"]:
             sys.stderr.write(f"muchanipo: {shortcut_options['error']}\n")
             return 2
-        terminal_run(
+        return _run_terminal_safely(
             topic,
-            stdout=sys.stdout,
             report_path=shortcut_options["report_path"],
             run_dir=shortcut_options["run_dir"],
             offline=shortcut_options["offline"],
             jsonl=shortcut_options["jsonl"],
             dashboard=shortcut_options["dashboard"],
         )
-        return 0
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
@@ -551,16 +553,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.offline and args.online:
             parser.error("--offline and --online are mutually exclusive")
         offline = True if args.offline else False if args.online else None
-        terminal_run(
+        return _run_terminal_safely(
             topic,
-            stdout=sys.stdout,
             report_path=Path(args.report_path) if args.report_path else None,
             run_dir=Path(args.run_dir) if args.run_dir else None,
             offline=offline,
             jsonl=bool(getattr(args, "jsonl", False)),
             dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
         )
-        return 0
 
     if args.command == "runs":
         from src.muchanipo.terminal import render_runs
@@ -586,6 +586,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         stdin=sys.stdin,
         pipeline=args.pipeline,
     )
+
+
+def _run_terminal_safely(
+    topic: str,
+    *,
+    report_path: Path | None,
+    run_dir: Path | None,
+    offline: bool | None,
+    jsonl: bool,
+    dashboard: bool,
+) -> int:
+    from src.muchanipo.terminal import terminal_run
+
+    try:
+        terminal_run(
+            topic,
+            stdout=sys.stdout,
+            report_path=report_path,
+            run_dir=run_dir,
+            offline=offline,
+            jsonl=jsonl,
+            dashboard=dashboard,
+        )
+        return 0
+    except KeyboardInterrupt:
+        sys.stderr.write("muchanipo: interrupted\n")
+        return 130
+    except Exception as exc:
+        sys.stderr.write(f"muchanipo: run failed: {type(exc).__name__}: {exc}\n")
+        return 1
 
 
 def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
