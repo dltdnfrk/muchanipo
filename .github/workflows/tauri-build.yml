@@ -42,8 +42,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            app/muchanipo-tauri/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('app/muchanipo-tauri/src-tauri/Cargo.lock') }}
+            app/muchanipo-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('app/muchanipo-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -67,8 +67,8 @@ jobs:
         with:
           name: muchanipo-macos-${{ github.sha }}
           path: |
-            app/muchanipo-tauri/src-tauri/target/release/bundle/macos/*.app
-            app/muchanipo-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            app/muchanipo-tauri/target/release/bundle/macos/*.app
+            app/muchanipo-tauri/target/release/bundle/dmg/*.dmg
           retention-days: 30
 
       - name: Create GitHub Release on tag
@@ -76,6 +76,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            app/muchanipo-tauri/src-tauri/target/release/bundle/macos/*.app
-            app/muchanipo-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            app/muchanipo-tauri/target/release/bundle/macos/*.app
+            app/muchanipo-tauri/target/release/bundle/dmg/*.dmg
           generate_release_notes: true

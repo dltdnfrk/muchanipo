@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:install": "(tauri build || true) && bash ./scripts/install-app.sh",
+    "tauri:install": "tauri build && bash ./scripts/install-app.sh",
     "install:app": "bash ./scripts/install-app.sh"
   },
   "dependencies": {
