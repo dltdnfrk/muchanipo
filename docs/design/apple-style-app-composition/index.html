@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Muchanipo Apple-style Product Mockup</title>
+  <style>
+    :root {
+      --black:#000;
+      --ink:#1d1d1f;
+      --muted:rgba(0,0,0,.56);
+      --hair:rgba(0,0,0,.08);
+      --light:#f5f5f7;
+      --panel:#fbfbfd;
+      --blue:#0071e3;
+      --link:#0066cc;
+      --white:#fff;
+      --dark-panel:#1d1d1f;
+      --dark-panel-2:#2a2a2d;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+      background:#f5f5f7;
+      color:var(--ink);
+      letter-spacing:-.374px;
+      overflow-x:hidden;
+    }
+    .nav{
+      position:sticky;top:0;z-index:10;height:48px;
+      display:flex;align-items:center;justify-content:center;
+      background:rgba(0,0,0,.82);backdrop-filter:saturate(180%) blur(20px);
+      color:#fff;font-size:12px;letter-spacing:-.12px;
+    }
+    .nav-inner{width:min(1120px,calc(100% - 40px));display:flex;align-items:center;justify-content:space-between}
+    .brand{font-weight:600;letter-spacing:.08em}.nav-links{display:flex;gap:28px;opacity:.88}.nav-pill{border:1px solid rgba(255,255,255,.36);border-radius:980px;padding:4px 12px;color:#fff}
+    .hero{
+      min-height:720px;background:#000;color:#fff;padding:64px 34px 34px;
+      display:grid;place-items:center;position:relative;overflow:hidden;
+    }
+    .hero::before{content:"";position:absolute;inset:-20%;background:radial-gradient(circle at 50% 15%,rgba(41,151,255,.28),transparent 28%),radial-gradient(circle at 80% 55%,rgba(255,255,255,.1),transparent 20%);filter:blur(10px)}
+    .hero-shell{position:relative;width:min(1180px,100%);display:grid;grid-template-columns:.88fr 1.22fr;gap:24px;align-items:stretch}
+    .headline{font-size:58px;line-height:1.04;font-weight:650;letter-spacing:-1.6px;margin:0 0 14px}.sub{font-size:21px;line-height:1.28;color:rgba(255,255,255,.82);margin:0 0 22px}.cta{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.btn{border-radius:980px;padding:10px 18px;font-size:14px;text-decoration:none}.btn.primary{background:var(--blue);color:#fff}.btn.ghost{border:1px solid rgba(255,255,255,.45);color:#fff}.mini-copy{margin-top:32px;color:rgba(255,255,255,.56);font-size:13px;line-height:1.5}
+    .phone{
+      border-radius:38px;background:linear-gradient(180deg,#fdfdfd,#e9e9ed);padding:12px;box-shadow:0 32px 80px rgba(255,255,255,.14),0 24px 80px rgba(0,0,0,.65);min-height:610px;color:#1d1d1f;
+    }
+    .screen{height:100%;border-radius:28px;background:#f5f5f7;overflow:hidden;border:1px solid rgba(0,0,0,.1);display:grid;grid-template-rows:auto 1fr}
+    .screen-nav{height:42px;background:rgba(255,255,255,.76);backdrop-filter:blur(20px);display:flex;align-items:center;justify-content:space-between;padding:0 18px;font-size:12px}.dots{display:flex;gap:6px}.dot{width:8px;height:8px;border-radius:50%;background:#d2d2d7}.dot:first-child{background:#ff5f57}.dot:nth-child(2){background:#ffbd2e}.dot:nth-child(3){background:#28c840}
+    .app{padding:18px;display:grid;grid-template-columns:1fr 1.35fr;gap:14px;transform-origin:top center}.card{background:#fff;border-radius:20px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.05);border:1px solid rgba(0,0,0,.04)}.dark-card{background:#1d1d1f;color:#fff}.label{font-size:11px;text-transform:uppercase;color:#86868b;letter-spacing:.08em;font-weight:650}.card h3{margin:6px 0 8px;font-size:20px;line-height:1.08;letter-spacing:-.3px}.card p{margin:0;font-size:12px;color:#6e6e73;line-height:1.45}.dark-card p{color:rgba(255,255,255,.68)}
+    .flow{display:grid;gap:8px;margin-top:14px}.flow-row{display:flex;align-items:center;gap:10px;background:#f5f5f7;border-radius:14px;padding:10px;font-size:12px}.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#0071e3;font-weight:700}.status{margin-left:auto;width:8px;height:8px;border-radius:50%;background:#34c759}.status.dim{background:#d2d2d7}.input-box{height:84px;background:#f5f5f7;border-radius:16px;padding:12px;font-size:12px;color:#424245}.question{display:grid;gap:8px;margin-top:10px}.choice{background:#f5f5f7;border-radius:12px;padding:9px;font-size:12px}.choice.active{background:#0071e3;color:#fff}.graph{height:170px;border-radius:18px;background:#000;position:relative;overflow:hidden;margin-top:8px}.node{position:absolute;width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:#fff;color:#000;font-size:10px;font-weight:700;box-shadow:0 0 40px rgba(41,151,255,.6)}.n1{left:42%;top:34%}.n2{left:14%;top:18%;transform:scale(.72)}.n3{right:12%;top:14%;transform:scale(.66)}.n4{left:22%;bottom:14%;transform:scale(.58)}.n5{right:24%;bottom:16%;transform:scale(.62)}.edge{position:absolute;height:1px;background:linear-gradient(90deg,transparent,#2997ff,transparent);opacity:.85;transform-origin:left}.e1{width:190px;left:32%;top:45%;transform:rotate(-18deg)}.e2{width:210px;left:45%;top:45%;transform:rotate(18deg)}.e3{width:170px;left:29%;top:61%;transform:rotate(26deg)}.e4{width:160px;left:50%;top:60%;transform:rotate(-24deg)}
+    .personas{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:10px}.avatar{height:72px;border-radius:16px;background:linear-gradient(180deg,#fff,#e8e8ed);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;font-weight:650}.face{width:26px;height:26px;border-radius:50%;background:#1d1d1f;margin-bottom:6px}.council{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.bubble{background:#2a2a2d;border-radius:14px;padding:10px;font-size:11px;color:rgba(255,255,255,.82);min-height:72px}.report-lines{display:grid;gap:7px;margin-top:10px}.line{height:8px;border-radius:8px;background:#e8e8ed}.line.w70{width:70%}.line.w45{width:45%}.settings{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.chip{border-radius:980px;padding:6px 9px;background:#f5f5f7;font-size:11px}.chip.on{background:#e8f3ff;color:#0066cc}
+    .overview{padding:54px 32px 70px;background:#f5f5f7}.overview h2{text-align:center;font-size:48px;line-height:1.08;margin:0 0 10px;letter-spacing:-1px}.overview .lead{text-align:center;max-width:760px;margin:0 auto 28px;color:#6e6e73;font-size:18px;line-height:1.45}.tiles{width:min(1180px,100%);margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.tile{background:#fff;border-radius:24px;min-height:190px;padding:18px;box-shadow:0 12px 35px rgba(0,0,0,.05);position:relative;overflow:hidden}.tile.black{background:#000;color:#fff}.tile h4{font-size:22px;line-height:1.12;margin:0 0 8px;letter-spacing:-.3px}.tile p{font-size:13px;line-height:1.45;color:#6e6e73;margin:0}.tile.black p{color:rgba(255,255,255,.65)}.tile .big{position:absolute;right:16px;bottom:10px;font-size:70px;font-weight:650;color:rgba(0,113,227,.16);letter-spacing:-4px}.tile.black .big{color:rgba(41,151,255,.28)}
+    @media(max-width:900px){.hero-shell{grid-template-columns:1fr}.headline{font-size:42px}.tiles{grid-template-columns:1fr 1fr}.phone{min-height:560px}.app{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <nav class="nav"><div class="nav-inner"><div class="brand">MUCHANIPO</div><div class="nav-links"><span>Idea</span><span>Research</span><span>Council</span><span>Report</span><span class="nav-pill">CLI Settings</span></div></div></nav>
+  <section class="hero">
+    <div class="hero-shell">
+      <div style="align-self:center">
+        <h1 class="headline">Autonomous<br/>Second Brain<br/>for local research.</h1>
+        <p class="sub">토픽을 넣으면 인터뷰하고, AutoResearch가 돌고, 지식그래프가 형성되고, 페르소나가 생성되어 Council이 회의합니다.</p>
+        <div class="cta"><a class="btn primary">Start a run</a><a class="btn ghost">Configure CLI</a></div>
+        <p class="mini-copy">Local-first · Codex / Claude / Kimi CLI-ready · Paid API opt-in only · Mock fallback always on</p>
+      </div>
+      <div class="phone">
+        <div class="screen">
+          <div class="screen-nav"><div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div><strong>Idea → Council Run</strong><span>Live</span></div>
+          <div class="app">
+            <div class="card">
+              <div class="label">01 Interview</div><h3>PRD-style 질문</h3><div class="input-box">“AI agent memory system을 제품화하려면 무엇부터 검증해야 할까?”</div>
+              <div class="question"><div class="choice active">A. evidence-backed report</div><div class="choice">B. product playbook</div><div class="choice">C. council debate</div></div>
+              <div class="flow"><div class="flow-row"><span class="num">02</span>AutoResearch<span class="status"></span></div><div class="flow-row"><span class="num">03</span>Evidence store<span class="status"></span></div><div class="flow-row"><span class="num">04</span>Report draft<span class="status dim"></span></div></div>
+            </div>
+            <div style="display:grid;gap:14px">
+              <div class="card dark-card"><div class="label">Knowledge Graph</div><h3>Evidence map</h3><p>claims, findings, sources, assumptions</p><div class="graph"><span class="edge e1"></span><span class="edge e2"></span><span class="edge e3"></span><span class="edge e4"></span><span class="node n1">Brief</span><span class="node n2">Claim</span><span class="node n3">Source</span><span class="node n4">Risk</span><span class="node n5">Next</span></div></div>
+              <div class="card"><div class="label">Persona Generation</div><h3>mirofish agents</h3><div class="personas"><div class="avatar"><span class="face"></span>Critic</div><div class="avatar"><span class="face"></span>Builder</div><div class="avatar"><span class="face"></span>Market</div><div class="avatar"><span class="face"></span>Safety</div><div class="avatar"><span class="face"></span>User</div></div></div>
+              <div class="card dark-card"><div class="label">Council</div><h3>Round 1 is discussing</h3><div class="council"><div class="bubble">Evidence is thin around user retention.</div><div class="bubble">Start local-first before paid APIs.</div><div class="bubble">Ship settings + provider gateway next.</div></div></div>
+              <div class="card"><div class="label">Report</div><h3>REPORT.md streaming</h3><div class="report-lines"><span class="line"></span><span class="line w70"></span><span class="line"></span><span class="line w45"></span></div><div class="settings"><span class="chip on">Codex CLI</span><span class="chip on">Claude</span><span class="chip">Kimi</span><span class="chip on">Mock</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section class="overview">
+    <h2>One local app. Full research loop.</h2>
+    <p class="lead">Muchanipo의 전체 앱 구성: 입력, 인터뷰, 리서치, 지식그래프, 페르소나 생성, Council 회의, 리포트, CLI 설정까지 한 흐름으로 보여주는 목업입니다.</p>
+    <div class="tiles">
+      <div class="tile"><h4>Idea Intake</h4><p>사용자의 raw idea를 보존하고 RunContext를 만듭니다.</p><div class="big">01</div></div>
+      <div class="tile"><h4>Interview</h4><p>ResearchBrief를 만들기 위한 PRD-style 질문.</p><div class="big">02</div></div>
+      <div class="tile black"><h4>AutoResearch</h4><p>local docs, web, CLI workers가 evidence 후보를 수집.</p><div class="big">03</div></div>
+      <div class="tile"><h4>Knowledge Graph</h4><p>claims, evidence, risks, decisions를 graph로 연결.</p><div class="big">04</div></div>
+      <div class="tile"><h4>Personas</h4><p>report 기반으로 mirofish-style debate agents 생성.</p><div class="big">05</div></div>
+      <div class="tile black"><h4>Council</h4><p>라운드 기반 회의, 반론, 합의, 다음 행동 도출.</p><div class="big">06</div></div>
+      <div class="tile"><h4>Report</h4><p>REPORT.md, citations, open questions, next actions.</p><div class="big">07</div></div>
+      <div class="tile"><h4>CLI Settings</h4><p>Codex, Claude, Kimi, Ollama를 로컬 worker로 연결.</p><div class="big">08</div></div>
+    </div>
+  </section>
+</body>
+</html>
