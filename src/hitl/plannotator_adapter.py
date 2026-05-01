@@ -21,6 +21,7 @@ class HITLResult:
     comments: list[str] = field(default_factory=list)
     gate_id: str | None = None
     path: str | None = None
+    synthetic: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
@@ -65,6 +66,7 @@ class HITLAdapter:
                 status="approved",
                 comments=[f"auto-approved gate: {gate_name}"],
                 gate_id=f"{gate_name}-auto",
+                synthetic=True,
             )
         if self.mode == "plannotator":
             return self._plannotator_gate(gate_name, payload)

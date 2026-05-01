@@ -17,7 +17,7 @@ def test_openalex_search_maps_results_to_evidence():
                 "results": [
                     {
                         "id": "https://openalex.org/W1",
-                        "doi": "https://doi.org/10.123/example",
+                        "doi": "https://doi.org/10.1234/example",
                         "display_name": "A paper",
                         "publication_year": 2024,
                         "abstract_inverted_index": {"hello": [0], "world": [1]},
@@ -37,6 +37,7 @@ def test_openalex_search_maps_results_to_evidence():
     assert results[0].id == "openalex:https://openalex.org/W1"
     assert results[0].source_grade == "A"
     assert results[0].quote == "hello world 2024"
+    assert results[0].provenance["doi"] == "10.1234/example"
     assert results[0].provenance["source_text"]["display_name"] == "A paper"
 
 

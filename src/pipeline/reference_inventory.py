@@ -44,6 +44,8 @@ class ReferenceInventoryItem:
     source_url: str = ""
 
     def as_dict(self, *, repo_root: Path | None = None) -> dict[str, Any]:
+        implemented = bool(self.code_paths) and self.category != CATEGORY_CONCEPT_ONLY
+        ready = implemented and not self.gap
         return {
             "name": self.name,
             "aliases": list(self.aliases),
@@ -52,7 +54,19 @@ class ReferenceInventoryItem:
             "stages": list(self.stages),
             "code_paths": list(self.code_paths),
             "test_paths": list(self.test_paths),
-            "implemented": bool(self.code_paths) and self.category != CATEGORY_CONCEPT_ONLY,
+            "implemented": implemented,
+            "ready": ready,
+            "claim_level": _claim_level(
+                category=self.category,
+                implemented=implemented,
+                ready=ready,
+                gap=self.gap,
+                license_warning=self.license_warning,
+            ),
+            "blocked_reason": _blocked_reason(
+                category=self.category,
+                gap=self.gap,
+            ),
             "present_paths": _existing_paths(self.code_paths, repo_root=repo_root),
             "implementation_notes": self.implementation_notes,
             "gap": self.gap,
@@ -70,7 +84,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         aliases=("GPTaku show-me-the-prd",),
         code_paths=("src/intent/interview_prompts.py", "src/interview/session.py", "src/interview/brief.py"),
         test_paths=("tests/test_interview_prompts.py", "tests/test_interview_rubric.py", "tests/test_pipeline_reference_artifacts.py"),
-        implementation_notes="Local interview prompts and ResearchBrief flow implement the PRD-style intake behavior; the GPTaku plugin itself is not vendored.",
+        implementation_notes="Local interview prompts drive an entropy-greedy question loop before ResearchBrief creation; the GPTaku plugin itself is not vendored.",
         gap="No runtime module imports GPTaku or the marketplace plugin directly.",
         source_url="https://github.com/fivetaku/gptaku_plugins",
     ),
@@ -109,7 +123,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
             "src/research/academic/core.py",
         ),
         test_paths=("tests/research/academic", "tests/test_research_real_wire.py"),
-        implementation_notes="Local adapters query or normalize academic sources; OpenAlex targeting helpers provide institutions, journals, and seed-paper lookups.",
+        implementation_notes="Local adapters query or normalize academic sources and preserve DOI/journal/institution provenance when upstream responses provide it; OpenAlex targeting helpers provide institutions/journals/seed papers, with live seed-paper fallback through the six-source academic sync search.",
         source_url="https://openalex.org",
     ),
     ReferenceInventoryItem(
@@ -131,7 +145,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         stages=(2, 4),
         code_paths=("src/hitl/plannotator_adapter.py", "src/hitl/plannotator_http.py"),
         test_paths=("tests/test_plannotator_adapter.py", "tests/test_plannotator_http.py", "tests/test_pipeline_reference_artifacts.py"),
-        implementation_notes="Auto-approve, markdown, and HTTP HITL gates are local adapters around the Plannotator review concept.",
+        implementation_notes="Auto-approve, markdown, and HTTP HITL gates are local adapters; synthetic auto-approval/offline Plannotator results are explicitly flagged and rejected in live mode.",
     ),
     ReferenceInventoryItem(
         name="Karpathy Autoresearch",
@@ -160,7 +174,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         stages=(3,),
         code_paths=("src/research/runner.py", "src/search/insight-forge.py"),
         test_paths=("tests/test_research_real_wire.py", "tests/test_pipeline_reference_artifacts.py"),
-        implementation_notes="WebResearchRunner uses local vault search from InsightForge as a memory-first adapter/fallback.",
+        implementation_notes="WebResearchRunner records backend trace and only marks MemPalace executed when vault/InsightForge memory backends actually run or produce memory evidence.",
         gap="No MemPalace package or native storage engine is vendored; this is a local vault-search adapter.",
         source_url="https://github.com/mempalace",
     ),
@@ -183,7 +197,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         stages=(4,),
         code_paths=("src/evidence/store.py", "src/evidence/provenance.py", "src/eval/citation_grounder.py"),
         test_paths=("tests/test_research_real_wire.py", "tests/test_citation_grounder.py", "tests/test_live_product_gate.py"),
-        implementation_notes="Evidence references, provenance checks, and live-mode gates are enforced by local tests.",
+        implementation_notes="Evidence references pass stdlib structural provenance checks plus optional lockdown validation; live-mode gates and provenance failures are enforced by local tests.",
     ),
     ReferenceInventoryItem(
         name="MiroFish",
@@ -249,7 +263,8 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         stages=(6,),
         code_paths=("src/search/react-report.py", "src/pipeline/reference_runtime.py", "src/report/composer.py"),
         test_paths=("tests/test_pipeline_reference_artifacts.py", "tests/test_report_composer.py"),
-        implementation_notes="Local ReACT planning artifacts are generated from council payloads and included in reports.",
+        implementation_notes="Local ReACT sections execute parsed tool-call loops; InsightForge, MemPalace, and academic web_search backends are called when available.",
+        gap="Offline ReACT still uses scripted tool-call generation rather than an LLM-driven reasoning executor.",
     ),
     ReferenceInventoryItem(
         name="Karpathy LLM Wiki Pattern",
@@ -356,6 +371,15 @@ def reference_readiness_report(*, repo_root: Path | None = None) -> dict[str, An
         for item in references
         if item.get("gap")
     ]
+    not_ready = [
+        {
+            "name": item["name"],
+            "claim_level": item["claim_level"],
+            "blocked_reason": item["blocked_reason"],
+        }
+        for item in references
+        if not item.get("ready")
+    ]
     license_warnings = _license_warnings(references)
     return {
         "schema_version": 1,
@@ -363,6 +387,7 @@ def reference_readiness_report(*, repo_root: Path | None = None) -> dict[str, An
         "stages": _stage_summaries(references),
         "references": references,
         "gaps": gaps,
+        "not_ready_references": not_ready,
         "license_warnings": license_warnings,
         "valid_categories": list(VALID_CATEGORIES),
     }
@@ -379,8 +404,12 @@ def _stage_summaries(references: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "runtime_stages": [stage.value for stage in contract.stages],
                 "reference_count": len(refs),
                 "implemented_count": sum(1 for item in refs if item["implemented"]),
+                "ready_count": sum(1 for item in refs if item["ready"]),
                 "gap_count": sum(1 for item in refs if item["gap"]),
+                "not_ready_count": sum(1 for item in refs if not item["ready"]),
+                "ready": bool(refs) and all(item["ready"] for item in refs),
                 "references": [item["name"] for item in refs],
+                "not_ready_references": [item["name"] for item in refs if not item["ready"]],
             }
         )
     return summaries
@@ -406,6 +435,35 @@ def _existing_paths(paths: tuple[str, ...], *, repo_root: Path | None) -> list[s
         if (repo_root / path).exists():
             existing.append(path)
     return existing
+
+
+def _claim_level(
+    *,
+    category: str,
+    implemented: bool,
+    ready: bool,
+    gap: str,
+    license_warning: str,
+) -> str:
+    if category == CATEGORY_CONCEPT_ONLY:
+        return "concept_only"
+    if not implemented:
+        return "not_implemented"
+    if gap:
+        return "implemented_with_gap"
+    if license_warning:
+        return "runtime_with_compliance_warning"
+    if ready:
+        return "runtime_ready"
+    return "not_ready"
+
+
+def _blocked_reason(*, category: str, gap: str) -> str:
+    if gap:
+        return gap
+    if category == CATEGORY_CONCEPT_ONLY:
+        return "concept-only reference; not a product runtime claim"
+    return ""
 
 
 def _validate_inventory() -> None:

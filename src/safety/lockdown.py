@@ -97,7 +97,17 @@ PII_PATTERNS: Sequence[Tuple[str, re.Pattern[str]]] = (
     ("KOREAN_RRN", re.compile(r"\b\d{6}-?[1-4]\d{6}\b")),
     ("KOREAN_BIZ_NO", re.compile(r"\b\d{3}-?\d{2}-?\d{5}\b")),
 )
-KOREAN_REAL_NAME_HINT = re.compile(r"(?:실명|이름|대표|담당자|고객)\s*[:= ]\s*[가-힣]{2,4}")
+_COMMON_KOREAN_SURNAMES = (
+    "김이박최정강조윤장임한오서신권황안송류홍전고문양손배백허"
+    "유남심노하곽성차주우구민진지엄채원천방공현함변염여추"
+    "도소석선설마길"
+)
+KOREAN_REAL_NAME_HINT = re.compile(
+    rf"(?:실명|이름|대표|담당자|고객)\s*[:=]\s*"
+    rf"[{_COMMON_KOREAN_SURNAMES}][가-힣]{{1,3}}"
+    rf"|[{_COMMON_KOREAN_SURNAMES}][가-힣]{{1,3}}\s*"
+    r"(?:대표|회장|사장|이사|장관|총장|교수)"
+)
 
 
 def _load_config_text(path: Path = CONFIG_PATH) -> str:

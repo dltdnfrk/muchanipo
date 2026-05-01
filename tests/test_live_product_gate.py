@@ -10,9 +10,30 @@ from src.evidence.store import EvidenceStore
 from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway, ModelResult
 from src.execution.providers.mock import MockProvider
-from src.hitl.plannotator_adapter import HITLAdapter
+from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, _round_digests
 from src.runtime.live_mode import LiveModeViolation, assert_live_report
+
+
+class _ApprovedHITLAdapter:
+    mode = "test_real_approved"
+
+    def gate(self, gate_name: str, payload: dict):
+        return HITLResult(
+            status="approved",
+            comments=[f"test-approved gate: {gate_name}"],
+            gate_id=f"{gate_name}-approved",
+            synthetic=False,
+        )
+
+    def gate_brief(self, brief):
+        return self.gate("brief", {"brief": brief})
+
+    def gate_evidence(self, evidence_refs):
+        return self.gate("evidence", {"evidence_refs": evidence_refs})
+
+    def gate_report(self, report_md: str):
+        return self.gate("report", {"report_md": report_md})
 
 
 class _SuccessProvider:
@@ -47,12 +68,13 @@ class _TrustedEvidenceRunner:
     def run(self, plan):
         ref = EvidenceRef(
             id="openalex:live-1",
-            source_url="https://doi.org/10.123/live",
+            source_url="https://doi.org/10.1234/live",
             source_title="Live academic source",
             quote="strawberry diagnostics evidence",
             source_grade="A",
             provenance={
                 "kind": "openalex",
+                "doi": "10.1234/live",
                 "source_text": "strawberry diagnostics evidence",
             },
         )
@@ -167,9 +189,22 @@ def test_pipeline_live_mode_blocks_pending_hitl(tmp_path: Path):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
-def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):
+def test_pipeline_live_mode_blocks_synthetic_auto_approve_hitl(tmp_path: Path):
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=HITLAdapter(mode="auto_approve"),
+        research_runner=_TrustedEvidenceRunner(),
+        vault_dir=tmp_path / "vault",
+        council_log_dir=tmp_path / "council",
+        require_live=True,
+    )
+
+    with pytest.raises(LiveModeViolation, match="synthetic HITL gate 'plan'"):
+        pipeline.run("딸기 농가용 진단키트 시장성")
+
+
+def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):
+    pipeline = IdeaToCouncilPipeline(
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_EmptyEvidenceRunner(),
         vault_dir=tmp_path / "vault",
         council_log_dir=tmp_path / "council",
@@ -182,7 +217,7 @@ def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):
 
 def test_pipeline_live_mode_requires_ab_grade_evidence_floor(tmp_path: Path):
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_OnlyCGradeEvidenceRunner(),
         vault_dir=tmp_path / "vault",
         council_log_dir=tmp_path / "council",
@@ -200,6 +235,9 @@ def test_pipeline_live_mode_rejects_fallback_council_personas(tmp_path: Path, mo
         def __init__(self, *args, **kwargs):
             pass
 
+        def finalize_drafts(self, *args, **kwargs):
+            return [], {"fallbacks_used": 0, "coverage_after_admit": 0.0}
+
         def generate(self, *args, **kwargs):
             return [
                 SimpleNamespace(
@@ -212,7 +250,7 @@ def test_pipeline_live_mode_rejects_fallback_council_personas(tmp_path: Path, mo
 
     monkeypatch.setattr(pipeline_mod, "PersonaGenerator", _FallbackPersonaGenerator)
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_TrustedEvidenceRunner(),
         model_gateway=GatewayV2(
             providers={"gemini": _SuccessProvider()},
@@ -242,7 +280,7 @@ def test_pipeline_live_mode_blocks_plan_review_failure(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(pipeline_mod, "PlanReview", _BlockingPlanReview)
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_TrustedEvidenceRunner(),
         vault_dir=tmp_path / "vault",
         council_log_dir=tmp_path / "council",
@@ -257,7 +295,7 @@ def test_pipeline_env_real_research_implies_live_gate(tmp_path: Path, monkeypatc
     monkeypatch.setenv("MUCHANIPO_REAL_RESEARCH", "1")
 
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_EmptyEvidenceRunner(),
         vault_dir=tmp_path / "vault",
         council_log_dir=tmp_path / "council",
@@ -278,7 +316,7 @@ def test_pipeline_constructor_require_live_propagates_to_gateway(tmp_path: Path,
         fallback_chain={"council": ["mock"]},
     )
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         research_runner=_TrustedEvidenceRunner(),
         model_gateway=gw,
         vault_dir=tmp_path / "vault",
@@ -402,11 +440,11 @@ def test_evidence_store_live_mode_fails_closed_on_provenance_validator_error(mon
 
     ref = EvidenceRef(
         id="openalex:live-provenance",
-        source_url="https://doi.org/10.123/live-provenance",
+        source_url="https://doi.org/10.1234/live-provenance",
         source_title="Live paper",
         quote="source-backed claim",
         source_grade="A",
-        provenance={"kind": "openalex", "source_text": "source-backed claim"},
+        provenance={"kind": "openalex", "doi": "10.1234/live-provenance", "source_text": "source-backed claim"},
     )
 
     with pytest.raises(LiveModeViolation, match="provenance validation failed"):
@@ -415,7 +453,7 @@ def test_evidence_store_live_mode_fails_closed_on_provenance_validator_error(mon
 
 def test_live_vault_save_uses_run_version_suffix(tmp_path: Path):
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
+        hitl_adapter=_ApprovedHITLAdapter(),
         vault_dir=tmp_path / "vault",
         require_live=True,
     )
@@ -429,11 +467,11 @@ def test_live_vault_save_uses_run_version_suffix(tmp_path: Path):
 def test_live_council_digest_rejects_synthetic_round_fallback():
     ref = EvidenceRef(
         id="openalex:live-council",
-        source_url="https://doi.org/10.123/live-council",
+        source_url="https://doi.org/10.1234/live-council",
         source_title="Live council source",
         quote="source-backed claim",
         source_grade="A",
-        provenance={"kind": "openalex", "source_text": "source-backed claim"},
+        provenance={"kind": "openalex", "doi": "10.1234/live-council", "source_text": "source-backed claim"},
     )
 
     with pytest.raises(LiveModeViolation, match="structured council synthesis"):

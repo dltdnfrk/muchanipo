@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from src.pipeline.reference_contracts import CONTRACTS, contract_for_stage, references_for_stage
 from src.pipeline.reference_inventory import VALID_CATEGORIES, reference_readiness_report
 from src.pipeline.stages import Stage
@@ -43,6 +45,8 @@ def test_reference_readiness_report_surfaces_gaps_and_license_warnings():
     assert report["schema_version"] == 1
     assert report["command"] == "muchanipo references"
     assert [stage["step"] for stage in report["stages"]] == [1, 2, 3, 4, 5, 6]
+    assert all(stage["ready_count"] <= stage["implemented_count"] for stage in report["stages"])
+    assert any(not stage["ready"] for stage in report["stages"])
     assert set(report["valid_categories"]) == set(VALID_CATEGORIES)
     assert all(item["category"] in VALID_CATEGORIES for item in report["references"])
     assert not any(item["category"] == "vendored code" for item in report["references"])
@@ -53,6 +57,11 @@ def test_reference_readiness_report_surfaces_gaps_and_license_warnings():
     gaps = {item["name"]: item["gap"] for item in report["gaps"]}
     assert "OASIS / CAMEL-AI" in gaps
     assert "MemPalace" in gaps
+    assert "ReACT 보고서 작성 패턴" in gaps
+    not_ready = {item["name"]: item for item in report["not_ready_references"]}
+    assert not_ready["MemPalace"]["claim_level"] == "implemented_with_gap"
+    assert not_ready["MemPalace"]["blocked_reason"] == gaps["MemPalace"]
+    assert not_ready["ReACT 보고서 작성 패턴"]["blocked_reason"] == gaps["ReACT 보고서 작성 패턴"]
 
 
 def test_reference_inventory_paths_exist_for_runtime_backed_items():
@@ -62,3 +71,22 @@ def test_reference_inventory_paths_exist_for_runtime_backed_items():
         if not item["implemented"]:
             continue
         assert item["present_paths"] == item["code_paths"], item["name"]
+
+
+def test_reference_inventory_declared_tests_exist_for_runtime_backed_items():
+    report = reference_readiness_report()
+
+    for item in report["references"]:
+        if not item["implemented"]:
+            continue
+        for test_path in item["test_paths"]:
+            assert Path(test_path).exists(), f"{item['name']}: {test_path}"
+
+
+def test_reference_inventory_does_not_mark_gap_items_ready():
+    report = reference_readiness_report()
+
+    for item in report["references"]:
+        if item["gap"]:
+            assert item["ready"] is False
+            assert item["claim_level"] in {"implemented_with_gap", "concept_only"}

@@ -85,6 +85,30 @@ def test_validate_persona_manifest_denies_risky_intent_and_tuple():
     assert errors == []
 
 
+def test_validate_persona_manifest_allows_generic_korean_role_phrases():
+    ok, errors = validate_persona_manifest(
+        {
+            "intent": "고객 인터뷰와 사용자대표 관점으로 근거를 요약한다.",
+            "allowed_tools": ["read_file"],
+            "required_outputs": ["report"],
+        }
+    )
+
+    assert ok is True
+    assert errors == []
+
+    ok, errors = validate_persona_manifest(
+        {
+            "intent": "담당자: 김민지 대표의 개인 정보를 중심으로 분석한다.",
+            "allowed_tools": ["read_file"],
+            "required_outputs": ["report"],
+        }
+    )
+
+    assert ok is False
+    assert "real-name targeting present" in errors
+
+
 def test_validate_evolve_proposal_rejects_immutable_changes():
     ok, errors = validate_evolve_proposal(
         {"changes": [{"action": "modify_axis_weight", "axis": "citation_fidelity"}]}

@@ -55,16 +55,32 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
         str(_src_path("search", "react-report.py")),
     )
     sections = react_mod.plan_sections(council_payload, max_sections=3)
-    plans = [
-        react_mod.run_react_loop_plan(
+    plans: list[dict[str, Any]] = []
+    executions: list[dict[str, Any]] = []
+    previous_sections: list[str] = []
+    for section in sections:
+        plan = react_mod.run_react_loop_plan(
             section=section,
             report_title=str(council_payload.get("topic") or ""),
             report_summary=str(council_payload.get("consensus") or ""),
             topic=str(council_payload.get("topic") or ""),
-            previous_sections=[],
+            previous_sections=previous_sections,
         )
-        for section in sections
-    ]
+        execution = react_mod.execute_react_section(
+            section=section,
+            report=council_payload,
+            prompt_plan=plan,
+            previous_sections=previous_sections,
+        )
+        plans.append(plan)
+        executions.append(execution)
+        previous_sections.append(str(execution.get("section_markdown") or ""))
+    backend_tool_calls = sum(
+        1
+        for execution in executions
+        for observation in execution.get("observations") or []
+        if isinstance(observation, dict) and observation.get("executed_backend")
+    )
     return {
         "section_count": len(sections),
         "sections": [
@@ -75,9 +91,16 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
                 "act": str((section.get("react") or {}).get("act") or ""),
                 "observe": str((section.get("react") or {}).get("observe") or ""),
                 "write": str((section.get("react") or {}).get("write") or ""),
+                "final_answer": str(execution.get("final_answer") or ""),
+                "section_markdown": str(execution.get("section_markdown") or ""),
+                "tool_call_count": len(execution.get("tool_calls") or []),
+                "observation_count": len(execution.get("observations") or []),
             }
-            for section in sections
+            for section, execution in zip(sections, executions)
         ],
+        "executed_section_count": len(executions),
+        "total_tool_calls": sum(len(execution.get("tool_calls") or []) for execution in executions),
+        "backend_tool_calls": backend_tool_calls,
         "min_tool_calls": int(plans[0]["react_config"]["min_tool_calls"]) if plans else 0,
         "available_tools": list(plans[0]["react_config"]["available_tools"]) if plans else [],
     }

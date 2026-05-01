@@ -62,6 +62,8 @@ class CrossRefClient:
             source_title=title,
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
+            doi=doi,
+            journal=_container_title(item),
         )
 
 

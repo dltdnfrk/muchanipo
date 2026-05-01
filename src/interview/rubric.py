@@ -41,6 +41,7 @@ _LABEL_TO_DIM_ID = {
     "research_question": "Q1_research_question",
     "purpose": "Q2_purpose",
     "context": "Q3_context",
+    "known": "Q4_known",
     "deliverable_type": "Q5_deliverable",
     "quality_bar": "Q6_quality",
 }

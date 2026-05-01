@@ -39,6 +39,15 @@ class MockResearchRunner:
     """API-key-free runner used by tests and early pipeline wiring."""
 
     def run(self, plan: ResearchPlan) -> list[Finding]:
+        self.last_backend_trace = [
+            {
+                "backend": "mock",
+                "query": query,
+                "status": "mock",
+                "count": 1,
+            }
+            for query in (plan.queries or ["research question"])
+        ]
         findings: list[Finding] = []
         for idx, query in enumerate(plan.queries or ["research question"], start=1):
             evidence = EvidenceRef(
@@ -171,6 +180,7 @@ class WebResearchRunner:
         else:
             self.vault_search = vault_search
         self.per_query_cap = max(1, per_query_cap)
+        self.last_backend_trace: list[dict[str, Any]] = []
 
     def _gather(self, query: str) -> list[dict]:
         hits: list[dict] = []
@@ -187,7 +197,24 @@ class WebResearchRunner:
                 raw = list(backend(query) or [])
             except Exception as exc:  # noqa: BLE001 — never fail the whole run
                 LOGGER.warning("research backend %s failed for query %r: %s", kind, query, exc)
+                self.last_backend_trace.append(
+                    {
+                        "backend": kind,
+                        "query": query,
+                        "status": "error",
+                        "count": 0,
+                        "error": str(exc).splitlines()[0][:160],
+                    }
+                )
                 continue
+            self.last_backend_trace.append(
+                {
+                    "backend": kind,
+                    "query": query,
+                    "status": "ok",
+                    "count": len(raw),
+                }
+            )
             for item in raw:
                 if isinstance(item, EvidenceRef):
                     hits.append({"kind": kind, "score": 1.0, "evidence_ref": item})
@@ -238,6 +265,7 @@ class WebResearchRunner:
         )
 
     def run(self, plan: ResearchPlan) -> list[Finding]:
+        self.last_backend_trace = []
         findings: list[Finding] = []
         queries = plan.queries or ["research question"]
         for idx, query in enumerate(queries, start=1):

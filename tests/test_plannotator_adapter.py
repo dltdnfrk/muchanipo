@@ -10,6 +10,7 @@ def test_auto_approve_gate_returns_approved():
 
     assert result.status == "approved"
     assert result.comments == ["auto-approved gate: brief"]
+    assert result.synthetic is True
 
 
 def test_markdown_gate_writes_pending_queue_item(tmp_path: Path):

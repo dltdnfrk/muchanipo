@@ -68,6 +68,8 @@ class UnpaywallClient:
             source_title=item.get("title"),
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
+            doi=doi,
+            journal=item.get("journal_name"),
         )
 
 

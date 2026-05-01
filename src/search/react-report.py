@@ -14,12 +14,19 @@ MiroFish 원본 패턴 채용:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import logging
 import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, List
+
+from src.research.academic import sync_search as academic_sync_search
+
+LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +515,199 @@ def run_react_loop_plan(
             "7. 최대 도구 호출: react_config.max_tool_calls (초과 시 강제 Final Answer)"
         ),
     }
+
+
+def execute_react_section(
+    section: dict[str, Any],
+    report: dict[str, Any],
+    prompt_plan: dict[str, Any],
+    previous_sections: list[str] | None = None,
+) -> dict[str, Any]:
+    """Execute a deterministic offline ReACT loop for one section.
+
+    The upstream MiroFish loop is LLM-driven. Muchanipo's offline runtime keeps
+    the same control contract by generating structured tool-call messages,
+    parsing them through ``parse_tool_calls``, collecting observations from the
+    report evidence payload, and writing the section from those observations.
+    """
+    config = prompt_plan.get("react_config") or {}
+    available_tools = list(config.get("available_tools") or sorted(ALL_TOOLS))
+    min_calls = int(config.get("min_tool_calls") or MIN_TOOL_CALLS)
+    max_calls = int(config.get("max_tool_calls") or MAX_TOOL_CALLS_PER_SECTION)
+    planned_tools = _planned_react_tools(available_tools, min_calls, max_calls)
+    tool_calls: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    query = str(section.get("source_text") or report.get("topic") or report.get("query") or "")
+
+    for tool_name in planned_tools:
+        response = _scripted_tool_call_response(tool_name, query)
+        for call in parse_tool_calls(response):
+            tool_calls.append(call)
+            observations.append(_run_react_tool(call, report))
+
+    final_answer = _build_final_answer(section, observations, previous_sections or [])
+    return {
+        "section_title": str(section.get("title") or ""),
+        "section_type": str(section.get("type") or ""),
+        "tool_calls": tool_calls,
+        "observations": observations,
+        "final_answer": final_answer,
+        "section_markdown": final_answer,
+        "react_config": config,
+    }
+
+
+def _planned_react_tools(available_tools: list[str], min_calls: int, max_calls: int) -> list[str]:
+    preferred = ["insight_forge", "mempalace_search", "web_search"]
+    ordered = [tool for tool in preferred if tool in available_tools]
+    ordered.extend(tool for tool in available_tools if tool not in ordered)
+    target = max(1, min(max_calls, min_calls))
+    if not ordered:
+        ordered = ["web_search"]
+    while len(ordered) < target:
+        ordered.append(ordered[-1])
+    return ordered[:target]
+
+
+def _scripted_tool_call_response(tool_name: str, query: str) -> str:
+    return "\n".join([
+        f"Thought: collect evidence for {query[:120]}",
+        "<tool_call>",
+        json.dumps({"name": tool_name, "parameters": {"query": query}}, ensure_ascii=False),
+        "</tool_call>",
+    ])
+
+
+def _run_react_tool(call: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    name = str(call.get("name") or call.get("tool") or "web_search")
+    parameters = call.get("parameters") or {}
+    query = str(parameters.get("query") or report.get("topic") or report.get("query") or "")
+    snippets = _execute_react_tool_backend(name, query)
+    executed_backend = bool(snippets)
+    fallback_reason = ""
+    if not snippets:
+        fallback_reason = "backend_empty_or_unavailable"
+        matched = _find_related_evidence(query, report.get("evidence", []), max_results=3)
+        if not matched:
+            matched = list(report.get("evidence", []))[:2]
+        snippets = [
+            {
+                "source": _extract_evidence_source(item),
+                "text": _extract_evidence_text(item),
+            }
+            for item in matched
+        ]
+    return {
+        "tool": name,
+        "query": query,
+        "executed_backend": executed_backend,
+        "fallback_reason": fallback_reason,
+        "result_count": len(snippets),
+        "snippets": snippets,
+    }
+
+
+def _execute_react_tool_backend(name: str, query: str) -> list[dict[str, str]]:
+    module = _load_insight_forge_module()
+    if name == "web_search":
+        return _execute_web_search_backend(query)
+    if module is None:
+        return []
+    try:
+        if name == "insight_forge":
+            payload = module.insight_forge(query=query, depth="light")
+            raw_results = list((payload or {}).get("results", []) or [])
+        elif name == "mempalace_search":
+            raw_results = list(module.search_mempalace(query=query, limit=3) or [])
+        else:
+            return []
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("react backend %s failed for query %r: %s", name, query, exc)
+        return []
+    snippets: list[dict[str, str]] = []
+    for item in raw_results[:3]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("content") or item.get("quote") or "").strip()
+        source = str(item.get("source") or item.get("file") or item.get("wing") or name).strip()
+        if text:
+            snippets.append({"source": source, "text": text})
+    return snippets
+
+
+def _execute_web_search_backend(query: str) -> list[dict[str, str]]:
+    if os.environ.get("MUCHANIPO_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return []
+    try:
+        refs = academic_sync_search.search(query, limit=3)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("react web_search backend failed for query %r: %s", query, exc)
+        return []
+    snippets: list[dict[str, str]] = []
+    for ref in refs[:3]:
+        if isinstance(ref, dict):
+            text = str(ref.get("quote") or ref.get("text") or ref.get("title") or "").strip()
+            source = str(ref.get("source_url") or ref.get("source") or ref.get("id") or "web_search").strip()
+        else:
+            text = str(getattr(ref, "quote", None) or getattr(ref, "source_title", None) or "").strip()
+            source = str(
+                getattr(ref, "source_url", None)
+                or getattr(ref, "source_title", None)
+                or getattr(ref, "id", None)
+                or "web_search"
+            ).strip()
+        if text:
+            snippets.append({"source": source, "text": text})
+    return snippets
+
+
+def _load_insight_forge_module() -> Any | None:
+    src_path = Path(__file__).with_name("insight-forge.py")
+    if not src_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("muchanipo_react_insight_forge", src_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("react insight_forge import failed: %s", exc)
+        return None
+
+
+def _build_final_answer(
+    section: dict[str, Any],
+    observations: list[dict[str, Any]],
+    previous_sections: list[str],
+) -> str:
+    source_text = str(section.get("source_text") or "").strip()
+    lines = [
+        f"**핵심 주장:** {source_text or section.get('title') or '추가 검증 필요'}",
+        "",
+        "**도구 관찰:**",
+    ]
+    seen: set[tuple[str, str]] = set()
+    for observation in observations:
+        for snippet in observation.get("snippets", []) or []:
+            source = str(snippet.get("source") or "unknown")
+            text = str(snippet.get("text") or "").strip()
+            key = (source, text)
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- {observation['tool']} | {source}: {text[:240]}")
+    if len(lines) == 3:
+        lines.append("- 근거 관찰이 충분하지 않아 추가 수집이 필요합니다.")
+    if previous_sections:
+        lines.extend(["", f"**중복 방지:** 이전 {len(previous_sections)}개 섹션과 구분해 작성했습니다."])
+    lines.extend([
+        "",
+        "**작성 결과:**",
+        f"{source_text or section.get('title') or '이 섹션'}에 대해 위 관찰을 근거로 판단합니다.",
+    ])
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

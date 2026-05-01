@@ -1,26 +1,49 @@
 """In-memory evidence store wired to citation_grounder provenance check."""
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 from collections import Counter
 
 from .artifact import EvidenceRef
 from src.runtime.live_mode import LiveModeViolation
 
 
+_ACADEMIC_KINDS = {
+    "openalex",
+    "crossref",
+    "semantic_scholar",
+    "unpaywall",
+    "arxiv",
+    "core",
+}
+_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+_CONTENT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[가-힣]{2,}", re.UNICODE)
+
+
 def _validate_provenance(refs: list[EvidenceRef], *, require_live: bool = False) -> dict[str, bool]:
-    """Per-evidence provenance flags. Defers to citation_grounder which itself
-    wraps `src.safety.lockdown.validate_evidence_provenance` and degrades to
-    pass-through when the safety module is missing."""
+    """Per-evidence provenance flags.
+
+    The optional citation_grounder/lockdown validator is useful but not the
+    only gate. Stage-4 source-grounding must still fail closed enough when that
+    optional integration is absent or permissive, so every ref also passes a
+    stdlib structural check.
+    """
     if not refs:
         return {}
+    structural_flags = {
+        ref.id: _structural_provenance_ok(ref)
+        for ref in refs
+    }
     try:
         from src.eval.citation_grounder import _lockdown_validate_provenance
     except Exception as exc:  # noqa: BLE001
         if require_live:
             raise LiveModeViolation("live mode requires provenance validator availability") from exc
-        return {ref.id: True for ref in refs}
+        return structural_flags
 
     payload: list[dict[str, Any]] = []
     for ref in refs:
@@ -34,11 +57,93 @@ def _validate_provenance(refs: list[EvidenceRef], *, require_live: bool = False)
             }
         )
     try:
-        return _lockdown_validate_provenance(payload)
+        lockdown_flags = _lockdown_validate_provenance(payload)
     except Exception as exc:  # noqa: BLE001
         if require_live:
             raise LiveModeViolation("live mode provenance validation failed") from exc
-        return {ref.id: True for ref in refs}
+        lockdown_flags = {ref.id: True for ref in refs}
+    return {
+        ref.id: bool(lockdown_flags.get(ref.id, True)) and bool(structural_flags.get(ref.id, False))
+        for ref in refs
+    }
+
+
+def _structural_provenance_ok(ref: EvidenceRef) -> bool:
+    prov = ref.provenance or {}
+    quote = str(ref.quote or "").strip()
+    source_text = _source_text_as_text(prov.get("source_text"))
+    if not quote or not source_text:
+        return False
+    if quote not in source_text and _token_coverage(quote, source_text) < 0.8:
+        return False
+
+    source = str(ref.source_url or prov.get("source") or "").strip()
+    if source and not _valid_source_locator(source):
+        return False
+
+    doi = _normalize_doi(str(prov.get("doi") or "")) or _doi_from_locator(source)
+    if prov.get("doi") and not doi:
+        return False
+
+    kind = str(prov.get("kind") or "").strip().lower()
+    if kind in _ACADEMIC_KINDS and str(ref.source_grade).upper() == "A" and not doi:
+        return False
+    return True
+
+
+def _source_text_as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _valid_source_locator(value: str) -> bool:
+    if value.startswith(("doi:", "arxiv:", "pmid:")):
+        return True
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _normalize_doi(value: str) -> str:
+    doi = value.strip()
+    if not doi:
+        return ""
+    lowered = doi.lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if lowered.startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    return doi if _DOI_RE.match(doi) else ""
+
+
+def _doi_from_locator(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.netloc.lower() == "doi.org":
+        return _normalize_doi(parsed.path.lstrip("/"))
+    if value.startswith("doi:"):
+        return _normalize_doi(value)
+    return ""
+
+
+def _token_coverage(quote: str, source_text: str) -> float:
+    tokens = {
+        token.lower()
+        for token in _CONTENT_TOKEN_RE.findall(quote)
+        if len(token) >= 2
+    }
+    if not tokens:
+        return 0.0
+    source_tokens = {
+        token.lower()
+        for token in _CONTENT_TOKEN_RE.findall(source_text)
+        if len(token) >= 2
+    }
+    return len(tokens & source_tokens) / len(tokens)
 
 
 @dataclass

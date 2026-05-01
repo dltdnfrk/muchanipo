@@ -35,6 +35,7 @@ def test_core_search_maps_full_text_result():
     assert results[0].id == "core:42"
     assert results[0].source_url == "https://core.ac.uk/download/42"
     assert results[0].quote == "A useful abstract Full text body"
+    assert results[0].provenance["doi"] == "10.777/core"
     assert results[0].provenance["source_text"]["fullText"] == "Full text body"
 
 

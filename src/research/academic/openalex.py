@@ -74,6 +74,9 @@ class OpenAlexClient:
             source_title=item.get("display_name"),
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
+            doi=doi,
+            journal=_journal_name(item),
+            institution=_institution_name(item),
         )
 
 
@@ -84,6 +87,26 @@ def _abstract_from_inverted_index(index: dict[str, list[int]] | None) -> str | N
     for word, positions in index.items():
         words.extend((position, word) for position in positions)
     return " ".join(word for _, word in sorted(words)) or None
+
+
+def _journal_name(item: dict[str, Any]) -> str | None:
+    primary_source = ((item.get("primary_location") or {}).get("source") or {})
+    host_venue = item.get("host_venue") or {}
+    return (
+        primary_source.get("display_name")
+        or primary_source.get("host_organization_name")
+        or host_venue.get("display_name")
+    )
+
+
+def _institution_name(item: dict[str, Any]) -> str | None:
+    for authorship in item.get("authorships") or []:
+        if not isinstance(authorship, dict):
+            continue
+        for institution in authorship.get("institutions") or []:
+            if isinstance(institution, dict) and institution.get("display_name"):
+                return str(institution["display_name"])
+    return None
 
 
 async def search(query: str, limit: int = 10, **kwargs: Any) -> list[EvidenceRef]:

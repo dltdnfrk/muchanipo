@@ -86,6 +86,8 @@ def assert_live_hitl(gate_name: str, result: Any) -> None:
     status = str(getattr(result, "status", "") or "")
     if status != "approved":
         raise LiveModeViolation(f"live mode requires approved HITL gate {gate_name!r}; got {status!r}")
+    if bool(getattr(result, "synthetic", False)):
+        raise LiveModeViolation(f"live mode rejects synthetic HITL gate {gate_name!r}")
 
 
 def assert_live_report(report_md: str) -> None:
