@@ -37,7 +37,15 @@ license-sensitive in Muchanipo. Pure reference inspiration is tracked in
 
 ## MIT / Permissive Reference Projects
 
-Karpathy Autoresearch, GPTaku/show-me-the-prd, MemPalace, OASIS/CAMEL-AI, and
-other permissive or reference-only projects should stay in the inventory unless
+Karpathy Autoresearch and GPTaku/show-me-the-prd are tracked as permissive or
+reference-only projects in the runtime inventory. They should stay there unless
 source code, prompts, schemas, or assets are copied into this repo. If copied,
 add the exact source URL, revision, license, and modification note here.
+
+## License Verification Required
+
+MemPalace and OASIS/CAMEL-AI are not cleared under this permissive bucket. The
+runtime inventory currently treats MemPalace as `unknown` and OASIS/CAMEL-AI as
+`Apache-2.0 or project-specific; verify upstream component before copying code`.
+Do not copy additional source code, prompts, schemas, or assets from those
+projects until the exact upstream source URL, revision, and license are recorded.

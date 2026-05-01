@@ -148,6 +148,7 @@ muchanipo status
 muchanipo runs
 muchanipo contracts
 muchanipo references
+muchanipo orchestrate
 
 # Scriptable inspection
 muchanipo doctor --json
@@ -155,6 +156,8 @@ muchanipo status --json
 muchanipo runs --json --limit 5
 muchanipo contracts --json
 muchanipo references --json
+muchanipo orchestrate --json
+muchanipo orchestrate --cleanup-workers --dry-run --json
 ```
 
 The no-argument home screen reads the same run summaries and shows the latest
@@ -166,7 +169,8 @@ JSON inspection commands return stable objects with `schema_version`,
 - `doctor --json`: `status`, `checks`, `cli_statuses`, `recommendations`
 - `status --json`: `providers`
 - `runs --json`: `runs_dir`, `limit`, `runs`
-- `references --json`: `stages`, `references`, `gaps`, `license_warnings`
+- `references --json`: `stages`, `references`, `gaps`, `not_ready_references`, `license_warnings`
+- `orchestrate --json`: `session`, `plan`, `windows`, `panes`, `operators`, `warnings`
 
 See `docs/cli-json-contracts.md` or `muchanipo contracts --json` for the
 current required top-level keys.
@@ -174,6 +178,24 @@ current required top-level keys.
 `muchanipo demo` is the fastest product smoke path. It runs a deterministic
 offline topic, skips the interview, and writes the same `REPORT.md`,
 `events.jsonl`, and `summary.json` artifacts as normal runs.
+
+Before a pre-release audit, run:
+
+```bash
+bash scripts/release_check.sh
+```
+
+The release check runs focused orchestration tests, CLI/TUI tests, the full
+Python suite, diff hygiene, orchestration status/dry-run cleanup, JSON
+contracts, the offline demo, generated-artifact hygiene, a Python 3.11 wheel
+build, an installed console-script smoke, and an installed `python -m
+muchanipo` smoke when `python3.11` is available.
+
+Passing this script proves deterministic offline packaging and CLI contracts. It
+does not prove live provider/HITL behavior or full upstream reference parity.
+Use `muchanipo references --json` to check `not_ready_references`, and run a
+separate opt-in live smoke before making live-research or 99% implementation
+claims.
 
 Autoresearch depth is explicit: `--depth shallow` targets a quick interactive
 pass, `--depth deep` keeps the default full ten-layer council budget, and
@@ -183,6 +205,15 @@ background runs. The six-stage Muchanipo flow remains intact at every depth.
 `muchanipo references` reports which reference-project ideas are backed by
 local runtime code, which are still gaps, and which carry license warnings. It
 does not imply that full upstream repositories are vendored.
+
+`muchanipo orchestrate` reports the tmux/smux operator contract used for
+multi-agent work: window 0 is the protected operator hub, worker windows are
+1-4, OpenCode is expected to use Hephaestus Deep Agent GPT-5.5, and cleanup
+commands only target verified worker windows. Verification requires both the
+expected worker window name and a pane title marker such as
+`muchanipo-worker:codex`. Use `--cleanup-workers --dry-run` before destructive
+cleanup; actual cleanup additionally requires `--force`. Pane captures
+requested with `--include-capture` are redacted before output.
 
 Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by
 default:

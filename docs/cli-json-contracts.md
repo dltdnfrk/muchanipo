@@ -64,7 +64,30 @@ Required top-level keys:
 - `stages`
 - `references`
 - `gaps`
+- `not_ready_references`
 - `license_warnings`
 
 Purpose: inspect six-stage reference-project readiness, local runtime-backed
 modules, known gaps, and license-sensitive boundaries.
+
+## `muchanipo orchestrate --json`
+
+Required top-level keys:
+
+- `schema_version`
+- `command`
+- `session`
+- `ok`
+- `tmux_available`
+- `plan`
+- `windows`
+- `panes`
+- `operators`
+- `warnings`
+
+Purpose: inspect the tmux/smux operator hub contract, current panes/windows,
+operator-worker mapping, and cleanup safety status. The protected operator hub
+is window 0; cleanup actions are scoped to verified worker windows 1-4.
+Verification requires both the expected worker window name and a pane title
+marker such as `muchanipo-worker:codex`. Destructive cleanup requires
+`--force`, and `--include-capture` output is redacted before it is returned.
