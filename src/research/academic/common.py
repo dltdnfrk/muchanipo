@@ -58,6 +58,10 @@ def evidence_ref(
     source_title: str | None,
     quote: str | None,
     source_grade: str = "A",
+    doi: str | None = None,
+    journal: str | None = None,
+    institution: str | None = None,
+    retrieved_at: str | None = None,
 ) -> EvidenceRef:
     return EvidenceRef(
         id=f"{source}:{paper_id}",
@@ -71,6 +75,10 @@ def evidence_ref(
                 "paper_id": paper_id,
                 "source_text": dict(raw),
             },
+            doi=doi,
+            journal=journal,
+            institution=institution,
+            retrieved_at=retrieved_at,
         ).as_dict(),
     )
 

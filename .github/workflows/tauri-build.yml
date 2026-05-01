@@ -36,14 +36,24 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Verify Tauri workspace paths
+        run: |
+          test -f Cargo.lock
+          target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          expected="$GITHUB_WORKSPACE/app/muchanipo-tauri/target"
+          if [ "$target_dir" != "$expected" ]; then
+            echo "Unexpected cargo target directory: $target_dir (expected $expected)" >&2
+            exit 1
+          fi
+
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            app/muchanipo-tauri/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('app/muchanipo-tauri/src-tauri/Cargo.lock') }}
+            app/muchanipo-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('app/muchanipo-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -67,8 +77,8 @@ jobs:
         with:
           name: muchanipo-macos-${{ github.sha }}
           path: |
-            app/muchanipo-tauri/src-tauri/target/release/bundle/macos/*.app
-            app/muchanipo-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            app/muchanipo-tauri/target/release/bundle/macos/*.app
+            app/muchanipo-tauri/target/release/bundle/dmg/*.dmg
           retention-days: 30
 
       - name: Create GitHub Release on tag
@@ -76,6 +86,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            app/muchanipo-tauri/src-tauri/target/release/bundle/macos/*.app
-            app/muchanipo-tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            app/muchanipo-tauri/target/release/bundle/macos/*.app
+            app/muchanipo-tauri/target/release/bundle/dmg/*.dmg
           generate_release_notes: true

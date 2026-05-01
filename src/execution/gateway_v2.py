@@ -8,11 +8,12 @@ Stage routing per PRD-v2 §8.1 (Qwen 보류):
     Evidence   → Kimi
     Council    → Anthropic Opus
     Report     → Anthropic Sonnet  (Qwen 로컬 보류)
-    Eval       → Codex (GPT-5.5)
+    Eval       → Codex (GPT-5.4)
 
 Fallback chain per stage — first failure → next provider in chain.
-Offline mode is opt-in: if KIMI_OFFLINE / GEMINI_OFFLINE / CODEX_OFFLINE / no
-API keys, providers return deterministic mocks (test-friendly).
+The app path is CLI-first: installed Claude/Gemini/Kimi/Codex CLIs own their
+own auth, and API keys are only fallback inputs. Providers return
+deterministic mocks when neither CLI nor API credentials are available.
 
 stdlib only.
 """
@@ -24,6 +25,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
 from src.governance.budget import BudgetExceeded, provider_name, resolve_model
+from src.runtime.live_mode import assert_live_model_result, live_requested_from_env
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -107,6 +109,7 @@ class FallbackChain:
 def build_default_providers(
     *,
     force_offline: bool = False,
+    prefer_cli: bool = True,
 ) -> Dict[str, Provider]:
     """기본 5종 provider (anthropic/gemini/kimi/codex/mock).
 
@@ -119,10 +122,10 @@ def build_default_providers(
     from src.execution.providers.mock import MockProvider
 
     providers: Dict[str, Provider] = {
-        "anthropic": AnthropicProvider(offline=True if force_offline else None),
-        "gemini": GeminiProvider(offline=True if force_offline else None),
-        "kimi": KimiProvider(offline=True if force_offline else None),
-        "codex": CodexProvider(offline=True if force_offline else None),
+        "anthropic": AnthropicProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "gemini": GeminiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "kimi": KimiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "codex": CodexProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "mock": MockProvider(),
     }
     return providers
@@ -136,15 +139,21 @@ def default_gateway(
     budget: Any = None,
     audit: Any = None,
     force_offline: bool = False,
+    require_live_default: bool = False,
+    prefer_cli: bool = True,
 ) -> "GatewayV2":
     """PRD §8.1 기본 라우팅 + fallback chain을 갖춘 GatewayV2 인스턴스."""
-    provider_map = dict(providers) if providers else build_default_providers(force_offline=force_offline)
+    provider_map = dict(providers) if providers else build_default_providers(
+        force_offline=force_offline,
+        prefer_cli=prefer_cli,
+    )
     return GatewayV2(
         providers=provider_map,
         stage_routes=dict(routes or PRIMARY_ROUTES),
         fallback_chain=dict(fallback_chain or FALLBACK_CHAIN),
         budget=budget,
         audit=audit,
+        require_live_default=require_live_default,
     )
 
 
@@ -166,6 +175,7 @@ class GatewayV2(ModelGateway):
         fallback_chain: Mapping[str, Sequence[str]],
         budget: Any = None,
         audit: Any = None,
+        require_live_default: bool = False,
     ) -> None:
         # 기본 ModelGateway 초기화 (fallback_provider는 미사용 — 체인이 대신함)
         super().__init__(
@@ -178,12 +188,21 @@ class GatewayV2(ModelGateway):
             k: list(v) for k, v in fallback_chain.items()
         }
         self._fallback_events: List[Dict[str, Any]] = []
+        self.require_live_default = bool(require_live_default)
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
+        require_live = (
+            bool(kwargs.pop("require_live", False))
+            or self.require_live_default
+            or live_requested_from_env()
+        )
         chain_names = self.fallback_chain.get(stage)
         if not chain_names:
             # 체인 미정의 → 기본 ModelGateway 동작
-            return super().call(stage, prompt, **kwargs)
+            result = super().call(stage, prompt, **kwargs)
+            if require_live:
+                assert_live_model_result(stage, result)
+            return result
 
         chain_providers: List[Provider] = []
         for name in chain_names:
@@ -235,6 +254,8 @@ class GatewayV2(ModelGateway):
                 self.budget.reconcile(reservation_id, actual_usd=actual_usd)
                 actual_provider = self._provider_from_result(result, provider)
                 self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
+                if require_live:
+                    assert_live_model_result(stage, result)
                 return result
             raise RuntimeError(
                 f"FallbackChain {stage} exhausted ({len(chain_providers)} providers) — last: {last_error}"
@@ -257,6 +278,8 @@ class GatewayV2(ModelGateway):
             self.budget.reconcile(reservation_id, actual_usd=actual_usd)
         actual_provider = self._provider_from_result(result, primary)
         self._audit(stage, actual_provider, result, actual_usd, result.fallback_reason)
+        if require_live:
+            assert_live_model_result(stage, result)
         return result
 
     def _record_fallback(self, stage: str, provider: Provider, error: Exception) -> None:

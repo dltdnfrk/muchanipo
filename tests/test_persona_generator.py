@@ -90,6 +90,33 @@ def test_persona_generator_requires_value_axes_when_requested():
     assert any(issue.code == "value_axes" for issue in report.issues)
 
 
+def test_deep_validate_does_not_reject_generic_korean_role_names():
+    generator = PersonaGenerator()
+    draft = Draft(
+        persona_id="persona-user-rep",
+        name="User Representative",
+        role="사용자대표",
+        intent="고객 인터뷰와 사용자대표 관점으로 근거를 요약한다.",
+        allowed_tools=["model_gateway"],
+        required_outputs=["council_round_response"],
+        value_axes={
+            "time_horizon": "mid",
+            "risk_tolerance": 0.5,
+            "stakeholder_priority": ["primary"],
+            "innovation_orientation": 0.5,
+        },
+    )
+    ontology = {
+        "roles": ["사용자대표"],
+        "allowed_tools": ["model_gateway"],
+        "required_outputs": ["council_round_response"],
+    }
+
+    report = generator.deep_validate([draft], ontology)
+
+    assert report.ok is True
+
+
 def test_propose_with_korean_seed_grounds_drafts(tmp_path):
     """KoreaPersonaSampler seed가 propose에 들어오면 Draft에 grounded 정보가 박힌다."""
     from pathlib import Path
@@ -138,3 +165,29 @@ def test_propose_without_seed_falls_back_to_role_naming():
     assert len(drafts) == 2
     assert drafts[0].name == "Evidence Reviewer 1"
     assert "grounded_seed" not in drafts[0].manifest
+
+
+def test_generate_large_mirofish_style_pool_without_map_elites_capping():
+    """MAP-Elites records coverage but must not shrink the full persona pool."""
+    from src.council.diversity_mapper import DiversityMap
+    from src.council.persona_generator import PersonaGenerator
+
+    gen = PersonaGenerator()
+    dmap = DiversityMap(bins_per_axis=8)
+    finals, telemetry = gen.generate(
+        ontology={
+            "roles": ["python_cli_maintainer", "tui_operator", "sre", "qa"],
+            "intents": ["Review runtime behavior with file evidence."],
+            "allowed_tools": ["model_gateway"],
+            "required_outputs": ["council_round_response"],
+        },
+        target_count=32,
+        diversity_map=dmap,
+        topic="Muchanipo CLI runtime review",
+    )
+
+    assert len(finals) == 32
+    assert telemetry["persona_pool_size"] == 32
+    assert telemetry["fallbacks_used"] == 0
+    assert dmap.coverage() > 0
+    assert len({p.persona_id for p in finals}) == 32

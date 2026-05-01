@@ -1,18 +1,28 @@
-"""`muchanipo serve` — JSON-line event stream for the Tauri/Swift native shell.
+"""Muchanipo command line entrypoint.
 
 Modes:
-    --pipeline=stub  (default, legacy)
+    demo
+        Deterministic offline sample run. Writes the same report, event log,
+        and summary artifacts as a normal run without asking interview
+        questions or requiring provider credentials.
+    run
+        Terminal-first full pipeline runner. Writes a report, event log, and
+        summary under the local runs directory.
+    tui
+        Terminal dashboard wrapper around the same full pipeline core.
+    --pipeline=stub  (legacy)
         Emits the canonical phase order (STARTUP → INTERVIEW → COUNCIL → REPORT
         → done) with placeholder council/report content.
-    --pipeline=full
+    --pipeline=full  (default)
         PRD-v2 §2.1 8-stage pipeline:
         intake → interview → targeting → research → evidence → council →
         report → finalize. Council generates 10 RoundDigest entries; report
         composes a real MBB 6-chapter document via ChapterMapper +
         PyramidFormatter and writes it to REPORT.md.
 
-Both modes use offline mock LLM providers (no network) so the Tauri shell
-can be exercised end-to-end without API keys.
+Offline mode and demo use mock providers so the CLI/TUI and Tauri shell can be
+exercised end-to-end without API keys. Online mode requires provider CLIs or
+API credentials and fails closed when live providers are requested but absent.
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ from pathlib import Path
 from typing import Any, IO, List, Sequence
 
 from .events import Action, emit, parse_action
+from src.research.depth import VALID_DEPTHS
 
 
 # ---- argparse ------------------------------------------------------------
@@ -31,6 +42,86 @@ from .events import Action, emit, parse_action
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="muchanipo")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    run = sub.add_parser("run", help="Run the full local CLI-first pipeline in the terminal")
+    run.add_argument("topic_arg", nargs="?", help="Research topic")
+    run.add_argument("--topic", dest="topic_opt", help="Research topic")
+    run.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    run.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    run.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
+    run.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
+    run.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    run.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
+    run.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
+    run.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
+
+    tui = sub.add_parser("tui", help="Run the terminal dashboard over the full pipeline")
+    tui.add_argument("topic_arg", nargs="?", help="Research topic")
+    tui.add_argument("--topic", dest="topic_opt", help="Research topic")
+    tui.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    tui.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    tui.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
+    tui.add_argument("--offline", action="store_true", help="Force deterministic offline/mock providers")
+    tui.add_argument("--online", action="store_true", help="Force live CLI/API provider detection")
+    tui.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
+    tui.add_argument("--interview", action="store_true", help="Ask the PRD intake interview before running")
+    tui.add_argument("--no-interview", action="store_true", help="Skip the PRD intake interview")
+
+    runs = sub.add_parser("runs", help="List recent terminal runs")
+    runs.add_argument("--limit", type=int, default=10, help="Maximum runs to show")
+    runs.add_argument("--json", action="store_true", help="Print run summaries as JSON")
+
+    status = sub.add_parser("status", help="Show local provider CLI status")
+    status.add_argument("--json", action="store_true", help="Print provider CLI status as JSON")
+
+    doctor = sub.add_parser("doctor", help="Check local runtime readiness")
+    doctor.add_argument("--json", action="store_true", help="Print readiness checks as JSON")
+
+    contracts = sub.add_parser("contracts", help="Show stable CLI JSON output contracts")
+    contracts.add_argument("--json", action="store_true", help="Print JSON contracts as JSON")
+
+    references = sub.add_parser("references", help="Show reference-project runtime readiness")
+    references.add_argument("--json", action="store_true", help="Print reference readiness as JSON")
+
+    orchestrate = sub.add_parser("orchestrate", help="Show/manage tmux operator and worker orchestration")
+    orchestrate.add_argument("--session", default="muni", help="tmux session name (default: muni)")
+    orchestrate.add_argument("--json", action="store_true", help="Print orchestration status as JSON")
+    orchestrate.add_argument("--include-capture", action="store_true", help="Include recent capture-pane output")
+    orchestrate.add_argument("--cleanup-workers", action="store_true", help="Kill worker windows 1-4 after completion")
+    orchestrate.add_argument("--dry-run", action="store_true", help="Show cleanup actions without killing windows")
+    orchestrate.add_argument("--force", action="store_true", help="Required for destructive worker-window cleanup")
+
+    demo = sub.add_parser("demo", help="Run a deterministic offline demo topic")
+    demo.add_argument(
+        "--report-path",
+        default=None,
+        help="Where to write the final REPORT.md (defaults to the run directory)",
+    )
+    demo.add_argument(
+        "--run-dir",
+        default=None,
+        help="Run artifact directory (defaults to ~/.local/share/muchanipo/runs/<run-id>)",
+    )
+    demo.add_argument("--jsonl", action="store_true", help="Print machine-readable JSONL progress")
+    demo.add_argument("--plain", action="store_true", help="Disable dashboard redraw; print line-by-line")
+    demo.add_argument("--offline", action="store_true", help="Accepted for symmetry; demo always runs offline")
+    demo.add_argument("--depth", choices=VALID_DEPTHS, default="shallow", help="Demo depth budget")
 
     serve = sub.add_parser("serve", help="Stream JSON-line events to stdout")
     serve.add_argument("--topic", required=True, help="Research topic")
@@ -47,9 +138,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--pipeline",
         choices=("stub", "full"),
-        default="stub",
-        help="stub = legacy 4-phase placeholder, full = PRD-v2 §2.1 8-stage MBB pipeline",
+        default="full",
+        help="full = PRD-v2 §2.1 8-stage MBB pipeline (default), stub = legacy 4-phase placeholder",
     )
+    serve.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
     return parser
 
 
@@ -288,23 +380,45 @@ def _render_chapter_markdown(chapter) -> str:
 def _detect_offline_mode() -> bool:
     """Decide whether to run the pipeline against mock providers.
 
-    Online iff: (a) any LLM CLI is wired up via MUCHANIPO_USE_CLI / *_USE_CLI
-    and the relevant binary is on PATH, OR (b) any provider API key is
-    present in the environment. Otherwise fall back to offline mocks so the
-    pipeline still produces a placeholder report instead of crashing.
+    Online iff: (a) a local LLM CLI binary is available and CLI preference has
+    not been disabled, OR (b) any provider API key is present in the
+    environment. Otherwise fall back to offline mocks so the pipeline still
+    produces a placeholder report instead of crashing.
     """
     import os
     import shutil
 
-    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes")
+    if os.environ.get("MUCHANIPO_OFFLINE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("MUCHANIPO_ONLINE", "").strip().lower() in ("1", "true", "yes"):
+        return False
+
+    true_values = ("1", "true", "yes", "on")
+    running_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    explicit_cli_preference = os.environ.get("MUCHANIPO_PREFER_CLI")
+    default_prefer_cli = "0" if running_pytest else "1"
+    prefer_cli = os.environ.get("MUCHANIPO_PREFER_CLI", default_prefer_cli).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in true_values
+    provider_cli_requested = any(
+        os.environ.get(flag, "").strip().lower() in true_values
+        for flag in ("ANTHROPIC_USE_CLI", "GEMINI_USE_CLI", "KIMI_USE_CLI", "CODEX_USE_CLI")
+    )
+    if running_pytest and explicit_cli_preference is None and not cli_global and not provider_cli_requested:
+        return True
     cli_pairs = [
         ("ANTHROPIC_USE_CLI", "CLAUDE_BIN", "claude"),
         ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
+        ("KIMI_USE_CLI", "KIMI_BIN", "kimi"),
         ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
     ]
     for use_flag, bin_var, bin_name in cli_pairs:
-        local_flag = os.environ.get(use_flag, "").strip() in ("1", "true", "yes")
-        if not (cli_global or local_flag):
+        local_flag = os.environ.get(use_flag, "").strip().lower() in true_values
+        if not (prefer_cli or cli_global or local_flag):
             continue
         explicit = os.environ.get(bin_var)
         if explicit and os.path.exists(explicit):
@@ -330,18 +444,28 @@ def serve_full(
     *,
     report_path: Path,
     stdout: IO[str],
+    depth: str = "deep",
 ) -> int:
     """PRD-v2 §2.1 full pipeline — uses real LLM providers when configured."""
     from src.pipeline.runner import run_pipeline
     from src.report.chapter_mapper import ChapterMapper
     from src.report.pyramid_formatter import PyramidFormatter
+    from src.research.depth import depth_profile
 
     offline = _detect_offline_mode()
+    profile = depth_profile(depth)
     emit(
         "phase_change",
         phase="STARTUP",
         stream=stdout,
-        data={"topic": topic, "pipeline": "full", "offline": offline},
+        data={
+            "topic": topic,
+            "pipeline": "full",
+            "offline": offline,
+            "depth": depth,
+            "council_persona_pool_size": profile.persona_pool_size,
+            "active_council_persona_count": profile.active_persona_count,
+        },
     )
 
     def emit_progress(event: dict[str, Any]) -> None:
@@ -351,11 +475,40 @@ def serve_full(
             emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
         emit(name, stream=stdout, **fields)
 
-    pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline)
-    rounds = pipeline_result["rounds"]
+    try:
+        pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline, depth=depth)
+    except Exception as exc:
+        from src.runtime.live_mode import LiveModeViolation
 
-    for round_no, digest in enumerate(rounds, start=1):
+        if not isinstance(exc, LiveModeViolation):
+            raise
+        emit(
+            "error",
+            stream=stdout,
+            kind="live_mode_violation",
+            message=str(exc),
+            pipeline="full",
+        )
+        emit("done", stream=stdout, pipeline="full", aborted=True)
+        return 1
+    rounds = pipeline_result["rounds"]
+    executed_round_count = int(pipeline_result.get("executed_council_round_count") or len(rounds))
+    turn_transcript = list(pipeline_result.get("council_turn_transcript") or [])
+
+    for round_no, digest in enumerate(rounds[:executed_round_count], start=1):
         emit("council_round_start", stream=stdout, round=round_no, layer=digest.layer_id)
+        for turn in turn_transcript:
+            if int(turn.get("round") or 0) != round_no:
+                continue
+            emit(
+                "council_turn",
+                stream=stdout,
+                round=round_no,
+                layer=str(turn.get("layer_id") or digest.layer_id),
+                stage=str(turn.get("stage") or ""),
+                persona=str(turn.get("persona_id") or ""),
+                provider=str(turn.get("provider") or ""),
+            )
         emit(
             "council_persona_token",
             stream=stdout,
@@ -380,7 +533,7 @@ def serve_full(
             source_layers=list(ch.source_layers),
         )
 
-    final_md = "\n".join(md_parts)
+    final_md = str(pipeline_result.get("report_md") or "\n".join(md_parts))
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_md, encoding="utf-8")
 
@@ -391,7 +544,16 @@ def serve_full(
         chapter_count=len(chapters),
         markdown=final_md,
     )
-    emit("done", stream=stdout, report_path=str(report_path), pipeline="full")
+    emit(
+        "done",
+        stream=stdout,
+        report_path=str(report_path),
+        pipeline="full",
+        depth=depth,
+        council_persona_pool_size=int(pipeline_result.get("council_persona_pool_size") or 0),
+        active_council_persona_count=int(pipeline_result.get("active_council_persona_count") or 0),
+        council_turn_count=len(turn_transcript),
+    )
     return 0
 
 
@@ -405,10 +567,23 @@ def serve(
     wait_for_input: bool,
     stdout: IO[str],
     stdin: IO[str],
-    pipeline: str = "stub",
+    pipeline: str = "full",
+    depth: str = "deep",
 ) -> int:
     if pipeline == "full":
-        return serve_full(topic, report_path=report_path, stdout=stdout)
+        return serve_full(topic, report_path=report_path, stdout=stdout, depth=depth)
+    from src.runtime.live_mode import live_requested_from_env
+
+    if live_requested_from_env():
+        emit(
+            "error",
+            stream=stdout,
+            kind="live_mode_violation",
+            message="live mode does not allow the legacy stub pipeline; use --pipeline=full",
+            pipeline="stub",
+        )
+        emit("done", stream=stdout, pipeline="stub", aborted=True)
+        return 1
     return serve_stub(
         topic,
         report_path=report_path,
@@ -419,8 +594,162 @@ def serve(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        from src.muchanipo.terminal import terminal_app
+
+        try:
+            return terminal_app(stdin=sys.stdin, stdout=sys.stdout)
+        except KeyboardInterrupt:
+            sys.stderr.write("muchanipo: interrupted\n")
+            return 130
+
+    known_commands = {
+        "run",
+        "tui",
+        "serve",
+        "runs",
+        "status",
+        "doctor",
+        "contracts",
+        "references",
+        "orchestrate",
+        "demo",
+    }
+    if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
+        topic, shortcut_options = _parse_topic_shortcut(raw_argv)
+        if not topic:
+            sys.stderr.write("muchanipo: topic is required\n")
+            return 2
+        if shortcut_options["error"]:
+            sys.stderr.write(f"muchanipo: {shortcut_options['error']}\n")
+            return 2
+        return _run_terminal_safely(
+            topic,
+            report_path=shortcut_options["report_path"],
+            run_dir=shortcut_options["run_dir"],
+            offline=shortcut_options["offline"],
+            jsonl=shortcut_options["jsonl"],
+            dashboard=shortcut_options["dashboard"],
+            interview=shortcut_options["interview"],
+            require_live=shortcut_options["require_live"],
+            depth=shortcut_options["depth"],
+        )
+
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
+    if args.command in {"run", "tui"}:
+        topic = (args.topic_opt or args.topic_arg or "").strip()
+        if not topic:
+            parser.error(f"{args.command} requires a topic")
+        if args.offline and args.online:
+            parser.error("--offline and --online are mutually exclusive")
+        if args.interview and args.no_interview:
+            parser.error("--interview and --no-interview are mutually exclusive")
+        offline = True if args.offline else False if args.online else None
+        require_live = bool(args.online)
+        default_interview = _default_interview_enabled(jsonl=bool(getattr(args, "jsonl", False)))
+        interview = True if args.interview else False if args.no_interview else default_interview
+        return _run_terminal_safely(
+            topic,
+            report_path=Path(args.report_path) if args.report_path else None,
+            run_dir=Path(args.run_dir) if args.run_dir else None,
+            offline=offline,
+            jsonl=bool(getattr(args, "jsonl", False)),
+            dashboard=(args.command == "tui" and not getattr(args, "plain", False)),
+            interview=interview,
+            require_live=require_live,
+            depth=args.depth,
+        )
+
+    if args.command == "runs":
+        from src.muchanipo.terminal import render_runs, runs_report
+
+        limit = max(1, args.limit)
+        if args.json:
+            _write_json(runs_report(limit=limit))
+        else:
+            render_runs(stdout=sys.stdout, limit=limit)
+        return 0
+
+    if args.command == "status":
+        from src.muchanipo.terminal import render_cli_status, status_report
+
+        if args.json:
+            _write_json(status_report())
+        else:
+            render_cli_status(stdout=sys.stdout)
+        return 0
+
+    if args.command == "doctor":
+        from src.muchanipo.terminal import doctor_report, render_doctor
+
+        if args.json:
+            report = doctor_report()
+            _write_json(report)
+        else:
+            report = render_doctor(stdout=sys.stdout)
+        return 0 if report["ok"] else 1
+
+    if args.command == "contracts":
+        from src.muchanipo.terminal import json_contracts_report, render_json_contracts
+
+        if args.json:
+            _write_json(json_contracts_report())
+        else:
+            render_json_contracts(stdout=sys.stdout)
+        return 0
+
+    if args.command == "references":
+        from src.muchanipo.terminal import references_report, render_references
+
+        if args.json:
+            _write_json(references_report())
+        else:
+            render_references(stdout=sys.stdout)
+        return 0
+
+    if args.command == "orchestrate":
+        from src.muchanipo.terminal import orchestration_report, render_orchestration
+
+        if args.cleanup_workers and not args.dry_run and not args.force:
+            sys.stderr.write("muchanipo: orchestrate cleanup requires --dry-run or --force\n")
+            return 2
+        if args.json:
+            report = orchestration_report(
+                session=args.session,
+                include_capture=bool(args.include_capture),
+                cleanup_workers=bool(args.cleanup_workers),
+                dry_run=bool(args.dry_run),
+                force=bool(args.force),
+            )
+            _write_json(report)
+        else:
+            report = render_orchestration(
+                stdout=sys.stdout,
+                session=args.session,
+                include_capture=bool(args.include_capture),
+                cleanup_workers=bool(args.cleanup_workers),
+                dry_run=bool(args.dry_run),
+                force=bool(args.force),
+            )
+        return 0 if report.get("ok") else 1
+
+    if args.command == "demo":
+        from src.muchanipo.terminal import DEMO_TOPIC
+
+        return _run_terminal_safely(
+            DEMO_TOPIC,
+            report_path=Path(args.report_path) if args.report_path else None,
+            run_dir=Path(args.run_dir) if args.run_dir else None,
+            offline=True,
+            jsonl=bool(args.jsonl),
+            dashboard=(not bool(args.plain) and not bool(args.jsonl) and bool(getattr(sys.stdout, "isatty", lambda: False)())),
+            interview=False,
+            require_live=False,
+            depth=args.depth,
+        )
+
     if args.command != "serve":
         parser.error(f"unknown command: {args.command}")
 
@@ -432,7 +761,134 @@ def main(argv: Sequence[str] | None = None) -> int:
         stdout=sys.stdout,
         stdin=sys.stdin,
         pipeline=args.pipeline,
+        depth=args.depth,
     )
+
+
+def _run_terminal_safely(
+    topic: str,
+    *,
+    report_path: Path | None,
+    run_dir: Path | None,
+    offline: bool | None,
+    jsonl: bool,
+    dashboard: bool,
+    interview: bool,
+    require_live: bool,
+    depth: str,
+) -> int:
+    from src.muchanipo.terminal import conduct_interview, terminal_run
+
+    try:
+        capture = (
+            conduct_interview(topic, stdin=sys.stdin, stdout=sys.stdout)
+            if interview
+            else None
+        )
+        terminal_run(
+            topic,
+            stdout=sys.stdout,
+            report_path=report_path,
+            run_dir=run_dir,
+            offline=offline,
+            jsonl=jsonl,
+            dashboard=dashboard,
+            pipeline_input=capture.pipeline_input if capture else None,
+            require_live=require_live,
+            depth=depth,
+        )
+        return 0
+    except KeyboardInterrupt:
+        sys.stderr.write("muchanipo: interrupted\n")
+        return 130
+    except Exception as exc:
+        sys.stderr.write(f"muchanipo: run failed: {type(exc).__name__}: {exc}\n")
+        return 1
+
+
+def _parse_topic_shortcut(argv: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    topic_parts: list[str] = []
+    options: dict[str, Any] = {
+        "offline": None,
+        "run_dir": None,
+        "report_path": None,
+        "jsonl": False,
+        "dashboard": bool(getattr(sys.stdout, "isatty", lambda: False)()),
+        "interview": _default_interview_enabled(jsonl=False),
+        "require_live": False,
+        "depth": "deep",
+        "error": "",
+    }
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--offline":
+            if options["offline"] is False:
+                options["error"] = "--offline and --online are mutually exclusive"
+                break
+            options["offline"] = True
+        elif arg == "--online":
+            if options["offline"] is True:
+                options["error"] = "--offline and --online are mutually exclusive"
+                break
+            options["offline"] = False
+            options["require_live"] = True
+        elif arg == "--jsonl":
+            options["jsonl"] = True
+            options["dashboard"] = False
+            if "--interview" not in argv:
+                options["interview"] = False
+        elif arg == "--plain":
+            options["dashboard"] = False
+        elif arg == "--interview":
+            if "--no-interview" in argv:
+                options["error"] = "--interview and --no-interview are mutually exclusive"
+                break
+            options["interview"] = True
+        elif arg == "--no-interview":
+            if "--interview" in argv:
+                options["error"] = "--interview and --no-interview are mutually exclusive"
+                break
+            options["interview"] = False
+        elif arg == "--depth":
+            if idx + 1 >= len(argv):
+                options["error"] = "--depth requires a value"
+                break
+            value = argv[idx + 1].strip().lower()
+            if value not in VALID_DEPTHS:
+                options["error"] = f"--depth must be one of: {'|'.join(VALID_DEPTHS)}"
+                break
+            options["depth"] = value
+            idx += 1
+        elif arg in {"--run-dir", "--report-path"}:
+            if idx + 1 >= len(argv):
+                options["error"] = f"{arg} requires a value"
+                break
+            value = Path(argv[idx + 1])
+            if arg == "--run-dir":
+                options["run_dir"] = value
+            else:
+                options["report_path"] = value
+            idx += 1
+        elif arg.startswith("--"):
+            options["error"] = f"unknown shortcut option: {arg}"
+            break
+        else:
+            topic_parts.append(arg)
+        idx += 1
+    return " ".join(topic_parts).strip(), options
+
+
+def _default_interview_enabled(*, jsonl: bool) -> bool:
+    if jsonl:
+        return False
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _write_json(value: Any) -> None:
+    import json
+
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 if __name__ == "__main__":

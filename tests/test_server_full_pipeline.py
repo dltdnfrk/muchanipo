@@ -14,6 +14,7 @@ import pytest
 from src.muchanipo.server import serve_full, _build_demo_rounds
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
 from src.report.pyramid_formatter import PyramidFormatter
+from src.runtime.live_mode import LiveModeViolation
 
 
 def _writable_tmp(name: str) -> Path:
@@ -42,7 +43,7 @@ def test_serve_full_emits_all_pipeline_stages(tmp_path):
     assert stages == [
         "intake", "interview", "targeting",
         "research", "evidence", "council",
-        "report", "finalize",
+        "report", "vault", "agents", "finalize",
     ]
 
 
@@ -53,6 +54,25 @@ def test_serve_full_emits_ten_council_rounds(tmp_path):
     starts = [e for e in events if e["event"] == "council_round_start"]
     assert len(starts) == 10
     assert [e["round"] for e in starts] == list(range(1, 11))
+
+
+def test_serve_full_shallow_depth_emits_executed_round_count(tmp_path):
+    stdout = io.StringIO()
+    serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout, depth="shallow")
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    startup = next(e for e in events if e["event"] == "phase_change" and e["phase"] == "STARTUP")
+    starts = [e for e in events if e["event"] == "council_round_start"]
+    done = events[-1]
+
+    assert startup["data"]["depth"] == "shallow"
+    assert startup["data"]["council_persona_pool_size"] == 24
+    assert startup["data"]["active_council_persona_count"] == 6
+    assert len(starts) == 6
+    assert [e["round"] for e in starts] == list(range(1, 7))
+    assert done["depth"] == "shallow"
+    assert done["council_persona_pool_size"] == 24
+    assert done["active_council_persona_count"] == 6
+    assert done["council_turn_count"] > 0
 
 
 def test_serve_full_emits_six_report_chunks(tmp_path):
@@ -73,6 +93,8 @@ def test_serve_full_emits_final_report_event_with_markdown(tmp_path):
     assert finals[0]["chapter_count"] == 6
     assert "## Chapter 1" in finals[0]["markdown"]
     assert "## Chapter 6" in finals[0]["markdown"]
+    assert "## ReACT Execution Plan" in finals[0]["markdown"]
+    assert "## GBrain Compiled Truth + Timeline" in finals[0]["markdown"]
 
 
 def test_serve_full_emits_done_at_end(tmp_path):
@@ -81,6 +103,26 @@ def test_serve_full_emits_done_at_end(tmp_path):
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     assert events[-1]["event"] == "done"
     assert events[-1]["pipeline"] == "full"
+
+
+def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    def fail_live(*args, **kwargs):
+        raise LiveModeViolation("live evidence missing")
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fail_live)
+    stdout = io.StringIO()
+
+    rc = serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout)
+
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    assert rc == 1
+    assert events[-2]["event"] == "error"
+    assert events[-2]["kind"] == "live_mode_violation"
+    assert "live evidence missing" in events[-2]["message"]
+    assert events[-1] == {"event": "done", "pipeline": "full", "aborted": True}
+    assert not (tmp_path / "R.md").exists()
 
 
 def test_demo_rounds_produce_full_six_chapter_mapping():

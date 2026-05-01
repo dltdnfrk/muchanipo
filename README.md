@@ -23,12 +23,12 @@ raw/ (Human-owned)          wiki/ (LLM-owned)
                        ▼
               ┌─────────────────┐
               │  Council         │  ← MiroFish Crowd Sim
-              │  (N personas)    │     + MemPalace search
+              │  (N personas)    │     + local vault-search adapter
               └────────┬────────┘
                        ▼
               ┌─────────────────┐
               │  eval-agent      │  ← HITL Quality Gate
-              │  4-axis scoring  │
+              │  10-axis scoring │     + measured citation/density axes
               └────────┬────────┘
                  ┌─────┼─────┐
                  ▼     ▼     ▼
@@ -66,34 +66,34 @@ raw/ (Human-owned)          wiki/ (LLM-owned)
 ```
 muchanipo/
 ├── src/
+│   ├── muchanipo/
+│   │   ├── server.py             # CLI entrypoint
+│   │   └── terminal.py           # terminal home, dashboard, run artifacts
 │   ├── pipeline/
-│   │   └── muchanipo-ingest.py    # Document ingest + ontology extraction
+│   │   ├── runner.py             # CLI/TUI product core facade
+│   │   ├── idea_to_council.py    # 6-stage research/council/report pipeline
+│   │   └── reference_inventory.py # reference runtime readiness
+│   ├── research/
+│   │   └── academic/             # OpenAlex/Crossref/Semantic Scholar/etc.
 │   ├── search/
 │   │   ├── insight-forge.py       # 5W1H query decomposition + RRF fusion
 │   │   └── react-report.py        # Think→Act→Observe→Write reports
+│   ├── council/                   # persona generation, diversity, sessions
+│   ├── evidence/                  # provenance and citation grounding
+│   ├── report/                    # chapter mapping + pyramid formatting
 │   ├── hitl/
-│   │   ├── eval-agent.py          # 4-axis auto-scoring (40pt scale)
-│   │   ├── signoff-queue.py       # approve/reject/modify CLI
-│   │   ├── signoff-report.py      # HTML report generator
-│   │   └── rubric-learner.py      # Feedback-driven rubric evolution
-│   └── council/                   # (planned) Council orchestrator
-├── config/
-│   ├── program.md                 # Research axes & exploration rules
-│   ├── rubric.json                # Eval scoring config (v1.0.0)
-│   └── config.json                # Pipeline config
-├── skills/
-│   ├── muchanipo.md               # Orchestrator skill (Claude Code)
-│   └── arc-council.md             # Council debate engine skill
-├── agents/
-│   └── arc-wiki.md                # Wiki storage agent
+│   │   ├── plannotator_adapter.py # markdown/auto-approve HITL gate
+│   │   └── plannotator_http.py    # optional external HITL adapter
+│   └── execution/providers/       # Claude/Gemini/Kimi/Codex/OpenAI/Ollama
+├── bin/muchanipo                  # local executable shim
+├── app/muchanipo-tauri/           # viewer/control shell over CLI events
+├── docs/                          # JSON contracts, live wiring, references
 ├── raw/                           # Human-owned source drop zone
 ├── wiki/                          # LLM-owned compiled knowledge
 │   ├── index.md                   # Page catalog
 │   └── log.md                     # Append-only audit log
-├── signoff-queue/                 # Pending human review items
-├── rubric-history/                # Rubric version backups
-├── reports/                       # Generated HTML reports
-└── logs/                          # Ingest & ontology logs
+├── vault/                         # local persona/insight seeds
+└── reports/                       # generated reports
 ```
 
 ## Dream Cycle (nightly vault digest)
@@ -123,6 +123,109 @@ intentionally does **not** modify your crontab):
 Stdlib-only — no external LLM calls.
 
 ## Quick Start
+
+### Terminal-first research app
+
+Muchanipo's product core is the Python CLI/TUI runner. The Tauri app is a
+viewer/control shell over the same event stream.
+
+```bash
+# Prove the product works without provider credentials
+muchanipo demo
+
+# Open the terminal app home, like codex/claude/kimi/opencode
+muchanipo
+
+# Direct topic shortcut
+muchanipo "딸기 농가용 저비용 분자진단 키트 시장성"
+
+# Explicit modes
+muchanipo run "딸기 진단키트 시장성" --offline
+muchanipo tui "딸기 진단키트 시장성" --online
+muchanipo run "딸기 진단키트 시장성" --depth shallow --offline
+muchanipo doctor
+muchanipo status
+muchanipo runs
+muchanipo contracts
+muchanipo references
+muchanipo orchestrate
+
+# Scriptable inspection
+muchanipo doctor --json
+muchanipo status --json
+muchanipo runs --json --limit 5
+muchanipo contracts --json
+muchanipo references --json
+muchanipo orchestrate --json
+muchanipo orchestrate --cleanup-workers --dry-run --json
+```
+
+The no-argument home screen reads the same run summaries and shows the latest
+runs plus the most recent failed run before the command menu.
+
+JSON inspection commands return stable objects with `schema_version`,
+`command`, and command-specific payloads:
+
+- `doctor --json`: `status`, `checks`, `cli_statuses`, `recommendations`
+- `status --json`: `providers`
+- `runs --json`: `runs_dir`, `limit`, `runs`
+- `references --json`: `stages`, `references`, `gaps`, `not_ready_references`, `license_warnings`
+- `orchestrate --json`: `session`, `plan`, `windows`, `panes`, `operators`, `warnings`
+
+See `docs/cli-json-contracts.md` or `muchanipo contracts --json` for the
+current required top-level keys.
+
+`muchanipo demo` is the fastest product smoke path. It runs a deterministic
+offline topic, skips the interview, and writes the same `REPORT.md`,
+`events.jsonl`, and `summary.json` artifacts as normal runs.
+
+Before a pre-release audit, run:
+
+```bash
+bash scripts/release_check.sh
+```
+
+The release check runs focused orchestration tests, CLI/TUI tests, the full
+Python suite, diff hygiene, orchestration status/dry-run cleanup, JSON
+contracts, the offline demo, generated-artifact hygiene, a Python 3.11 wheel
+build, an installed console-script smoke, and an installed `python -m
+muchanipo` smoke when `python3.11` is available.
+
+Passing this script proves deterministic offline packaging and CLI contracts. It
+does not prove live provider/HITL behavior or full upstream reference parity.
+Use `muchanipo references --json` to check `not_ready_references`, and run a
+separate opt-in live smoke before making live-research or 99% implementation
+claims.
+
+Autoresearch depth is explicit: `--depth shallow` targets a quick interactive
+pass, `--depth deep` keeps the default full ten-layer council budget, and
+`--depth max` records extended test-time-compute intent for comprehensive
+background runs. The six-stage Muchanipo flow remains intact at every depth.
+
+`muchanipo references` reports which reference-project ideas are backed by
+local runtime code, which are still gaps, and which carry license warnings. It
+does not imply that full upstream repositories are vendored.
+
+`muchanipo orchestrate` reports the tmux/smux operator contract used for
+multi-agent work: window 0 is the protected operator hub, worker windows are
+1-4, OpenCode is expected to use Hephaestus Deep Agent GPT-5.5, and cleanup
+commands only target verified worker windows. Verification requires both the
+expected worker window name and a pane title marker such as
+`muchanipo-worker:codex`. Use `--cleanup-workers --dry-run` before destructive
+cleanup; actual cleanup additionally requires `--force`. Pane captures
+requested with `--include-capture` are redacted before output.
+
+Run artifacts are written under `~/.local/share/muchanipo/runs/<run-id>/` by
+default:
+
+- `REPORT.md` — final report
+- `events.jsonl` — append-only execution event log
+- `summary.json` — run metadata and paths
+
+Muchanipo does not read Claude/Gemini/Kimi/Codex token files. It invokes the
+installed CLIs and lets each CLI own its own login/session.
+
+### Legacy document tools
 
 ```bash
 # 1. Drop a document
@@ -157,11 +260,13 @@ python3 src/eval/rubric-learner.py evolve
 
 ## Requirements
 
-- Python 3.8+
-- No external dependencies (stdlib only)
-- [MemPalace](https://github.com/mempalace) for knowledge graph storage
-- [Claude Code](https://claude.com/claude-code) for Council orchestration
-- [Obsidian](https://obsidian.md/) for vault frontend (optional)
+- Python 3.11+ for packaged installs.
+- `httpx>=0.28` for academic API and optional HTTP HITL adapters.
+- Optional provider CLIs for online runs: Claude Code, Gemini, Kimi, Codex, or OpenCode.
+- Optional API keys for provider/API-backed online runs.
+- Optional [Obsidian](https://obsidian.md/) vault frontend.
+
+Offline mode and `muchanipo demo` remain deterministic and credential-free.
 
 ## HITL Quality Gate
 

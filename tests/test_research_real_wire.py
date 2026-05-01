@@ -47,13 +47,71 @@ def test_web_runner_aggregates_injected_backends_in_priority_order():
 
     assert findings, "runner must produce at least one finding"
     finding = findings[0]
-    assert web_calls == [plan.queries[0]]
-    assert vault_calls == [plan.queries[0]]
+    assert web_calls == plan.queries
+    assert vault_calls == plan.queries
     # Highest-score (vault, 0.9) should be ranked first by the score-sort.
     assert finding.support[0].provenance["source"] == "vault/agent.md"
     # vault item gets B grade, web gets C below 0.8 — both present
     grades = {ev.source_grade for ev in finding.support}
     assert "B" in grades and "C" in grades
+    assert {item["backend"] for item in runner.last_backend_trace} == {"vault", "web"}
+    assert all(item["status"] == "ok" for item in runner.last_backend_trace)
+    assert all(item["count"] == 1 for item in runner.last_backend_trace)
+
+
+def test_web_runner_accepts_academic_evidence_refs():
+    plan = _plan("strawberry diagnostics")
+    academic_ref = EvidenceRef(
+        id="openalex:W1",
+        source_url="https://doi.org/10.1234/example",
+        source_title="Academic paper",
+        quote="strawberry diagnostics evidence",
+        source_grade="A",
+        provenance={"kind": "openalex", "doi": "10.1234/example", "source_text": "strawberry diagnostics evidence"},
+    )
+    runner = WebResearchRunner(
+        academic_search=lambda q: [academic_ref],
+        web_search=None,
+        vault_search=lambda q: [],
+        exa_search=None,
+    )
+
+    findings = runner.run(plan)
+
+    assert findings[0].support[0] is academic_ref
+    assert findings[0].support[0].source_grade == "A"
+
+
+def test_web_runner_prioritizes_insight_forge_backend_when_enabled():
+    plan = _plan("딸기 재배 자동 연구")
+    calls: list[str] = []
+
+    def fake_insight_forge(query: str):
+        calls.append(query)
+        return [
+            {
+                "source": "vault/insight.md",
+                "text": "InsightForge RRF result with GBrain dedup",
+                "score": 0.99,
+                "matched_questions": ["who", "why"],
+            }
+        ]
+
+    runner = WebResearchRunner(
+        insight_forge_search=fake_insight_forge,
+        vault_search=lambda q: [],
+        academic_search=lambda q: [],
+        web_search=None,
+        exa_search=None,
+    )
+
+    findings = runner.run(plan)
+
+    assert calls == plan.queries
+    first = findings[0].support[0]
+    assert first.provenance["kind"] == "insight_forge"
+    assert first.provenance["source"] == "vault/insight.md"
+    assert first.source_grade == "B"
 
 
 def test_web_runner_graceful_fallback_when_all_backends_empty():
@@ -64,7 +122,7 @@ def test_web_runner_graceful_fallback_when_all_backends_empty():
         exa_search=lambda q: [],
     )
     findings = runner.run(plan)
-    assert len(findings) == 1
+    assert len(findings) == len(plan.queries)
     ev = findings[0].support[0]
     assert ev.source_grade == "D"
     assert ev.provenance["kind"] == "empty"
@@ -82,6 +140,9 @@ def test_web_runner_swallows_backend_exceptions():
     runner = WebResearchRunner(web_search=boom, exa_search=boom, vault_search=working_vault)
     findings = runner.run(plan)
     assert findings[0].support[0].provenance["source"] == "vault/x.md"
+    errors = [item for item in runner.last_backend_trace if item["status"] == "error"]
+    assert {item["backend"] for item in errors} == {"web", "exa"}
+    assert all("network down" in item["error"] for item in errors)
 
 
 def test_evidence_store_wires_provenance_check_via_citation_grounder():
@@ -111,7 +172,7 @@ def test_evidence_store_marks_provenance_failure_when_lockdown_rejects(monkeypat
     def fake_validate(payload):
         return {entry["id"]: False for entry in payload}
 
-    monkeypatch.setattr(store_mod, "_validate_provenance", lambda refs: fake_validate(
+    monkeypatch.setattr(store_mod, "_validate_provenance", lambda refs, **kwargs: fake_validate(
         [{"id": ref.id} for ref in refs]
     ))
 
@@ -129,6 +190,91 @@ def test_evidence_store_marks_provenance_failure_when_lockdown_rejects(monkeypat
     assert store.trusted() == []
     assert store.provenance_failures() == 1
     assert ref.provenance.get("provenance_failed") is True
+
+
+def test_evidence_store_structural_validation_blocks_permissive_lockdown(monkeypatch):
+    """Structural checks must still reject fabricated quotes if lockdown passes."""
+    import src.eval.citation_grounder as grounder_mod
+
+    monkeypatch.setattr(
+        grounder_mod,
+        "_lockdown_validate_provenance",
+        lambda payload: {entry["id"]: True for entry in payload},
+    )
+
+    store = EvidenceStore()
+    ref = EvidenceRef(
+        id="fabricated-1",
+        source_url="https://example.com/article",
+        source_title="Article",
+        quote="fabricated quote",
+        source_grade="B",
+        provenance={"kind": "web", "source_text": "grounded source text"},
+    )
+
+    store.add(ref)
+
+    assert store.provenance_flag("fabricated-1") is False
+    assert store.trusted() == []
+    assert ref.provenance.get("provenance_failed") is True
+
+
+def test_evidence_store_structural_validation_accepts_normalized_doi_url(monkeypatch):
+    import src.eval.citation_grounder as grounder_mod
+
+    monkeypatch.setattr(
+        grounder_mod,
+        "_lockdown_validate_provenance",
+        lambda payload: {entry["id"]: True for entry in payload},
+    )
+
+    store = EvidenceStore()
+    ref = EvidenceRef(
+        id="openalex:doi-ok",
+        source_url="https://doi.org/10.1234/example",
+        source_title="Academic paper",
+        quote="source-backed claim",
+        source_grade="A",
+        provenance={
+            "kind": "openalex",
+            "doi": "https://doi.org/10.1234/example",
+            "source_text": "source-backed claim with more context",
+        },
+    )
+
+    store.add(ref)
+
+    assert store.provenance_flag("openalex:doi-ok") is True
+    assert store.trusted() == [ref]
+
+
+def test_evidence_store_structural_validation_rejects_invalid_academic_doi(monkeypatch):
+    import src.eval.citation_grounder as grounder_mod
+
+    monkeypatch.setattr(
+        grounder_mod,
+        "_lockdown_validate_provenance",
+        lambda payload: {entry["id"]: True for entry in payload},
+    )
+
+    store = EvidenceStore()
+    ref = EvidenceRef(
+        id="openalex:doi-bad",
+        source_url="https://doi.org/not-a-doi",
+        source_title="Academic paper",
+        quote="source-backed claim",
+        source_grade="A",
+        provenance={
+            "kind": "openalex",
+            "doi": "not-a-doi",
+            "source_text": "source-backed claim with more context",
+        },
+    )
+
+    store.add(ref)
+
+    assert store.provenance_flag("openalex:doi-bad") is False
+    assert store.trusted() == []
 
 
 def test_verified_claim_ratio_routes_through_citation_grounder():
@@ -190,13 +336,48 @@ def test_build_runner_factory_swaps_mock_and_real_with_same_interface():
         vault_search=lambda q: [{"source": "vault/n.md", "text": q, "score": 0.6}],
         web_search=None,
         exa_search=None,
+        academic_search=lambda q: [],
     )
     assert isinstance(mock, MockResearchRunner)
     assert isinstance(real, WebResearchRunner)
+    assert callable(real.academic_search)
     # Both expose .run(plan) → list[Finding]
     for runner in (mock, real):
         out = runner.run(plan)
         assert out and all(isinstance(f, Finding) for f in out)
+
+
+def test_build_runner_factory_wires_default_academic_search(monkeypatch):
+    import src.research.runner as runner_mod
+
+    plan = _plan("sync academic wire")
+    calls: list[str] = []
+    academic_ref = EvidenceRef(
+        id="openalex:W-sync",
+        source_url="https://doi.org/10.4567/sync-wire",
+        source_title="Sync academic paper",
+        quote="sync academic wire",
+        source_grade="A",
+        provenance={"kind": "openalex", "doi": "10.4567/sync-wire", "source_text": "sync academic wire"},
+    )
+
+    def fake_academic(query: str):
+        calls.append(query)
+        return [academic_ref]
+
+    monkeypatch.setattr(runner_mod.academic_sync_search, "search", fake_academic)
+
+    real = runner_mod.build_runner(
+        use_real=True,
+        web_search=None,
+        vault_search=lambda q: [],
+        exa_search=None,
+    )
+    findings = real.run(plan)
+
+    assert real.academic_search is fake_academic
+    assert calls == plan.queries
+    assert findings[0].support[0] is academic_ref
 
 
 def test_research_brief_to_report_e2e_with_real_wire_stub():

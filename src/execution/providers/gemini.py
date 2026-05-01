@@ -1,7 +1,7 @@
-"""Google Gemini provider — search grounding, model routing, offline-safe.
+"""Google Gemini provider — CLI-first, API fallback, offline-safe.
 
-Supports CLI mode (`gemini -p`) for local OAuth flows when GEMINI_USE_CLI=1
-or MUCHANIPO_USE_CLI=1 is set and the `gemini` binary is available.
+The local app path can call `gemini -p`; any local auth/session details remain
+owned by the Gemini CLI rather than Muchanipo.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 
 from src.execution.models import ModelResult
+from src.execution.providers.cli_policy import cli_requested, prefer_cli_default
 
 
 def _env_int(name: str, default: int) -> int:
@@ -47,11 +48,7 @@ def _resolve_api_key() -> str | None:
 
 
 def _cli_enabled() -> bool:
-    if os.environ.get("GEMINI_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    if os.environ.get("MUCHANIPO_USE_CLI", "").strip() in ("1", "true", "yes"):
-        return True
-    return False
+    return cli_requested("GEMINI_USE_CLI")
 
 
 def _resolve_gemini_bin() -> str | None:
@@ -71,6 +68,7 @@ class GeminiProvider:
         endpoint_template: str = "",
         offline: bool | None = None,
         use_cli: bool | None = None,
+        prefer_cli: bool | None = None,
         gemini_bin: str | None = None,
     ) -> None:
         self.model = model
@@ -83,8 +81,10 @@ class GeminiProvider:
             )
         )
         self.gemini_bin = gemini_bin or _resolve_gemini_bin()
+        if prefer_cli is None:
+            prefer_cli = prefer_cli_default()
         if use_cli is None:
-            use_cli = _cli_enabled() and bool(self.gemini_bin)
+            use_cli = bool(self.gemini_bin) and (_cli_enabled() or prefer_cli)
         self.use_cli = use_cli
         if offline is None:
             offline = bool(os.environ.get("GEMINI_OFFLINE")) or (

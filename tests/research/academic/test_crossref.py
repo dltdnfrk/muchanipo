@@ -36,6 +36,8 @@ def test_crossref_search_maps_message_items():
     assert results[0].id == "crossref:10.1000/cross"
     assert results[0].source_title == "CrossRef Paper"
     assert results[0].quote == "Journal"
+    assert results[0].provenance["doi"] == "10.1000/cross"
+    assert results[0].provenance["journal"] == "Journal"
     assert results[0].provenance["source_text"]["DOI"] == "10.1000/cross"
 
 

@@ -48,6 +48,27 @@ class TestKimiProviderCli:
         assert mock_run.call_args.kwargs["timeout"] == 12
 
     @patch("subprocess.run")
+    def test_cli_workdir_can_use_runtime_directory(self, mock_run, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUCHANIPO_KIMI_WORKDIR", str(tmp_path / "kimi-work"))
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"ok\n",
+            stderr=b"",
+        )
+        provider = KimiProvider(
+            offline=False,
+            use_cli=True,
+            kimi_bin="/usr/local/bin/kimi",
+        )
+
+        provider.call("evidence", "prompt")
+
+        args = mock_run.call_args.args[0]
+        assert args[args.index("--work-dir") + 1] == str(tmp_path / "kimi-work")
+        assert (tmp_path / "kimi-work").exists()
+
+    @patch("subprocess.run")
     def test_cli_nonzero_without_api_key_raises(self, mock_run, monkeypatch):
         monkeypatch.delenv("KIMI_API_KEY", raising=False)
         monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)

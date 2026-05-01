@@ -105,10 +105,13 @@ class PlannotatorClient:
             for item in normalized_annotations
             if item.get("instruction")
         ]
+        if self.offline:
+            comments.append("plannotator offline mock - no API key configured")
         return HITLResult(
             status=status,
             annotations=normalized_annotations,
             comments=comments,
+            synthetic=self.offline,
         )
 
     def _request(

@@ -33,6 +33,15 @@ def test_anthropic_provider_present_in_default_set():
     assert "mock" in providers
 
 
+def test_default_providers_prefer_local_cli_when_requested():
+    providers = build_default_providers(force_offline=False, prefer_cli=True)
+
+    assert providers["anthropic"].use_cli is bool(providers["anthropic"].claude_bin)
+    assert providers["gemini"].use_cli is bool(providers["gemini"].gemini_bin)
+    assert providers["kimi"].use_cli is bool(providers["kimi"].kimi_bin)
+    assert providers["codex"].use_cli is bool(providers["codex"].codex_bin)
+
+
 # ---- stage routing -------------------------------------------------------
 
 
@@ -267,7 +276,7 @@ def test_gateway_v2_reserve_records_provider_and_model_metadata():
 
     reserve = next(c for c in tracker.calls if c["action"] == "reserve")
     assert reserve["provider"] == "codex"
-    assert reserve["model"] == "gpt-5.5"
+    assert reserve["model"] == "gpt-5.4"
 
 
 def test_gateway_v2_budget_audit_records_actual_fallback_provider():

@@ -35,6 +35,7 @@ def test_semantic_scholar_search_sends_api_key_and_maps_evidence():
 
     assert results[0].id == "semantic_scholar:S2-1"
     assert results[0].source_grade == "A"
+    assert results[0].provenance["doi"] == "10.555/s2"
     assert results[0].provenance["source_text"]["citationCount"] == 12
 
 

@@ -1,12 +1,14 @@
 # Muchanipo Tauri App
 
-Tauri 2 desktop shell for Muchanipo (Pake-style — system WebView, small binary).
+Tauri 2 desktop shell for Muchanipo. The Python CLI/TUI runner is the product
+core; this app is a viewer/control shell over `python3 -m muchanipo serve`.
 
 ## Stack
 
 - Tauri 2 (Rust shell, system WebView)
 - Vite + React 18 + TypeScript (frontend)
-- Subprocess bridge to `python3 -m muchanipo serve` (worker-3, follow-up)
+- Subprocess bridge to `python3 -m muchanipo serve`
+- Same pipeline core as `python3 -m muchanipo run` and `python3 -m muchanipo tui`
 
 ## Prerequisites
 
@@ -23,6 +25,14 @@ npm run tauri dev
 ```
 
 A native macOS window titled **Muchanipo** opens with a blank React screen.
+
+For terminal-first usage without Tauri:
+
+```bash
+muchanipo
+muchanipo "딸기 진단키트 시장성"
+muchanipo tui "딸기 진단키트 시장성"
+```
 
 ## Build (release)
 

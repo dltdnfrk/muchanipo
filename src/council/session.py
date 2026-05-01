@@ -78,12 +78,18 @@ class Session:
         layers: list[RoundLayer],
         personas: list[Any],
         plateau: PlateauDetector | None = None,
+        active_persona_count: int | None = None,
     ) -> None:
         self.gateway = gateway
         self.layers = list(layers)
         self.personas = list(personas)
         self.plateau = plateau or PlateauDetector(window=11, tolerance=0.05)
+        if active_persona_count is not None and active_persona_count < 1:
+            raise ValueError("active_persona_count must be >= 1")
+        self.active_persona_count = active_persona_count
         self.rounds: list[RoundResult] = []
+        self.turn_transcript: list[dict[str, Any]] = []
+        self.active_persona_ids_by_round: dict[int, list[str]] = {}
         self.stopped = False
         self.stop_reason: str | None = None
 
@@ -94,8 +100,13 @@ class Session:
             raise ValueError(f"round_no {round_no} exceeds configured layers ({len(self.layers)})")
 
         layer = self.layers[round_no - 1]
-        individuals = self._individual_stage(layer, self.personas)
-        peer_reviews = self._peer_review_stage(individuals, layer)
+        active_personas = self._active_personas_for_round(round_no, layer)
+        self.active_persona_ids_by_round[round_no] = [
+            _persona_id(persona, idx)
+            for idx, persona in enumerate(active_personas, start=1)
+        ]
+        individuals = self._individual_stage(layer, active_personas, round_no)
+        peer_reviews = self._peer_review_stage(individuals, layer, active_personas, round_no)
         round_result = self._chairman_synthesis(individuals, peer_reviews, layer)
         self.rounds.append(round_result)
 
@@ -113,10 +124,45 @@ class Session:
             self.run_one_round(round_no)
         return list(self.rounds)
 
+    def _active_personas_for_round(
+        self,
+        round_no: int,
+        layer: RoundLayer,
+    ) -> list[Any]:
+        if not self.personas:
+            return []
+        limit = self.active_persona_count or len(self.personas)
+        if limit >= len(self.personas):
+            return list(self.personas)
+
+        offset = ((round_no - 1) * limit) % len(self.personas)
+        rotated = self.personas[offset:] + self.personas[:offset]
+        selected: list[Any] = []
+        emphasis_budget = max(1, limit // 3)
+        emphasized = sorted(
+            [persona for persona in self.personas if _persona_layer_score(persona, layer) > 0],
+            key=lambda persona: _persona_layer_score(persona, layer),
+            reverse=True,
+        )
+        for persona in emphasized[:emphasis_budget]:
+            if persona not in selected:
+                selected.append(persona)
+            if len(selected) >= limit:
+                return selected
+
+        for persona in rotated:
+            if persona in selected:
+                continue
+            selected.append(persona)
+            if len(selected) >= limit:
+                return selected
+        return selected
+
     def _individual_stage(
         self,
         layer: RoundLayer,
         personas: list[Any],
+        round_no: int,
     ) -> dict[str, IndividualOpinion]:
         prev_summary = _previous_summary(self.rounds)
         opinions: dict[str, IndividualOpinion] = {}
@@ -124,6 +170,7 @@ class Session:
             persona_id = _persona_id(persona, idx)
             prompt = build_individual_prompt(persona, layer, prev_summary)
             result = self.gateway.call("council", prompt, council_stage="individual", layer_id=layer.layer_id)
+            self._record_turn(round_no, layer, "individual", persona_id, prompt, result)
             parsed = parse_council_response(getattr(result, "text", str(result)), layer)
             opinions[persona_id] = IndividualOpinion(
                 persona_id=persona_id,
@@ -139,9 +186,11 @@ class Session:
         self,
         individuals: dict[str, IndividualOpinion],
         layer: RoundLayer,
+        personas: list[Any],
+        round_no: int,
     ) -> dict[str, list[PeerComment]]:
         reviews: dict[str, list[PeerComment]] = {}
-        for idx, persona in enumerate(self.personas, start=1):
+        for idx, persona in enumerate(personas, start=1):
             persona_id = _persona_id(persona, idx)
             blinded = [
                 {
@@ -154,6 +203,7 @@ class Session:
             ]
             prompt = build_peer_review_prompt(persona, blinded, layer)
             result = self.gateway.call("council", prompt, council_stage="peer_review", layer_id=layer.layer_id)
+            self._record_turn(round_no, layer, "peer_review", persona_id, prompt, result)
             text = getattr(result, "text", str(result))
             reviews[persona_id] = [_parse_peer_comment(persona_id, text)]
         return reviews
@@ -166,6 +216,7 @@ class Session:
     ) -> RoundResult:
         prompt = build_chairman_prompt(individuals, peer_reviews, layer)
         result = self.gateway.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
+        self._record_turn(len(self.rounds) + 1, layer, "chairman", "chairman", prompt, result)
         text = getattr(result, "text", str(result)) if result else _fallback_chairman_json(individuals, peer_reviews)
         parsed = parse_council_response(text, layer)
         if not parsed.disagreements:
@@ -183,6 +234,27 @@ class Session:
                 framework_output=parsed.framework_output,
             )
         return parsed
+
+    def _record_turn(
+        self,
+        round_no: int,
+        layer: RoundLayer,
+        stage: str,
+        persona_id: str,
+        prompt: str,
+        result: Any,
+    ) -> None:
+        self.turn_transcript.append(
+            {
+                "round": round_no,
+                "layer_id": layer.layer_id,
+                "stage": stage,
+                "persona_id": persona_id,
+                "provider": str(getattr(result, "provider", "")),
+                "prompt_chars": len(prompt),
+                "response_chars": len(getattr(result, "text", str(result)) if result else ""),
+            }
+        )
 
 
 @dataclass
@@ -362,6 +434,35 @@ def _persona_id(persona: Any, idx: int) -> str:
         or getattr(persona, "name", None)
         or f"persona-{idx}"
     )
+
+
+def _persona_layer_score(persona: Any, layer: RoundLayer) -> int:
+    text_parts: list[str] = []
+    if isinstance(persona, dict):
+        text_parts.extend([
+            str(persona.get("name", "")),
+            str(persona.get("role", "")),
+            " ".join(str(item) for item in persona.get("expertise", []) or []),
+        ])
+        manifest = persona.get("manifest") or persona.get("agent_manifest") or {}
+        if isinstance(manifest, dict):
+            text_parts.append(" ".join(str(value) for value in manifest.values()))
+    else:
+        text_parts.extend([
+            str(getattr(persona, "name", "")),
+            str(getattr(persona, "role", "")),
+        ])
+        manifest = getattr(persona, "manifest", {}) or {}
+        if isinstance(manifest, dict):
+            text_parts.append(" ".join(str(value) for value in manifest.values()))
+
+    haystack = " ".join(text_parts).casefold().replace("_", " ")
+    score = 0
+    for role in layer.emphasis_roles:
+        needle = str(role).casefold().replace("_", " ")
+        if needle and needle in haystack:
+            score += 1
+    return score
 
 
 def _previous_summary(rounds: list[RoundResult]) -> str:

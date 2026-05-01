@@ -32,6 +32,8 @@ def test_unpaywall_get_paper_requires_email_and_maps_oa_location():
     assert result is not None
     assert result.id == "unpaywall:10.1000/oa"
     assert result.source_url == "https://example.com/paper.pdf"
+    assert result.provenance["doi"] == "10.1000/oa"
+    assert result.provenance["journal"] == "OA Journal"
     assert result.provenance["source_text"]["is_oa"] is True
 
 

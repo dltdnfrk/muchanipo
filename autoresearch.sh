@@ -17,6 +17,7 @@ failures=0
 frontend_build=0
 rust_tests=0
 python_tests=0
+depth_contract=0
 
 run_step() {
   local name="$1"
@@ -40,12 +41,20 @@ run_step() {
 
 cd "$ROOT"
 
-run_step python_tests python_tests 40 python3 -m pytest \
+run_step python_tests python_tests 35 python3 -m pytest \
+  tests/test_pipeline_runner.py \
   tests/test_e2e_tauri_smoke.py \
   tests/test_execution_real_wire.py \
   tests/test_model_router_config.py \
   tests/test_model_gateway_routing.py \
+  tests/test_muchanipo_terminal.py \
   tests/test_provider_kimi.py \
+  -q
+
+run_step depth_contract depth_contract 5 python3 -m pytest \
+  tests/test_pipeline_runner.py::test_run_pipeline_shallow_depth_reduces_internal_autoresearch_budget \
+  tests/test_muchanipo_terminal.py::test_main_direct_topic_shortcut_accepts_depth_flag \
+  tests/test_muchanipo_terminal.py::test_subprocess_demo_command_completes_offline \
   -q
 
 run_step frontend_build frontend_build 30 npm --prefix app/muchanipo-tauri run build
@@ -68,6 +77,7 @@ printf 'METRIC quality_score=%s\n' "$score"
 printf 'METRIC duration_seconds=%s\n' "$DURATION"
 printf 'METRIC failures=%s\n' "$failures"
 printf 'METRIC python_tests=%s\n' "$python_tests"
+printf 'METRIC depth_contract=%s\n' "$depth_contract"
 printf 'METRIC frontend_build=%s\n' "$frontend_build"
 printf 'METRIC rust_tests=%s\n' "$rust_tests"
 

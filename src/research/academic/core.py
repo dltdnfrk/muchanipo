@@ -64,6 +64,7 @@ class CoreClient:
             source_title=item.get("title"),
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
+            doi=doi,
         )
 
 

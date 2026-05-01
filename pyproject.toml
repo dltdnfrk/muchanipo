@@ -9,9 +9,12 @@ description = "MuchaNipo research council runtime"
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.28"]
 
+[project.scripts]
+muchanipo = "src.muchanipo.server:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "muchanipo*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

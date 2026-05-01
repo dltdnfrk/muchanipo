@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
 
 from src.interview.brief import ResearchBrief
+from src.research.academic import sync_search as academic_sync_search
 from src.targeting import TargetingMap
 
 # Wire-up placeholder for academic API modules (codex is building these).
@@ -76,6 +77,11 @@ def build_targeting_map(brief: ResearchBrief) -> TargetingMap:
                 papers = paper_result
         except Exception:
             pass
+    if not papers and _live_academic_targeting_enabled():
+        academic_papers, academic_prov = _query_multi_source_seed_papers(brief, limit=5)
+        if academic_papers:
+            papers = academic_papers
+        provenance["seed_papers"].extend(academic_prov)
 
     # Phase 5 — Search query generation
     search_queries = _build_search_queries(brief, domains)
@@ -98,11 +104,11 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
     "biology": ["bio", "genome", "cell", "molecular", "protein"],
     "economics": ["economy", "market", "finance", "price", "gdp"],
     "medicine": ["medical", "clinical", "patient", "treatment", "drug"],
-    "agriculture": ["agriculture", "farm", "crop", "plant", "soil"],
+    "agriculture": ["agriculture", "farm", "crop", "plant", "soil", "농업", "농가", "작물", "딸기", "과수", "스마트팜"],
     "chemistry": ["chemical", "synthesis", "reaction", "compound", "polymer"],
     "physics": ["physics", "quantum", "particle", "thermo"],
     "psychology": ["psychology", "cognitive", "behavior", "mental"],
-    "sociology": ["social", "society", "culture", "demographic"],
+    "sociology": ["social", "society", "culture", "demographic", "지역", "인구", "소비자"],
 }
 
 
@@ -134,3 +140,56 @@ def _build_search_queries(
             f"{base} recent advances",
         ]
     return queries
+
+
+def _live_academic_targeting_enabled() -> bool:
+    return os.environ.get("MUCHANIPO_ACADEMIC_TARGETING", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _query_multi_source_seed_papers(brief: ResearchBrief, *, limit: int) -> tuple[list[str], list[dict]]:
+    query = (brief.research_question or brief.raw_idea or "").strip()
+    if not query:
+        return [], []
+    try:
+        refs = academic_sync_search.search(query, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return [], [
+            {
+                "source": "academic_sync_search",
+                "query": query,
+                "status": "error",
+                "error": str(exc).splitlines()[0][:160],
+            }
+        ]
+    papers: list[str] = []
+    provenance: list[dict] = []
+    seen: set[str] = set()
+    for ref in refs:
+        prov = ref.provenance or {}
+        paper = str(prov.get("doi") or ref.source_url or ref.source_title or ref.id).strip()
+        if not paper or paper in seen:
+            continue
+        seen.add(paper)
+        papers.append(paper)
+        provenance.append(
+            {
+                "source": str(prov.get("kind") or "academic_sync_search"),
+                "query": query,
+                "status": "ok",
+                "paper_id": ref.id,
+                "doi": str(prov.get("doi") or ""),
+                "title": ref.source_title or "",
+            }
+        )
+        if len(papers) >= limit:
+            break
+    if not provenance:
+        provenance.append(
+            {
+                "source": "academic_sync_search",
+                "query": query,
+                "status": "empty",
+                "count": 0,
+            }
+        )
+    return papers, provenance

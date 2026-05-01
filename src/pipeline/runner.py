@@ -1,15 +1,20 @@
 """Pipeline runner facade for server.py and Tauri smoke flows."""
 from __future__ import annotations
 
+import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterator
 
 from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
+from src.research.depth import depth_profile, normalize_depth
+from src.research.runner import build_runner
 from src.report.chapter_mapper import RoundDigest
+from src.runtime.live_mode import live_requested_from_env
 
 
 ProgressCallback = Callable[[Dict[str, Any]], None]
@@ -35,9 +40,23 @@ STAGE_MAP = {
     "evidence": "evidence",
     "council": "council",
     "report": "report",
-    "vault": "finalize",
+    "vault": "vault",
+    "agents": "agents",
     "done": "finalize",
 }
+
+PROGRESS_STAGE_ORDER: tuple[str, ...] = (
+    "intake",
+    "interview",
+    "targeting",
+    "research",
+    "evidence",
+    "council",
+    "report",
+    "vault",
+    "agents",
+    "finalize",
+)
 
 
 def round_result_to_digest(
@@ -89,6 +108,8 @@ def run_pipeline(
     *,
     progress_callback: ProgressCallback | None = None,
     offline: bool | None = None,
+    require_live: bool | None = None,
+    depth: str = "deep",
 ) -> dict[str, Any]:
     """Run idea -> research -> council -> report -> vault and return report inputs.
 
@@ -99,29 +120,63 @@ def run_pipeline(
     if offline is None:
         from src.muchanipo.server import _detect_offline_mode
         offline = _detect_offline_mode()
+    normalized_depth = normalize_depth(depth)
+    profile = depth_profile(normalized_depth)
+    live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     emitted_stages: set[str] = set()
+    started_stages: set[str] = set()
+
+    def emit_stage_started(stage: str, event: dict[str, Any] | None = None) -> None:
+        if progress_callback is None or stage in started_stages:
+            return
+        started_stages.add(stage)
+        payload = {"stage": stage}
+        if event:
+            payload.update({key: value for key, value in event.items() if key != "stage"})
+            payload["stage"] = stage
+        progress_callback({"event": "stage_started", **payload})
+
+    def next_progress_stage(stage: str) -> str | None:
+        try:
+            idx = PROGRESS_STAGE_ORDER.index(stage)
+        except ValueError:
+            return None
+        if idx + 1 >= len(PROGRESS_STAGE_ORDER):
+            return None
+        return PROGRESS_STAGE_ORDER[idx + 1]
 
     def handle_progress(event: dict[str, Any]) -> None:
         raw_stage = str(event.get("stage") or "")
         stage = STAGE_MAP.get(raw_stage)
         if stage is None or stage in emitted_stages:
             return
+        emit_stage_started(stage, event)
         emitted_stages.add(stage)
         if progress_callback is not None:
             payload = {**event, "stage": stage}
-            progress_callback({"event": "stage_started", **payload})
             progress_callback({"event": "stage_completed", **payload})
+            next_stage = next_progress_stage(stage)
+            if next_stage is not None:
+                emit_stage_started(next_stage, {"run_id": event.get("run_id")})
 
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve" if offline else "markdown"),
+        hitl_adapter=HITLAdapter(
+            mode=_hitl_mode_from_env(live_required=live_required),
+            timeout_seconds=_hitl_timeout_from_env(),
+        ),
+        research_runner=build_runner(use_real=(live_required or not offline)),
         model_gateway=gateway,
         vault_dir=scratch / "vault" / "insights",
         council_log_dir=scratch / "council",
         progress_callback=handle_progress,
+        require_live=live_required,
+        depth=normalized_depth,
     )
-    result = pipeline.run(topic)
+    emit_stage_started("intake", {"topic": topic})
+    with _academic_targeting_policy(live_enabled=bool(live_required or not offline)):
+        result = pipeline.run(topic)
 
     rounds = _digests_from_result(result)
     return {
@@ -131,7 +186,48 @@ def run_pipeline(
         "brief": result.brief,
         "vault_path": result.vault_path,
         "pipeline_result": result,
+        "depth": normalized_depth,
+        "depth_profile": profile,
+        "executed_council_round_count": len(result.council.rounds),
+        "council_persona_pool_size": len(result.council.personas),
+        "active_council_persona_count": profile.active_persona_count,
+        "council_turn_transcript": list(result.council.turn_transcript),
     }
+
+
+@contextmanager
+def _academic_targeting_policy(*, live_enabled: bool) -> Iterator[None]:
+    """Keep academic targeting deterministic unless the pipeline is in live mode."""
+    previous = os.environ.get("MUCHANIPO_ACADEMIC_TARGETING")
+    os.environ["MUCHANIPO_ACADEMIC_TARGETING"] = "1" if live_enabled else "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("MUCHANIPO_ACADEMIC_TARGETING", None)
+        else:
+            os.environ["MUCHANIPO_ACADEMIC_TARGETING"] = previous
+
+
+def _hitl_mode_from_env(*, live_required: bool) -> str:
+    if os.environ.get("PLANNOTATOR_API_KEY") or os.environ.get("PLANNOTATOR_OFFLINE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return "plannotator"
+    return "markdown" if live_required else "auto_approve"
+
+
+def _hitl_timeout_from_env() -> float:
+    raw = os.environ.get("MUCHANIPO_HITL_TIMEOUT_SEC")
+    if raw is None:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
 
 
 def _digests_from_result(result: IdeaToCouncilResult) -> list[RoundDigest]:

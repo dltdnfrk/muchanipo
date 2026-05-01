@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install the freshly-built Muchanipo.app into /Applications atomically.
 #
-# Run after `npm run tauri build`. Wired up via the `tauri:install` npm
-# script so a single `npm run tauri:install` builds + installs in one go.
+# Run after a release `npm run tauri build`. Wired up via the `tauri:install`
+# npm script so a single `npm run tauri:install` builds + installs in one go.
 #
 # Strategy:
 #   1. Resolve the freshly built bundle in target/release/bundle/macos.
@@ -53,6 +53,12 @@ fi
 
 echo "[install-app] copying $SOURCE_APP -> $TARGET_APP"
 /usr/bin/ditto "$SOURCE_APP" "$TARGET_APP"
+
+if [[ ! -f "$TARGET_APP/Contents/Info.plist" ]]; then
+  echo "[install-app] copied app is missing Contents/Info.plist; refusing stale/broken install" >&2
+  exit 1
+fi
+
 touch "$TARGET_APP"
 
 echo "[install-app] done — launch via:  open -n /Applications/Muchanipo.app"

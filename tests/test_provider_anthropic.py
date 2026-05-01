@@ -48,6 +48,17 @@ class TestResolveApiKey:
         monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
         assert _resolve_api_key() is None
 
+    def test_does_not_read_claude_code_oauth_file(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        home = tmp_path / "home"
+        settings = home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"oauthToken":"do-not-read"}', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+
+        assert _resolve_api_key() is None
+
 
 class TestEstimateCost:
     def test_sonnet_pricing(self):
@@ -91,6 +102,13 @@ class TestAnthropicProviderOffline:
         monkeypatch.setenv("ANTHROPIC_OFFLINE", "1")
         p = AnthropicProvider()
         assert p.offline is True
+
+    def test_prefer_cli_uses_installed_claude_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        p = AnthropicProvider(claude_bin="/usr/local/bin/claude", prefer_cli=True)
+        assert p.use_cli is True
+        assert p.offline is False
 
 
 class TestAnthropicProviderMockClient:

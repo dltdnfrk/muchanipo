@@ -1,11 +1,13 @@
 # Autoresearch: Muchanipo App Completion Loop
 
 ## Objective
-Drive Muchanipo toward a reliable local Tauri app that can run the full research pipeline, call local CLI providers, preserve progress across remounts, and render a final report without false failures.
+Drive Muchanipo toward a reliable local Tauri app and terminal-first autoresearch loop that can run the full research pipeline, call local CLI providers, preserve progress across remounts, and render a final report without false failures.
+
+The next-cycle benchmark input is Google's 2026-04-21 Deep Research Max announcement. Muchanipo should adopt the useful product surfaces without copying the product shape: keep the six-stage flow, offline-first demo, Korean grounded personas, and bottom-up council synthesis.
 
 ## Metrics
 - **Primary**: `quality_score` (points, higher is better) - composite pass score from backend smoke, frontend build, Rust bridge tests, and targeted provider/gateway tests.
-- **Secondary**: `duration_seconds`, `failures`, `frontend_build`, `rust_tests`, `python_tests`.
+- **Secondary**: `duration_seconds`, `failures`, `frontend_build`, `rust_tests`, `python_tests`, `depth_contract`.
 
 ## How to Run
 `./autoresearch.sh` prints `METRIC name=value` lines.
@@ -20,6 +22,7 @@ For unattended monitoring:
 - `src/execution/**` - provider calls, model routing, gateway fallback, telemetry.
 - `src/governance/**` - budget/cost/audit logging.
 - `src/muchanipo/server.py` and `src/pipeline/**` - full pipeline event stream and backend smoke.
+- `src/research/depth.py` and `src/research/planner.py` - shallow/deep/max autoresearch budget profiles.
 - `tests/**` - regression coverage for touched behavior.
 - `scripts/**` - repeatable smoke/autoresearch runners.
 
@@ -44,6 +47,13 @@ For unattended monitoring:
 - Added provider/model metadata to cost-log reservations and normalized provider model override telemetry.
 
 ## Current Backlog
+- Deep Research parity slice:
+  - `--depth shallow|deep|max` is the first implemented surface.
+  - Next: editable HITL plan-review entry before execution.
+  - Next: `--pdf` / `--csv` input normalization.
+  - Next: explicit MCP research ingestion lane.
+  - Next: Mermaid/HTML report visualizations.
+  - Next: 30s-2m quick online path between offline demo and full runs.
 - Add a manual/automated GUI full-run check for IdeaSubmit -> RunProgress -> ReportView.
 - Harden packaged `.app` workspace resolution for repo-moved or clean-machine installs.
 - Add secure API-key storage or avoid plaintext localStorage before wider distribution.

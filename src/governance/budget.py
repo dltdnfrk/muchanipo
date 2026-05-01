@@ -23,6 +23,7 @@ PRICE_PER_M_INPUT = {
     "gemini-2.5-pro": 2.50,
     "gemini-2.5-flash": 0.075,
     "kimi-k2-0711-preview": 0.55,
+    "gpt-5.4": 2.00,
     "gpt-5.5": 2.00,
     "mock": 0.0,
 }
@@ -54,7 +55,7 @@ STAGE_PROVIDER_MODELS = {
     ("council", "anthropic"): "claude-opus-4-7",
     ("consensus", "anthropic"): "claude-opus-4-7",
     ("report", "anthropic"): "claude-sonnet-4-6",
-    ("eval", "codex"): "gpt-5.5",
+    ("eval", "codex"): "gpt-5.4",
     ("mock", "mock"): "mock",
 }
 
@@ -62,7 +63,7 @@ PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "gemini": "gemini-2.5-flash",
     "kimi": "kimi-k2-0711-preview",
-    "codex": "gpt-5.5",
+    "codex": "gpt-5.4",
     "openai": "gpt-5.5",
     "mock": "mock",
 }

@@ -5,18 +5,18 @@
 
   "providers": {
     "claude": {
-      "type": "oauth",
+      "type": "local-cli",
       "models": ["opus-4-6", "sonnet-4-6", "haiku-4-5"],
       "access": "claude-code-agent-tool",
       "note": "Claude Code 내에서 Agent tool의 model 파라미터로 선택"
     },
     "codex": {
-      "type": "oauth",
-      "models": ["gpt-5.5"],
-      "default": "gpt-5.5",
-      "access": "no_proxy='*' codex exec --full-auto -m gpt-5.5",
-      "env": "no_proxy=* + dangerouslyDisableSandbox",
-      "note": "GPT-5.5 사용 (high 모드). o3 불필요."
+      "type": "local-cli",
+      "models": ["gpt-5.4", "gpt-5.5"],
+      "default": "gpt-5.4",
+      "access": "no_proxy='*' codex exec --full-auto -m gpt-5.4",
+      "env": "no_proxy=* + local Codex auth",
+      "note": "로컬 Codex CLI 우선. 현재 설치된 CLI 호환 기본값은 GPT-5.4."
     },
     "ollama": {
       "type": "local",
@@ -26,9 +26,9 @@
       "note": "로컬 실행. GPU 17GB(26B) / 9.6GB(12B)"
     },
     "kimi": {
-      "type": "api",
+      "type": "local-cli",
       "models": ["kimi-k2"],
-      "access": "REST API (구독 예정)",
+      "access": "kimi --print --final-message-only",
       "strength": "128K+ 컨텍스트, 장문 문서 분석 특화",
       "note": "사업계획서 전체를 한번에 읽고 분석 가능"
     },
@@ -84,9 +84,9 @@
       "step": "Step 3b: Council 토론 (심층)",
       "reasoning": "높음 (다관점 분석, 근거 기반 논증)",
       "model": "opus-4-6",
-      "alt": "gpt-5.5",
+      "alt": "gpt-5.4",
       "cost": "$$$",
-      "note": "프론티어 모델 필수. Opus + GPT-5.5 교차 사용으로 관점 다양성 확보"
+      "note": "프론티어 모델 필수. Opus + GPT-5.4 교차 사용으로 관점 다양성 확보"
     },
     "council_debate_fast": {
       "step": "Step 3b: Council 토론 (속도 우선)",
@@ -168,7 +168,7 @@
       "local_models": "$0",
       "total": "$0.80-1.30/round"
     },
-    "note": "OAuth 사용 시 실제 API 비용 없음 (세션 내 토큰 소비)"
+    "note": "개인 로컬앱 기본값은 설치된 CLI 우선. API 키는 명시적 fallback일 때만 사용."
   },
 
   "multi_model_council": {
@@ -176,7 +176,7 @@
     "pattern": "MiroFish의 multi-platform 패턴 채용",
     "example_5_personas": {
       "persona_1_investor": "opus-4-6 (비판적 분석)",
-      "persona_2_scientist": "gpt-5.5 (논리적 추론)",
+      "persona_2_scientist": "gpt-5.4 (논리적 추론)",
       "persona_3_farmer": "sonnet-4-6 (실용적 관점)",
       "persona_4_regulator": "kimi-k2 (장문맥 규제 분석)",
       "persona_5_competitor": "gemma4:26b (로컬, 비용 절감)"
