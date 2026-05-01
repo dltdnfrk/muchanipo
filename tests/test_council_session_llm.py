@@ -86,6 +86,36 @@ def test_session_run_all_calls_gateway_v2_for_ten_structured_rounds():
     assert "Chairman Synthesis" in provider.calls[2]["prompt"]
 
 
+def test_session_emits_council_progress_while_round_runs():
+    provider = SequenceProvider([0.70, 0.72, 0.74])
+    events: list[dict[str, object]] = []
+    session = Session(
+        gateway=_gateway(provider),
+        layers=list(DEFAULT_LAYERS[:1]),
+        personas=[_persona()],
+        plateau=PlateauDetector(window=3, tolerance=0.05),
+        progress_callback=events.append,
+    )
+
+    session.run_one_round(1)
+
+    assert events[0]["event"] == "council_round_start"
+    assert events[0]["round"] == 1
+    turns = [event for event in events if event["event"] == "council_turn"]
+    tokens = [event for event in events if event["event"] == "council_persona_token"]
+    assert [event["stage"] for event in turns] == [
+        "council_progress",
+        "council_progress",
+        "council_progress",
+    ]
+    assert [event["pipeline_stage"] for event in turns] == ["council", "council", "council"]
+    assert [event["council_stage"] for event in turns] == ["individual", "peer_review", "chairman"]
+    assert len(tokens) == 3
+    assert all(str(event["delta"]).strip() for event in tokens)
+    assert events[-1]["event"] == "council_round_done"
+    assert events[-1]["round"] == 1
+
+
 def test_session_run_all_traverses_default_layers_despite_flat_confidence():
     provider = SequenceProvider([0.70] * 30)
     session = Session(

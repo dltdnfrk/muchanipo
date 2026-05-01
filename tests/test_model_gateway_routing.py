@@ -30,6 +30,7 @@ def test_default_offline_providers_return_mock_text():
 def test_anthropic_provider_present_in_default_set():
     providers = build_default_providers(force_offline=True)
     assert "anthropic" in providers
+    assert "opencode" in providers
     assert "mock" in providers
 
 
@@ -40,6 +41,7 @@ def test_default_providers_prefer_local_cli_when_requested():
     assert providers["gemini"].use_cli is bool(providers["gemini"].gemini_bin)
     assert providers["kimi"].use_cli is bool(providers["kimi"].kimi_bin)
     assert providers["codex"].use_cli is bool(providers["codex"].codex_bin)
+    assert providers["opencode"].use_cli is bool(providers["opencode"].opencode_bin)
 
 
 # ---- stage routing -------------------------------------------------------
@@ -56,6 +58,8 @@ def test_default_providers_prefer_local_cli_when_requested():
         ("council", "anthropic"),
         ("report", "anthropic"),
         ("eval", "codex"),
+        ("utilities", "opencode"),
+        ("implementation_review", "opencode"),
     ],
 )
 def test_stage_routes_to_correct_primary_provider(stage, expected_primary):

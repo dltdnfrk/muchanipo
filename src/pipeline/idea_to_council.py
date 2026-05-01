@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,8 +162,42 @@ class IdeaToCouncilPipeline:
         interview = InterviewSession.from_idea(idea)
         design_doc = OfficeHours().reframe(idea.raw_text)
         brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
+        if not brief.is_ready:
+            raise ValueError(
+                "research brief is not ready: "
+                f"coverage={brief.coverage_score:.2f}, "
+                f"missing={','.join(interview.missing_dimensions)}"
+            )
         state.record_artifact("brief_id", brief.id)
-        state.record_artifact("interview_question_count", str(len(getattr(brief, "interview_trace", []) or [])))
+        state.record_artifact("brief_ready", "true" if brief.is_ready else "false")
+        state.record_artifact("brief_coverage_score", f"{brief.coverage_score:.2f}")
+        state.record_artifact(
+            "interview_trace_source",
+            str(getattr(brief, "interview_trace_source", "unknown")),
+        )
+        state.record_artifact(
+            "synthetic_interview_trace",
+            "true" if getattr(brief, "synthetic_interview_trace", False) else "false",
+        )
+        reconstructed_question_count = len(getattr(brief, "interview_trace", []) or [])
+        state.record_artifact("interview_question_count", str(reconstructed_question_count))
+        state.record_artifact(
+            "interview_effective_answer_count",
+            str(getattr(brief, "interview_effective_answer_count", reconstructed_question_count)),
+        )
+        state.record_artifact(
+            "interview_reconstructed_question_count",
+            str(reconstructed_question_count),
+        )
+        state.record_artifact("interview_user_answer_count", str(getattr(brief, "interview_user_answer_count", 0)))
+        state.record_artifact(
+            "interview_office_hours_fill_count",
+            str(getattr(brief, "interview_office_hours_fill_count", 0)),
+        )
+        state.record_artifact(
+            "mixed_interview_trace",
+            "true" if getattr(brief, "mixed_interview_trace", False) else "false",
+        )
         state.record_artifact(
             "interview_question_order",
             ",".join(item["dimension_id"] for item in getattr(brief, "interview_trace", []) or []),
@@ -202,6 +237,12 @@ class IdeaToCouncilPipeline:
             state.warnings.append("brief gate requested changes; re-interviewed once")
             interview = InterviewSession.from_idea(idea)
             brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
+            if not brief.is_ready:
+                raise ValueError(
+                    "research brief is not ready after re-interview: "
+                    f"coverage={brief.coverage_score:.2f}, "
+                    f"missing={','.join(interview.missing_dimensions)}"
+                )
             targeting_map = build_targeting_map(brief)
             setattr(brief, "targeting_map", targeting_map)
 
@@ -282,6 +323,7 @@ class IdeaToCouncilPipeline:
             layers=list(DEFAULT_LAYERS[: self.depth_profile.council_round_budget]),
             personas=personas,
             active_persona_count=self.depth_profile.active_persona_count,
+            progress_callback=self.progress_callback,
         )
         council.run_all()
         state.record_artifact("council_id", report.id)
@@ -389,13 +431,18 @@ class IdeaToCouncilPipeline:
         raw_text: str,
         design_doc: DesignDoc,
     ) -> ResearchBrief:
+        embedded_answers = _extract_embedded_interview_answers(raw_text)
+        user_answer_count = len([value for value in embedded_answers.values() if str(value).strip()])
         answer_bank = {
-            "research_question": design_doc.pain_root or raw_text,
-            "purpose": design_doc.demand_reality or "decide next action",
-            "context": design_doc.contrary_framing or design_doc.status_quo,
-            "known": "; ".join(design_doc.implicit_capabilities) or "no prior facts provided",
-            "deliverable_type": "research report",
-            "quality_bar": "source-backed, council-ready, and scoped by OfficeHours forcing questions",
+            "research_question": embedded_answers.get("research_question") or design_doc.pain_root or raw_text,
+            "purpose": embedded_answers.get("purpose") or design_doc.demand_reality or "decide next action",
+            "context": embedded_answers.get("context") or design_doc.contrary_framing or design_doc.status_quo,
+            "known": embedded_answers.get("known")
+            or "; ".join(design_doc.implicit_capabilities)
+            or "no prior facts provided",
+            "deliverable_type": embedded_answers.get("deliverable_type") or "research report",
+            "quality_bar": embedded_answers.get("quality_bar")
+            or "source-backed, council-ready, and scoped by OfficeHours forcing questions",
         }
         trace: list[dict[str, Any]] = []
         for _ in range(6):
@@ -412,16 +459,35 @@ class IdeaToCouncilPipeline:
                     "label": next_item.label,
                     "answer_key": answer_key,
                     "option_count": len(options),
+                    "source": "user" if answer_key in embedded_answers else "office_hours",
                 }
             )
         brief = interview.to_brief()
+        office_hours_fill_count = sum(1 for item in trace if item["source"] == "office_hours")
+        trace_source = (
+            "office_hours_synthetic"
+            if user_answer_count == 0
+            else "user_interview"
+            if office_hours_fill_count == 0
+            else "mixed_user_office_hours"
+        )
         setattr(brief, "interview_trace", trace)
+        setattr(brief, "interview_trace_source", trace_source)
+        setattr(brief, "synthetic_interview_trace", user_answer_count == 0)
+        setattr(brief, "mixed_interview_trace", user_answer_count > 0 and office_hours_fill_count > 0)
+        setattr(brief, "interview_effective_answer_count", user_answer_count or len(trace))
+        setattr(brief, "interview_user_answer_count", user_answer_count)
+        setattr(brief, "interview_office_hours_fill_count", office_hours_fill_count)
         brief.known_facts = list(design_doc.implicit_capabilities)
+        if embedded_answers.get("known"):
+            brief.known_facts = _split_interview_list(embedded_answers["known"])
         brief.constraints = list(design_doc.challenged_premises)
         brief.success_criteria = [
             design_doc.narrowest_wedge,
             design_doc.future_fit,
         ]
+        if embedded_answers.get("quality_bar"):
+            brief.success_criteria.append(embedded_answers["quality_bar"])
         return brief
 
     def _emit(self, state: PipelineState, stage: Stage) -> None:
@@ -813,6 +879,49 @@ def _interview_answer_key(label: str) -> str:
         "deliverable": "deliverable_type",
         "quality": "quality_bar",
     }.get(label, label)
+
+
+_EMBEDDED_INTERVIEW_LABELS = {
+    "Q1_research_question": "research_question",
+    "Q2_purpose": "purpose",
+    "Q3_context": "context",
+    "Q4_known": "known",
+    "Q5_deliverable": "deliverable_type",
+    "Q6_quality": "quality_bar",
+}
+
+
+def _extract_embedded_interview_answers(raw_text: str) -> dict[str, str]:
+    """Parse serve-mode interview answers merged into the pipeline topic.
+
+    The Tauri JSONL flow sends the answered interview back as:
+    ``[Q1_research_question] ...``. The pipeline still runs its internal
+    InterviewSession for artifact compatibility, so we explicitly seed that
+    session from the user answers instead of letting OfficeHours analysis text
+    become the research query.
+    """
+    answers: dict[str, str] = {}
+    pattern = re.compile(r"^\[(Q[1-6]_[^\]]+)\]\s*(.*)$", re.MULTILINE)
+    matches = list(pattern.finditer(raw_text or ""))
+    for idx, match in enumerate(matches):
+        qid = match.group(1)
+        key = _EMBEDDED_INTERVIEW_LABELS.get(qid)
+        if key is None:
+            continue
+        start = match.start(2)
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_text)
+        value = raw_text[start:end].strip()
+        if value:
+            answers[key] = value
+    return answers
+
+
+def _split_interview_list(value: str) -> list[str]:
+    parts = [
+        part.strip(" -•\t\r\n")
+        for part in re.split(r"[;\n]+|,\s*(?=[가-힣A-Za-z0-9])", value or "")
+    ]
+    return [part for part in parts if part]
 
 
 def _targeting_academic_sources(targeting_map: TargetingMap) -> list[str]:

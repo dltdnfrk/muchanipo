@@ -894,6 +894,25 @@ def test_main_runs_status_and_doctor_json(monkeypatch, capsys):
     assert statuses["schema_version"] == 1
     assert statuses["command"] == "muchanipo status"
     assert statuses["providers"][0]["name"] == "claude"
+    assert statuses["probe_requested"] is False
+
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_prompt_probes",
+        lambda records=None: [
+            {
+                "name": "claude",
+                "installed": True,
+                "prompt_ok": True,
+                "json_ok": True,
+                "latency_ms": 10,
+            }
+        ],
+    )
+    assert server_mod.main(["status", "--json", "--probe"]) == 0
+    probed = json.loads(capsys.readouterr().out)
+    assert probed["probe_requested"] is True
+    assert probed["prompt_probes"][0]["json_ok"] is True
 
     assert server_mod.main(["doctor", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
@@ -1188,6 +1207,30 @@ def test_render_cli_status_formats_installed_errors_and_missing(monkeypatch):
     assert "[OK] claude" in text
     assert "installed; version probe failed: auth missing" in text
     assert "[--] codex" in text
+
+
+def test_status_report_can_include_opt_in_prompt_probes(monkeypatch):
+    providers = [{"name": "opencode", "installed": True, "path": "/bin/opencode"}]
+    monkeypatch.setattr(terminal_mod, "cli_statuses", lambda: providers)
+    monkeypatch.setattr(
+        terminal_mod,
+        "cli_prompt_probes",
+        lambda records=None: [
+            {
+                "name": "opencode",
+                "installed": True,
+                "prompt_ok": True,
+                "json_ok": True,
+                "latency_ms": 25,
+            }
+        ],
+    )
+
+    report = terminal_mod.status_report(probe=True)
+
+    assert report["probe_requested"] is True
+    assert report["prompt_probes"][0]["name"] == "opencode"
+    assert report["prompt_probes"][0]["json_ok"] is True
 
 
 def test_render_doctor_reports_runs_dir_and_warning(monkeypatch, tmp_path: Path):

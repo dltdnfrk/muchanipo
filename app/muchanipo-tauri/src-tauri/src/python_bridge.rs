@@ -41,6 +41,7 @@ fn push_event_buffer(bridge: &PythonBridge, line: &str) {
 pub async fn start_pipeline(
     topic: String,
     pipeline: Option<String>,
+    depth: Option<String>,
     envs: Option<HashMap<String, String>>,
     app: AppHandle,
     bridge: State<'_, PythonBridge>,
@@ -76,38 +77,19 @@ pub async fn start_pipeline(
         Some("stub") => "stub",
         _ => "full",
     };
+    let research_depth = normalize_pipeline_depth(depth.as_deref())?;
 
-    // Resolve python3 — try common locations explicitly so .app launches
-    // (which start with a minimal PATH) can find it.
-    let python_bin = [
-        "/opt/homebrew/bin/python3",
-        "/usr/local/bin/python3",
-        "/usr/bin/python3",
-    ]
-    .iter()
-    .find(|p| std::path::Path::new(p).exists())
-    .map(|p| p.to_string())
-    .unwrap_or_else(|| "python3".to_string());
+    // Resolve python3 by capability, not just existence: GUI .app launches
+    // may find a Homebrew Python that lacks the project dependency set.
+    let python_bin = resolve_python_bin()?;
 
     let mut command = Command::new(&python_bin);
     command
-        .args([
-            "-u", // unbuffered stdout (so events flush immediately)
-            "-m",
-            "muchanipo",
-            "serve",
-            "--topic",
-            &topic,
-            "--pipeline",
-            pipeline_mode,
-        ])
+        .args(pipeline_command_args(&topic, pipeline_mode, research_depth))
         .current_dir(workspace_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if pipeline_mode == "full" {
-        command.arg("--no-wait");
-    }
     // GUI .app launches inherit a minimal PATH that won't include
     // ~/.npm-global/bin or ~/.local/bin where the user's CLIs live.
     // Pre-resolve each CLI and inject both PATH extensions and explicit
@@ -120,6 +102,7 @@ pub async fn start_pipeline(
         ("codex", "CODEX_BIN"),
         ("gemini", "GEMINI_BIN"),
         ("kimi", "KIMI_BIN"),
+        ("opencode", "OPENCODE_BIN"),
     ] {
         if let Some(p) = which_binary(cli_name) {
             command.env(env_var, p);
@@ -242,6 +225,36 @@ pub async fn start_pipeline(
     Ok(())
 }
 
+fn normalize_pipeline_depth(depth: Option<&str>) -> Result<&'static str, String> {
+    match depth.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok("deep"),
+        Some("shallow") => Ok("shallow"),
+        Some("deep") => Ok("deep"),
+        Some("max") => Ok("max"),
+        Some(other) => Err(format!(
+            "unsupported research depth: {other}; expected shallow, deep, or max"
+        )),
+    }
+}
+
+fn pipeline_command_args(topic: &str, pipeline_mode: &str, research_depth: &str) -> Vec<String> {
+    [
+        "-u",
+        "-m",
+        "muchanipo",
+        "serve",
+        "--topic",
+        topic,
+        "--pipeline",
+        pipeline_mode,
+        "--depth",
+        research_depth,
+    ]
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
+}
+
 fn sanitize_renderer_envs(envs: HashMap<String, String>) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for (key, value) in envs {
@@ -253,8 +266,8 @@ fn sanitize_renderer_envs(envs: HashMap<String, String>) -> Result<Vec<(String, 
         if !is_allowed_renderer_env(&key) {
             return Err(format!("unsupported pipeline env from renderer: {key}"));
         }
-        if key == "MUCHANIPO_USE_CLI" && !is_boolean_env_value(&value) {
-            return Err("MUCHANIPO_USE_CLI must be a boolean-like value".to_string());
+        if is_boolean_renderer_env(&key) && !is_boolean_env_value(&value) {
+            return Err(format!("{key} must be a boolean-like value"));
         }
         out.push((key, value));
     }
@@ -265,17 +278,95 @@ fn is_allowed_renderer_env(key: &str) -> bool {
     matches!(
         key,
         "MUCHANIPO_USE_CLI"
+            | "MUCHANIPO_OFFLINE"
+            | "MUCHANIPO_ONLINE"
+            | "MUCHANIPO_REQUIRE_LIVE"
             | "ANTHROPIC_API_KEY"
             | "GEMINI_API_KEY"
             | "KIMI_API_KEY"
             | "OPENAI_API_KEY"
+            | "OPENCODE_API_KEY"
+            | "OPENCODE_GO_API_KEY"
             | "OPENALEX_EMAIL"
             | "PLANNOTATOR_API_KEY"
     )
 }
 
+fn is_boolean_renderer_env(key: &str) -> bool {
+    matches!(
+        key,
+        "MUCHANIPO_USE_CLI" | "MUCHANIPO_OFFLINE" | "MUCHANIPO_ONLINE" | "MUCHANIPO_REQUIRE_LIVE"
+    )
+}
+
 fn is_boolean_env_value(value: &str) -> bool {
     matches!(value, "1" | "0" | "true" | "false" | "yes" | "no")
+}
+
+fn resolve_python_bin() -> Result<String, String> {
+    let candidates = python_bin_candidates();
+    select_python_bin(&candidates, python_candidate_exists, python_imports_pipeline_deps)
+        .ok_or_else(|| {
+            format!(
+                "no Python interpreter with Muchanipo dependencies found; tried {}. \
+Install project deps into one of those interpreters or set MUCHANIPO_PYTHON.",
+                candidates.join(", ")
+            )
+        })
+}
+
+fn python_bin_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Ok(override_bin) = std::env::var("MUCHANIPO_PYTHON") {
+        push_unique_candidate(&mut candidates, override_bin.trim());
+    }
+    for candidate in [
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/bin/python3",
+        "python3",
+    ] {
+        push_unique_candidate(&mut candidates, candidate);
+    }
+    candidates
+}
+
+fn push_unique_candidate(candidates: &mut Vec<String>, candidate: &str) {
+    if !candidate.is_empty() && !candidates.iter().any(|existing| existing == candidate) {
+        candidates.push(candidate.to_string());
+    }
+}
+
+fn select_python_bin<F, G>(
+    candidates: &[String],
+    mut is_available: F,
+    mut supports_pipeline: G,
+) -> Option<String>
+where
+    F: FnMut(&str) -> bool,
+    G: FnMut(&str) -> bool,
+{
+    candidates
+        .iter()
+        .filter(|candidate| is_available(candidate.as_str()))
+        .find(|candidate| supports_pipeline(candidate.as_str()))
+        .cloned()
+}
+
+fn python_candidate_exists(bin: &str) -> bool {
+    bin == "python3" || std::path::Path::new(bin).exists()
+}
+
+fn python_imports_pipeline_deps(bin: &str) -> bool {
+    Command::new(bin)
+        .args(["-c", "import httpx"])
+        .current_dir(workspace_root())
+        .env("PATH", merged_cli_path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -320,6 +411,7 @@ pub async fn check_cli_status() -> Result<Vec<CliStatus>, String> {
         ("codex", vec!["--version"]),
         ("gemini", vec!["--version"]),
         ("kimi", vec!["--version"]),
+        ("opencode", vec!["--version"]),
     ];
     let mut out = Vec::with_capacity(candidates.len());
     for (name, args) in &candidates {
@@ -369,7 +461,7 @@ pub async fn check_cli_status() -> Result<Vec<CliStatus>, String> {
 #[tauri::command]
 pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
     let name = name.trim().to_lowercase();
-    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi") {
+    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi" | "opencode") {
         return Err(format!("unsupported CLI: {name}"));
     }
     let Some(bin) = which_binary(&name) else {
@@ -411,9 +503,21 @@ pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
             ],
             Some("Reply with OK only."),
         ),
+        "opencode" => (
+            vec![
+                "run",
+                "--pure",
+                "--model",
+                "opencode-go/kimi-k2.6",
+                "--format",
+                "json",
+                "Reply with OK only.",
+            ],
+            None,
+        ),
         _ => unreachable!(),
     };
-    let output = run_command_with_timeout(&bin, &args, input, Duration::from_secs(45))
+    let output = run_command_with_timeout(&bin, &args, input, Duration::from_secs(90))
         .map_err(|error| error.to_string())?;
     let stdout = output.stdout.trim().to_string();
     let stderr = output.stderr.trim().to_string();
@@ -444,7 +548,7 @@ pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
 #[tauri::command]
 pub async fn open_cli_auth(name: String) -> Result<CliAuthLaunch, String> {
     let name = name.trim().to_lowercase();
-    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi") {
+    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi" | "opencode") {
         return Err(format!("unsupported CLI: {name}"));
     }
     if which_binary(&name).is_none() {
@@ -521,6 +625,7 @@ fn cli_login_command(name: &str) -> &'static str {
         "codex" => "codex login",
         "gemini" => "gemini -i /auth",
         "kimi" => "kimi login",
+        "opencode" => "opencode auth login",
         _ => unreachable!("validated by open_cli_auth"),
     }
 }
@@ -649,6 +754,7 @@ fn cli_diagnosis(name: &str) -> Option<&'static str> {
         "codex" => Some("Pipeline uses `codex exec`; version success does not prove native module/auth health."),
         "gemini" => Some("Pipeline uses `gemini -p`; smoke test may expose OAuth, rate-limit, or CLI flag issues."),
         "kimi" => Some("Pipeline uses `kimi --print`; run the smoke test to verify local Kimi auth."),
+        "opencode" => Some("Pipeline uses `opencode run`; smoke test verifies OpenCode auth/model access."),
         _ => None,
     }
 }
@@ -827,17 +933,27 @@ mod tests {
     fn sanitize_renderer_envs_allows_only_expected_app_keys() {
         let sanitized = sanitize_renderer_envs(env_map(&[
             ("MUCHANIPO_USE_CLI", "1"),
+            ("MUCHANIPO_OFFLINE", "true"),
+            ("MUCHANIPO_ONLINE", "1"),
+            ("MUCHANIPO_REQUIRE_LIVE", "yes"),
             ("ANTHROPIC_API_KEY", "sk-ant"),
             ("GEMINI_API_KEY", "g-key"),
             ("KIMI_API_KEY", "k-key"),
             ("OPENAI_API_KEY", "sk-openai"),
+            ("OPENCODE_API_KEY", "oc-key"),
+            ("OPENCODE_GO_API_KEY", "oc-go-key"),
             ("OPENALEX_EMAIL", "dev@example.com"),
             ("PLANNOTATOR_API_KEY", "p-key"),
         ]))
         .expect("expected allowlisted envs");
 
-        assert_eq!(sanitized.len(), 7);
+        assert_eq!(sanitized.len(), 12);
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_USE_CLI"));
+        assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_OFFLINE"));
+        assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_ONLINE"));
+        assert!(sanitized
+            .iter()
+            .any(|(key, _)| key == "MUCHANIPO_REQUIRE_LIVE"));
     }
 
     #[test]
@@ -848,6 +964,7 @@ mod tests {
             "CLAUDE_BIN",
             "CODEX_BIN",
             "GEMINI_BIN",
+            "OPENCODE_BIN",
             "GEMINI_ENDPOINT_TEMPLATE",
             "HTTPS_PROXY",
         ] {
@@ -860,6 +977,88 @@ mod tests {
     fn sanitize_renderer_envs_rejects_invalid_cli_flag_values() {
         let err = sanitize_renderer_envs(env_map(&[("MUCHANIPO_USE_CLI", "maybe")])).unwrap_err();
         assert!(err.contains("MUCHANIPO_USE_CLI"));
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_rejects_invalid_offline_flag_values() {
+        let err = sanitize_renderer_envs(env_map(&[("MUCHANIPO_OFFLINE", "maybe")])).unwrap_err();
+        assert!(err.contains("MUCHANIPO_OFFLINE"));
+    }
+
+    #[test]
+    fn sanitize_renderer_envs_rejects_invalid_live_flag_values() {
+        let err =
+            sanitize_renderer_envs(env_map(&[("MUCHANIPO_REQUIRE_LIVE", "maybe")])).unwrap_err();
+        assert!(err.contains("MUCHANIPO_REQUIRE_LIVE"));
+    }
+
+    #[test]
+    fn normalize_pipeline_depth_defaults_to_deep_and_accepts_valid_depths() {
+        assert_eq!(normalize_pipeline_depth(None).unwrap(), "deep");
+        assert_eq!(normalize_pipeline_depth(Some("")).unwrap(), "deep");
+        assert_eq!(normalize_pipeline_depth(Some("shallow")).unwrap(), "shallow");
+        assert_eq!(normalize_pipeline_depth(Some("deep")).unwrap(), "deep");
+        assert_eq!(normalize_pipeline_depth(Some("max")).unwrap(), "max");
+    }
+
+    #[test]
+    fn normalize_pipeline_depth_rejects_unknown_depth() {
+        let err = normalize_pipeline_depth(Some("quick")).unwrap_err();
+
+        assert!(err.contains("unsupported research depth"));
+        assert!(err.contains("shallow"));
+        assert!(err.contains("deep"));
+        assert!(err.contains("max"));
+    }
+
+    #[test]
+    fn pipeline_command_args_include_selected_depth() {
+        let args = pipeline_command_args("topic", "full", "max");
+
+        assert_eq!(
+            args,
+            vec![
+                "-u",
+                "-m",
+                "muchanipo",
+                "serve",
+                "--topic",
+                "topic",
+                "--pipeline",
+                "full",
+                "--depth",
+                "max",
+            ]
+        );
+    }
+
+    #[test]
+    fn select_python_bin_skips_available_but_unsupported_interpreter() {
+        let candidates = vec![
+            "/opt/homebrew/bin/python3".to_string(),
+            "/usr/local/bin/python3".to_string(),
+            "python3".to_string(),
+        ];
+
+        let selected = select_python_bin(
+            &candidates,
+            |_| true,
+            |candidate| candidate == "/usr/local/bin/python3",
+        );
+
+        assert_eq!(selected, Some("/usr/local/bin/python3".to_string()));
+    }
+
+    #[test]
+    fn select_python_bin_returns_none_when_no_candidate_supports_pipeline() {
+        let candidates = vec![
+            "/opt/homebrew/bin/python3".to_string(),
+            "/usr/local/bin/python3".to_string(),
+        ];
+
+        let selected = select_python_bin(&candidates, |_| true, |_| false);
+
+        assert_eq!(selected, None);
     }
 
     #[test]

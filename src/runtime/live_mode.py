@@ -18,6 +18,11 @@ class LiveModeViolation(RuntimeError):
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _MOCK_TEXT_MARKERS = (
     "[mock-",
+    "[anthropic fallback]",
+    "[opencode fallback]",
+    "[codex fallback]",
+    "[gemini fallback]",
+    "[kimi fallback]",
     "mock response",
     "mock council critique",
     "not a real autoresearch run",

@@ -87,6 +87,11 @@ local InsightForge and MemPalace backends when they are available, and writes
 `section_markdown` from the resulting final answer. External web search is not
 wired into the offline executor and remains a surfaced readiness gap.
 
+Provider runtime inventory includes Claude, Gemini, Codex, Kimi, and OpenCode.
+OpenCode is a real external runtime/API adapter: local runs call `opencode run`
+when available and can fall back to the OpenCode Go API when a key is provided;
+the adapter does not inspect or copy OpenCode auth storage.
+
 ## Verification
 
 Inventory and readiness are tested by:

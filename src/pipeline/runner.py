@@ -109,6 +109,7 @@ def run_pipeline(
     progress_callback: ProgressCallback | None = None,
     offline: bool | None = None,
     require_live: bool | None = None,
+    hitl_adapter: Any | None = None,
     depth: str = "deep",
 ) -> dict[str, Any]:
     """Run idea -> research -> council -> report -> vault and return report inputs.
@@ -147,6 +148,10 @@ def run_pipeline(
         return PROGRESS_STAGE_ORDER[idx + 1]
 
     def handle_progress(event: dict[str, Any]) -> None:
+        if str(event.get("event") or "").startswith("council_"):
+            if progress_callback is not None:
+                progress_callback(event)
+            return
         raw_stage = str(event.get("stage") or "")
         stage = STAGE_MAP.get(raw_stage)
         if stage is None or stage in emitted_stages:
@@ -162,7 +167,8 @@ def run_pipeline(
 
     gateway = default_gateway(force_offline=offline)
     pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(
+        hitl_adapter=hitl_adapter
+        or HITLAdapter(
             mode=_hitl_mode_from_env(live_required=live_required),
             timeout_seconds=_hitl_timeout_from_env(),
         ),
@@ -175,7 +181,9 @@ def run_pipeline(
         depth=normalized_depth,
     )
     emit_stage_started("intake", {"topic": topic})
-    with _academic_targeting_policy(live_enabled=bool(live_required or not offline)):
+    with _academic_targeting_policy(live_enabled=bool(live_required or not offline)), _offline_runtime_policy(
+        offline=bool(offline)
+    ):
         result = pipeline.run(topic)
 
     rounds = _digests_from_result(result)
@@ -207,6 +215,26 @@ def _academic_targeting_policy(*, live_enabled: bool) -> Iterator[None]:
             os.environ.pop("MUCHANIPO_ACADEMIC_TARGETING", None)
         else:
             os.environ["MUCHANIPO_ACADEMIC_TARGETING"] = previous
+
+
+@contextmanager
+def _offline_runtime_policy(*, offline: bool) -> Iterator[None]:
+    """Propagate the explicit runner offline flag to reference runtimes.
+
+    Some reference ports are loaded dynamically and only see process
+    environment, not the runner argument. Keep this scoped so explicit online
+    calls are not polluted by stale shell state, and restore the caller's
+    environment afterwards.
+    """
+    previous = os.environ.get("MUCHANIPO_OFFLINE")
+    os.environ["MUCHANIPO_OFFLINE"] = "1" if offline else "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("MUCHANIPO_OFFLINE", None)
+        else:
+            os.environ["MUCHANIPO_OFFLINE"] = previous
 
 
 def _hitl_mode_from_env(*, live_required: bool) -> str:

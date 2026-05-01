@@ -30,6 +30,20 @@ def test_expand_query_adds_evidence_intents_without_duplicates():
     assert len(queries) == len(set(queries))
 
 
+def test_expand_query_adds_english_bridge_for_korean_agtech_diagnostics():
+    queries = expand_query(
+        "딸기 농가용 저비용 분자진단 키트 시장성과 가격",
+        context="한국 농협 유통 실증",
+        max_queries=8,
+    )
+
+    bridge = " ".join(queries)
+    assert "strawberry" in bridge
+    assert "molecular diagnostic kit" in bridge
+    assert "market adoption" in bridge
+    assert len(queries) == len(set(queries))
+
+
 def test_mock_research_runner_returns_finding_with_evidence():
     brief = ResearchBrief(raw_idea="x", research_question="How to design agent memory?", purpose="plan")
     plan = ResearchPlanner().plan(brief)

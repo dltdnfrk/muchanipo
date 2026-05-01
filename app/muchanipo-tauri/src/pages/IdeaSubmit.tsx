@@ -100,6 +100,8 @@ export default function IdeaSubmit() {
               </p>
               <button
                 type="submit"
+                aria-label="리서치 시작"
+                title="리서치 시작"
                 disabled={loading || !idea.trim()}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
               >

@@ -26,6 +26,11 @@ if [[ ! -d "$SOURCE_APP" ]]; then
 fi
 
 echo "[install-app] stopping any running Muchanipo instances"
+PYTHON_SERVE_PATTERN="[Pp]ython.*muchanipo.*serve"
+if pgrep -f "$PYTHON_SERVE_PATTERN" >/dev/null 2>&1; then
+  echo "[install-app] stopping Muchanipo Python serve processes to avoid orphaned app work" >&2
+  pkill -f "$PYTHON_SERVE_PATTERN" 2>/dev/null || true
+fi
 # AppleScript quit asks the app to exit cleanly first (releases file handles
 # that block rm -rf). Fall through to pkill if the app isn't responding.
 osascript -e 'tell application "Muchanipo" to quit' 2>/dev/null || true

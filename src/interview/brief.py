@@ -50,6 +50,7 @@ class ResearchBrief:
             "constraints": self.constraints,
             "success_criteria": self.success_criteria,
             "coverage_score": self.coverage_score,
+            "is_ready": self.is_ready,
         }
         if self.targeting_map is not None:
             data["targeting_map"] = self.targeting_map.to_dict()

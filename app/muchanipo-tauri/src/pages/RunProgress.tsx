@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getBufferedEvents,
@@ -7,16 +7,29 @@ import {
   submitIdea,
   type BackendEvent,
   type PipelineMode,
+  type ResearchDepth,
 } from "../lib/tauriClient";
-import { deleteRun, markRunDone } from "../lib/runsIndex";
+import { deleteRun, listRuns, markRunDone, markRunRunning } from "../lib/runsIndex";
+
+type BackendMode = "offline" | "cli" | "api";
+
+function readBackendMode(): BackendMode {
+  const value = localStorage.getItem("backend_mode");
+  return value === "cli" || value === "api" || value === "offline" ? value : "cli";
+}
 
 function readEnvsFromSettings(): Record<string, string> {
-  const backendMode =
-    (localStorage.getItem("backend_mode") as "cli" | "api" | null) || "cli";
+  const backendMode = readBackendMode();
   const envs: Record<string, string> = {};
-  if (backendMode === "cli") {
+  if (backendMode === "offline") {
+    envs.MUCHANIPO_OFFLINE = "1";
+  } else if (backendMode === "cli") {
     envs.MUCHANIPO_USE_CLI = "1";
+    envs.MUCHANIPO_ONLINE = "1";
+    envs.MUCHANIPO_REQUIRE_LIVE = "1";
   } else {
+    envs.MUCHANIPO_ONLINE = "1";
+    envs.MUCHANIPO_REQUIRE_LIVE = "1";
     const carry = (k: string, e: string) => {
       const v = localStorage.getItem(k);
       if (v) envs[e] = v;
@@ -25,10 +38,16 @@ function readEnvsFromSettings(): Record<string, string> {
     carry("gemini_api_key", "GEMINI_API_KEY");
     carry("kimi_api_key", "KIMI_API_KEY");
     carry("openai_api_key", "OPENAI_API_KEY");
+    carry("opencode_api_key", "OPENCODE_API_KEY");
     carry("openalex_email", "OPENALEX_EMAIL");
     carry("plannotator_key", "PLANNOTATOR_API_KEY");
   }
   return envs;
+}
+
+function readResearchDepth(): ResearchDepth {
+  const value = localStorage.getItem("research_depth");
+  return value === "shallow" || value === "deep" || value === "max" ? value : "deep";
 }
 
 type Stage =
@@ -58,9 +77,22 @@ interface TokenCard {
 
 interface InterviewPrompt {
   id: string;
+  header: string;
   text: string;
-  options: { key: string; label: string; value: string }[];
+  options: { key: string; label: string; value: string; description?: string }[];
   allowOther: boolean;
+  multiSelect: boolean;
+  preview?: string;
+  index?: number;
+  total?: number;
+}
+
+interface HitlPrompt {
+  gate: string;
+  title: string;
+  prompt: string;
+  preview?: string;
+  options: { key: string; label: string; value: string; description?: string }[];
 }
 
 const STAGES: Stage[] = [
@@ -106,6 +138,10 @@ function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
   const id = String(event.q_id ?? event.question_id ?? data.q_id ?? data.question_id ?? "Q1");
   const text = String(event.text ?? event.prompt ?? data.text ?? data.prompt ?? "").trim();
   if (!text) return null;
+  const header = String(event.header ?? data.header ?? "Interview input required");
+  const preview = String(event.preview ?? data.preview ?? "").trim();
+  const index = Number(event.index ?? data.index ?? 0) || undefined;
+  const total = Number(event.total ?? data.total ?? 0) || undefined;
 
   const rawOptions = Array.isArray(event.options)
     ? event.options
@@ -117,7 +153,8 @@ function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
       const item = raw as Record<string, unknown>;
       const key = String(item.key ?? String.fromCharCode(65 + idx));
       const label = String(item.label ?? item.text ?? item.value ?? key);
-      return { key, label, value: String(item.value ?? label) };
+      const description = String(item.description ?? "").trim();
+      return { key, label, value: String(item.value ?? label), description };
     }
     const value = String(raw);
     const match = value.match(/^([A-D])[\).\s-]+(.+)$/i);
@@ -130,9 +167,64 @@ function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
 
   return {
     id,
+    header,
     text,
     options,
     allowOther: event.allow_other !== false && data.allow_other !== false,
+    multiSelect:
+      event.multiSelect === true ||
+      event.multi_select === true ||
+      data.multiSelect === true ||
+      data.multi_select === true,
+    preview: preview || undefined,
+    index,
+    total,
+  };
+}
+
+function normalizeHitlPrompt(event: BackendEvent): HitlPrompt | null {
+  const data =
+    event.data && typeof event.data === "object"
+      ? (event.data as Record<string, unknown>)
+      : {};
+  const gate = String(event.gate ?? data.gate ?? "").trim();
+  if (!gate) return null;
+  const title = String(event.title ?? data.title ?? `${gate} 승인`);
+  const prompt = String(event.prompt ?? data.prompt ?? "계속 진행하려면 승인하세요.");
+  const preview = String(event.preview ?? data.preview ?? "").trim();
+  const rawOptions = Array.isArray(event.options)
+    ? event.options
+    : Array.isArray(data.options)
+    ? data.options
+    : [];
+  const options = rawOptions.map((raw, idx) => {
+    if (raw && typeof raw === "object") {
+      const item = raw as Record<string, unknown>;
+      const key = String(item.key ?? String.fromCharCode(65 + idx));
+      const label = String(item.label ?? item.text ?? item.value ?? key);
+      const description = String(item.description ?? "").trim();
+      return { key, label, value: String(item.value ?? label), description };
+    }
+    const value = String(raw);
+    const key = String.fromCharCode(65 + idx);
+    return { key, label: value, value };
+  });
+  return {
+    gate,
+    title,
+    prompt,
+    preview: preview || undefined,
+    options:
+      options.length > 0
+        ? options
+        : [
+            {
+              key: "approve",
+              label: "승인하고 계속",
+              value: "approved",
+              description: "현재 내용을 승인하고 다음 단계로 진행합니다.",
+            },
+          ],
   };
 }
 
@@ -149,12 +241,71 @@ export default function RunProgress() {
   const [reportPreview, setReportPreview] = useState("");
   const [interviewPrompt, setInterviewPrompt] = useState<InterviewPrompt | null>(null);
   const [interviewAnswer, setInterviewAnswer] = useState("");
+  const [interviewSelections, setInterviewSelections] = useState<string[]>([]);
   const [interviewSubmitting, setInterviewSubmitting] = useState(false);
   const [interviewError, setInterviewError] = useState<string | null>(null);
+  const [hitlPrompt, setHitlPrompt] = useState<HitlPrompt | null>(null);
+  const [hitlSubmitting, setHitlSubmitting] = useState(false);
+  const [hitlError, setHitlError] = useState<string | null>(null);
   const [aborting, setAborting] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
   const chunkKeysRef = useRef<Set<string>>(new Set());
   const finalReportReceivedRef = useRef(false);
+  const autoRecoveredRunsRef = useRef<Set<string>>(new Set());
+
+  const startRunFromTopic = useCallback(
+    async (runTopic: string, options: { clearArtifacts?: boolean; warning?: string } = {}) => {
+      if (!runId) return false;
+      const trimmed = runTopic.trim();
+      if (!trimmed) {
+        runErrorRef.current = "주제 정보가 없습니다.";
+        setRunError("주제 정보가 없습니다.");
+        return false;
+      }
+
+      runErrorRef.current = null;
+      setRunError(null);
+      setRunWarnings(options.warning ? [options.warning] : []);
+      setTopic(trimmed);
+
+      if (options.clearArtifacts) {
+        chunkKeysRef.current.clear();
+        finalReportReceivedRef.current = false;
+        setStages(initialState());
+        setCouncilRound(0);
+        setTokenCards([]);
+        setReportPreview("");
+        setInterviewPrompt(null);
+        setInterviewAnswer("");
+        setInterviewSelections([]);
+        setInterviewError(null);
+        setHitlPrompt(null);
+        setHitlError(null);
+        setHitlSubmitting(false);
+        try {
+          for (const suffix of ["report", "report_path", "chapter_count", "pending"]) {
+            localStorage.removeItem(`run:${runId}:${suffix}`);
+          }
+          markRunRunning(runId);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      try {
+        const pipelineMode =
+          (localStorage.getItem("pipeline_mode") as PipelineMode | null) || "full";
+        await submitIdea(trimmed, pipelineMode, readResearchDepth(), readEnvsFromSettings());
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        runErrorRef.current = msg;
+        setRunError(msg);
+        return false;
+      }
+    },
+    [runId],
+  );
 
   useEffect(() => {
     if (!runId) return;
@@ -174,8 +325,30 @@ export default function RunProgress() {
 
       if (event.event === "error") {
         const message = (event.message as string) || "오류가 발생했어요.";
-        runErrorRef.current = message;
-        setRunError(message);
+        const isGenericExit = message.startsWith("python pipeline exited with");
+        if (isGenericExit && runErrorRef.current) {
+          setRunWarnings((prev) =>
+            [message, ...prev.filter((item) => item !== message)].slice(0, 3),
+          );
+        } else {
+          runErrorRef.current = message;
+          setRunError(message);
+        }
+        setInterviewSubmitting(false);
+        setHitlSubmitting(false);
+        setStages((prev) => {
+          const next = { ...prev };
+          const active = STAGES.find((stage) => next[stage].status === "active");
+          if (active) {
+            next[active] = {
+              ...next[active],
+              status: "error",
+              completedAt: Date.now(),
+              message,
+            };
+          }
+          return next;
+        });
         return;
       }
 
@@ -190,7 +363,19 @@ export default function RunProgress() {
         if (prompt) {
           setInterviewPrompt(prompt);
           setInterviewAnswer("");
+          setInterviewSelections([]);
           setInterviewError(null);
+          setInterviewSubmitting(false);
+        }
+        return;
+      }
+
+      if (event.event === "hitl_gate") {
+        const prompt = normalizeHitlPrompt(event);
+        if (prompt) {
+          setHitlPrompt(prompt);
+          setHitlError(null);
+          setHitlSubmitting(false);
         }
         return;
       }
@@ -198,6 +383,12 @@ export default function RunProgress() {
       if (event.event === "phase_change" && typeof event.phase === "string") {
         const stage = PHASE_TO_STAGE[event.phase.toUpperCase()];
         if (!stage) return;
+        if (stage !== "interview") {
+          setInterviewPrompt(null);
+          setInterviewSubmitting(false);
+        }
+        setHitlPrompt(null);
+        setHitlSubmitting(false);
         setStages((prev) => {
           const next = { ...prev };
           const currentIndex = STAGES.indexOf(stage);
@@ -228,6 +419,14 @@ export default function RunProgress() {
       ) {
         const stage = event.stage as Stage;
         if (!STAGES.includes(stage)) return;
+        if (event.event === "stage_started" && stage !== "interview") {
+          setInterviewPrompt(null);
+          setInterviewSubmitting(false);
+        }
+        if (event.event === "stage_started") {
+          setHitlPrompt(null);
+          setHitlSubmitting(false);
+        }
         setStages((prev) => {
           const next = { ...prev };
           const current = { ...next[stage] };
@@ -302,6 +501,10 @@ export default function RunProgress() {
       }
 
       if (event.event === "done" && runId && !runErrorRef.current) {
+        setInterviewSubmitting(false);
+        setInterviewPrompt(null);
+        setHitlSubmitting(false);
+        setHitlPrompt(null);
         setStages((prev) => {
           const next = { ...prev };
           for (const stage of STAGES) {
@@ -342,8 +545,10 @@ export default function RunProgress() {
       // listener was attached (e.g. user navigated to another page and came
       // back via the sidebar). Without replay the stage list stays at 0/8
       // even though Python is mid-run.
+      let replayedEventCount = 0;
       try {
         const history = await getBufferedEvents();
+        replayedEventCount = history.length;
         for (const e of history) handleEvent(e);
       } catch {
         /* non-fatal */
@@ -354,20 +559,31 @@ export default function RunProgress() {
       if (!runId) return;
       try {
         const pending = localStorage.getItem(`run:${runId}:pending`);
-        if (pending !== "1") return;
-        localStorage.removeItem(`run:${runId}:pending`);
-        runErrorRef.current = null;
-        setRunError(null);
-        setRunWarnings([]);
         const topic = localStorage.getItem(`run:${runId}:topic`) || "";
-        if (!topic) {
-          setRunError("주제 정보가 없습니다.");
+        if (pending === "1") {
+          localStorage.removeItem(`run:${runId}:pending`);
+          await startRunFromTopic(topic);
           return;
         }
-        const pipelineMode =
-          (localStorage.getItem("pipeline_mode") as PipelineMode | null) || "full";
-        const envs = readEnvsFromSettings();
-        await submitIdea(topic, pipelineMode, envs);
+
+        const report = localStorage.getItem(`run:${runId}:report`);
+        const isRunningEntry = listRuns().some(
+          (entry) => entry.runId === runId && entry.status === "running",
+        );
+        const shouldRecoverStaleRun =
+          replayedEventCount === 0 &&
+          !report &&
+          isRunningEntry &&
+          topic.trim() &&
+          !autoRecoveredRunsRef.current.has(runId);
+
+        if (shouldRecoverStaleRun) {
+          autoRecoveredRunsRef.current.add(runId);
+          await startRunFromTopic(topic, {
+            clearArtifacts: true,
+            warning: "이전 실행이 중간에 끊겨 자동으로 다시 시작했습니다.",
+          });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         runErrorRef.current = msg;
@@ -379,7 +595,7 @@ export default function RunProgress() {
       mounted = false;
       if (unlistenRef.current) unlistenRef.current();
     };
-  }, [runId, navigate]);
+  }, [runId, navigate, startRunFromTopic]);
 
   const completedCount = STAGES.filter((s) => stages[s].status === "completed").length;
   const totalProgress = (completedCount / STAGES.length) * 100;
@@ -402,12 +618,35 @@ export default function RunProgress() {
         selected: selected ?? trimmed,
         other_text: isOther ? trimmed : undefined,
       });
-      setInterviewPrompt(null);
       setInterviewAnswer("");
+      setInterviewSelections([]);
     } catch (err) {
       setInterviewError(err instanceof Error ? err.message : String(err));
-    } finally {
       setInterviewSubmitting(false);
+    }
+  }
+
+  async function submitSelectedOptions() {
+    if (!interviewPrompt || interviewSelections.length === 0) {
+      setInterviewError("선택지를 하나 이상 골라주세요.");
+      return;
+    }
+    await submitInterviewAnswer(interviewSelections.join(", "), interviewSelections.join(","), false);
+  }
+
+  async function submitHitlDecision(status: "approved" | "changes_requested") {
+    if (!hitlPrompt || hitlSubmitting) return;
+    setHitlSubmitting(true);
+    setHitlError(null);
+    try {
+      await sendAction({
+        action: "hitl_decision",
+        gate: hitlPrompt.gate,
+        status,
+      });
+    } catch (err) {
+      setHitlError(err instanceof Error ? err.message : String(err));
+      setHitlSubmitting(false);
     }
   }
 
@@ -423,6 +662,12 @@ export default function RunProgress() {
     } finally {
       setAborting(false);
     }
+  }
+
+  async function restartRun() {
+    if (!runId) return;
+    const runTopic = topic || localStorage.getItem(`run:${runId}:topic`) || "";
+    await startRunFromTopic(runTopic, { clearArtifacts: true });
   }
 
   return (
@@ -465,12 +710,22 @@ export default function RunProgress() {
         {runError && (
           <div className="fade-in mb-6 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
             <p className="break-all text-sm text-red-300">{runError}</p>
-            <button
-              onClick={() => navigate("/")}
-              className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
-            >
-              처음으로
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={restartRun}
+                className="rounded-full bg-white px-3 py-1 text-xs font-medium text-black transition hover:opacity-90"
+              >
+                다시 시작
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/")}
+                className="rounded-full border border-white/10 px-3 py-1 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
+              >
+                처음으로
+              </button>
+            </div>
           </div>
         )}
 
@@ -487,20 +742,80 @@ export default function RunProgress() {
           </div>
         )}
 
-        {/* Inline HITL/interview answer card */}
-        {interviewPrompt && (
-          <div className="fade-in mb-6 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+        {/* Inline HITL approval card */}
+        {hitlPrompt && (
+          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-4">
             <div className="mb-3 flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
-                  Interview input required
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-200">
+                  HITL Gate · {hitlPrompt.gate}
                 </p>
-                <h2 className="mt-1 text-sm font-medium text-white">{interviewPrompt.text}</h2>
+                <h2 className="mt-1 text-sm font-medium leading-relaxed text-white">
+                  {hitlPrompt.title}
+                </h2>
+                <p className="mt-1 text-xs leading-relaxed text-secondary">
+                  {hitlPrompt.prompt}
+                </p>
               </div>
-              <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] text-amber-200">
-                대기 중
+              <span className="shrink-0 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] text-amber-200">
+                승인 대기
               </span>
             </div>
+
+            {hitlPrompt.preview && (
+              <pre className="mb-3 max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-secondary">
+                {hitlPrompt.preview}
+              </pre>
+            )}
+
+            <div className="grid grid-cols-1 gap-2 sm:ml-auto sm:inline-grid sm:max-w-full sm:grid-cols-[max-content_max-content]">
+              <button
+                type="button"
+                disabled={hitlSubmitting}
+                onClick={() => submitHitlDecision("changes_requested")}
+                className="min-h-10 min-w-0 max-w-full whitespace-nowrap rounded-full border border-white/10 px-4 py-2 text-center text-sm text-secondary transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                수정 필요
+              </button>
+              <button
+                type="button"
+                disabled={hitlSubmitting}
+                onClick={() => submitHitlDecision("approved")}
+                className="min-h-10 min-w-0 max-w-full whitespace-nowrap rounded-full bg-white px-4 py-2 text-center text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {hitlSubmitting ? "승인 중" : "승인하고 계속"}
+              </button>
+            </div>
+
+            {hitlError && <p className="mt-2 break-all text-xs text-red-300">{hitlError}</p>}
+          </div>
+        )}
+
+        {/* Inline HITL/interview answer card */}
+        {interviewPrompt && (
+          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                  {interviewPrompt.header}
+                  {interviewPrompt.index && interviewPrompt.total
+                    ? ` · ${interviewPrompt.index}/${interviewPrompt.total}`
+                    : ""}
+                </p>
+                <h2 className="mt-1 whitespace-pre-wrap text-sm font-medium leading-relaxed text-white">
+                  {interviewPrompt.text}
+                </h2>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] text-amber-200">
+                {interviewSubmitting ? "다음 질문 대기" : "대기 중"}
+              </span>
+            </div>
+
+            {interviewPrompt.preview && (
+              <pre className="mb-3 max-h-56 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-secondary">
+                {interviewPrompt.preview}
+              </pre>
+            )}
 
             {interviewPrompt.options.length > 0 && (
               <div className="mb-3 grid gap-2 sm:grid-cols-2">
@@ -509,13 +824,45 @@ export default function RunProgress() {
                     key={`${option.key}:${option.value}`}
                     type="button"
                     disabled={interviewSubmitting}
-                    onClick={() => submitInterviewAnswer(option.value, option.key)}
-                    className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-left text-xs text-secondary transition hover:border-white/25 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (interviewPrompt.multiSelect) {
+                        setInterviewSelections((prev) =>
+                          prev.includes(option.value)
+                            ? prev.filter((item) => item !== option.value)
+                            : [...prev, option.value],
+                        );
+                      } else {
+                        void submitInterviewAnswer(option.value, option.key);
+                      }
+                    }}
+                    className={`rounded-lg border px-3 py-2 text-left text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      interviewSelections.includes(option.value)
+                        ? "border-white/30 bg-white/10 text-white"
+                        : "border-white/10 bg-black/20 text-secondary hover:border-white/25 hover:bg-white/5 hover:text-white"
+                    }`}
                   >
                     <span className="mr-2 font-mono text-white">{option.key}</span>
-                    {option.label}
+                    <span className="font-medium">{option.label}</span>
+                    {option.description && (
+                      <span className="mt-1 block text-[11px] leading-relaxed text-tertiary">
+                        {option.description}
+                      </span>
+                    )}
                   </button>
                 ))}
+              </div>
+            )}
+
+            {interviewPrompt.multiSelect && (
+              <div className="mb-3 flex justify-end">
+                <button
+                  type="button"
+                  disabled={interviewSubmitting || interviewSelections.length === 0}
+                  onClick={submitSelectedOptions}
+                  className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {interviewSubmitting ? "전송 중" : "선택 완료"}
+                </button>
               </div>
             )}
 

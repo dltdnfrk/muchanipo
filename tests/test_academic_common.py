@@ -30,6 +30,25 @@ def test_evidence_ref_with_structured_provenance() -> None:
     assert "_muchanipo_quote" not in prov["source_text"]
 
 
+def test_structured_academic_provenance_can_be_trusted_without_self_grounding() -> None:
+    ref = evidence_ref(
+        source="openalex",
+        paper_id="W123456789",
+        raw={"display_name": "Demo Paper", "abstract": "significant result"},
+        source_url="https://doi.org/10.1234/demo",
+        source_title="Demo Paper",
+        quote="significant result",
+        source_grade="A",
+        doi="10.1234/demo",
+    )
+    store = EvidenceStore(require_live=True)
+
+    store.add(ref)
+
+    assert store.provenance_flag(ref.id) is True
+    assert store.summary()["trusted"] == 1
+
+
 def test_evidence_ref_without_optional_provenance_fields() -> None:
     ref = evidence_ref(
         source="mock",

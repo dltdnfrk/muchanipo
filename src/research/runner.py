@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable, Union
 
 from src.evidence.artifact import EvidenceRef, Finding
 from src.evidence.provenance import Provenance
+from src.runtime.live_mode import live_requested_from_env
 
 from .academic import sync_search as academic_sync_search
 from .planner import ResearchPlan
@@ -161,6 +162,7 @@ class WebResearchRunner:
         insight_forge_search: SearchFn | None = None,
         enable_default_insight_forge: bool | None = None,
         per_query_cap: int = 4,
+        emit_empty_fallback: bool = True,
     ) -> None:
         self.web_search = web_search
         self.exa_search = exa_search
@@ -180,6 +182,7 @@ class WebResearchRunner:
         else:
             self.vault_search = vault_search
         self.per_query_cap = max(1, per_query_cap)
+        self.emit_empty_fallback = emit_empty_fallback
         self.last_backend_trace: list[dict[str, Any]] = []
 
     def _gather(self, query: str) -> list[dict]:
@@ -271,6 +274,8 @@ class WebResearchRunner:
         for idx, query in enumerate(queries, start=1):
             hits = self._gather(query)
             if not hits:
+                if not self.emit_empty_fallback:
+                    continue
                 # Mirror MockResearchRunner shape so downstream code stays robust.
                 evidence = EvidenceRef(
                     id=f"empty-evidence-{idx}",
@@ -310,4 +315,6 @@ def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | 
         kwargs["academic_search"] = academic_sync_search.search
     if "insight_forge_search" not in kwargs and "enable_default_insight_forge" not in kwargs:
         kwargs["enable_default_insight_forge"] = True
+    if "emit_empty_fallback" not in kwargs:
+        kwargs["emit_empty_fallback"] = not live_requested_from_env()
     return WebResearchRunner(**kwargs)
