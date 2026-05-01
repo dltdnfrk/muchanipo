@@ -8,8 +8,8 @@ GatewayV2가 주입되면 Stage 1 propose와 Stage 2 deep validate에 LLM 모드
 PRD-v2 §5.2 Neuro-Symbolic Validator 추가:
     - Fast Validator (규칙 기반, 즉시 실행) — ontology / denied_terms /
       value_axes / lockdown / AUP risk
-    - Deep Validator — 기본 키워드 오버랩 + 선택적 LLM judge + 다양성
-      (MAP-Elites) + 한국어 실명 타겟팅 추가 차단
+    - Deep Validator — 기본 키워드 오버랩 + 선택적 LLM judge +
+      한국어 실명 타겟팅 추가 차단
 
 PRD-v2 §5.5 EvoAgentX MAP-Elites 통합:
     - generate() 메서드가 DiversityMap을 받아 Final 단계에서 셀 점유 강제
@@ -43,9 +43,17 @@ from src.runtime.live_mode import LiveModeViolation
 
 
 # ---- Korean real-name targeting guard --------------------------------------
-# 한국어 풀네임(2~4글자 한글 성+이름)을 광범위하게 매칭. 실명 + 직책/관계
-# 토큰이 함께 오면 위험 신호로 판단.
-_KOREAN_NAME_RX = re.compile(r"[가-힣]{2,4}\s*(?:대표|회장|사장|이사|장관|총장|교수)")
+# 한국어 실명 + 직책 패턴만 위험 신호로 판단한다. 일반 역할명
+# ("사용자대표")이나 UX 문구("고객 인터뷰")는 과탐지하지 않는다.
+_COMMON_KOREAN_SURNAMES = (
+    "김이박최정강조윤장임한오서신권황안송류홍전고문양손배백허"
+    "유남심노하곽성차주우구민진지엄채원천방공현함변염여추"
+    "도소석선설마길"
+)
+_KOREAN_NAME_RX = re.compile(
+    rf"(?:^|[\s:=\"'(\[])[{_COMMON_KOREAN_SURNAMES}][가-힣]{{1,3}}\s*"
+    r"(?:대표|회장|사장|이사|장관|총장|교수)(?=$|[\s,.;:)\]\"'])"
+)
 _KOREAN_DOXX_TOKENS = ("주민등록", "거주지", "주소", "휴대폰번호", "전화번호")
 
 
@@ -195,6 +203,7 @@ class PersonaGenerator:
                 grounded_name = f"{role.replace('_', ' ').title()} {index + 1}"
                 manifest_extra = {}
 
+            value_axes = _value_axes_for_index(base_axes, index, target_count)
             drafts.append(
                 Draft(
                     persona_id=persona_id,
@@ -203,7 +212,7 @@ class PersonaGenerator:
                     intent=intent,
                     allowed_tools=allowed_tools,
                     required_outputs=required_outputs,
-                    value_axes=dict(base_axes),
+                    value_axes=value_axes,
                     manifest=manifest_extra,
                 )
             )
@@ -402,7 +411,7 @@ class PersonaGenerator:
 
         - Korean real-name targeting (실명 + 직책 패턴) 차단
         - 토픽 관련성 (keyword overlap, 0.3 미만이면 reject)
-        - MAP-Elites 다양성 (셀 점유 충돌이면 reject)
+        - MAP-Elites 다양성은 generate/finalize 단계에서 coverage telemetry로 기록
 
         LLM 호출 없이 stdlib만으로 동작 — Phase 2에서 LLM judge 추가 가능.
         """
@@ -442,18 +451,6 @@ class PersonaGenerator:
                 persona_issues.extend(
                     self._deep_validate_llm(draft, ontology, resolved_topic)
                 )
-
-            # MAP-Elites 다양성 — 점유된 셀이면 reject (admit는 generate에서 별도 호출)
-            if diversity_map is not None:
-                axes = draft.to_manifest().get("value_axes") or {}
-                if hasattr(diversity_map, "is_occupied") and diversity_map.is_occupied(axes):
-                    persona_issues.append(
-                        _issue(
-                            draft,
-                            "deep.diversity_collision",
-                            "diversity cell already occupied",
-                        )
-                    )
 
             if persona_issues:
                 issues.extend(persona_issues)
@@ -578,14 +575,6 @@ class PersonaGenerator:
                 ``revisions_used``, ``fast_failed_ids``, ``deep_failed_ids``,
                 ``fallbacks_used``, ``coverage_after_admit``
         """
-        telemetry: Dict[str, Any] = {
-            "revisions_used": 0,
-            "fast_failed_ids": [],
-            "deep_failed_ids": [],
-            "fallbacks_used": 0,
-            "coverage_after_admit": 0.0,
-        }
-
         if self.gateway is not None and not seed_personas:
             resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
             drafts = self.propose_with_llm(
@@ -596,6 +585,44 @@ class PersonaGenerator:
         else:
             resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
             drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
+
+        return self.finalize_drafts(
+            drafts,
+            ontology,
+            target_count=target_count,
+            max_revisions=max_revisions,
+            diversity_map=diversity_map,
+            topic_keywords=topic_keywords,
+            topic=resolved_topic,
+            allow_fallbacks=True,
+        )
+
+    def finalize_drafts(
+        self,
+        drafts: Sequence[Draft],
+        ontology: Mapping[str, Any],
+        *,
+        target_count: int | None = None,
+        max_revisions: int = 3,
+        diversity_map: Any = None,
+        topic_keywords: Optional[Sequence[str]] = None,
+        topic: Optional[str] = None,
+        allow_fallbacks: bool = True,
+        revision_notes: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[FinalPersona], Dict[str, Any]]:
+        """Run already-proposed Drafts through the full HACHIMI/MAP-Elites path."""
+
+        resolved_target = len(drafts) if target_count is None else max(int(target_count), 0)
+        resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+        drafts = list(drafts)
+        telemetry: Dict[str, Any] = {
+            "revisions_used": 0,
+            "fast_failed_ids": [],
+            "deep_failed_ids": [],
+            "fallbacks_used": 0,
+            "coverage_after_admit": 0.0,
+            "target_count": resolved_target,
+        }
 
         # Fast loop with up to max_revisions iterations
         for iteration in range(max_revisions):
@@ -624,20 +651,19 @@ class PersonaGenerator:
         ]
         deep_survivors = [d for d in survivors if d.persona_id in deep_report.valid_ids]
 
-        # MAP-Elites admit (selected ones go to map)
-        admitted: List[Draft] = []
+        # MAP-Elites records diversity coverage. It does not cap the full
+        # MiroFish-style persona pool; many personas may share a cell, while
+        # the map keeps the best representative for coverage telemetry.
         if diversity_map is not None and hasattr(diversity_map, "admit"):
             for draft in deep_survivors:
                 axes = draft.to_manifest().get("value_axes") or {}
-                if diversity_map.admit(draft.persona_id, axes, fitness=1.0):
-                    admitted.append(draft)
+                diversity_map.admit(draft.persona_id, axes, fitness=1.0)
             telemetry["coverage_after_admit"] = float(diversity_map.coverage())
-        else:
-            admitted = deep_survivors
 
-        # Build finals from admitted set
+        # Build finals from the full validated pool, not only MAP-Elites cells.
         finals: List[FinalPersona] = []
-        for draft in admitted:
+        extra_notes = list(revision_notes or [])
+        for draft in deep_survivors:
             manifest = draft.to_manifest()
             manifest.setdefault("value_axes", dict(DEFAULT_VALUE_AXES))
             finals.append(
@@ -646,7 +672,7 @@ class PersonaGenerator:
                     name=draft.name,
                     role=draft.role,
                     manifest=manifest,
-                    revision_notes=[
+                    revision_notes=extra_notes + [
                         "validated_against_ontology",
                         "lockdown_checked",
                         "deep_validated",
@@ -655,13 +681,14 @@ class PersonaGenerator:
             )
 
         # Fallback fill — under target_count → safe preset
-        shortage = target_count - len(finals)
-        if shortage > 0:
+        shortage = resolved_target - len(finals)
+        if allow_fallbacks and shortage > 0:
             for i in range(shortage):
                 fb = _build_fallback_persona(ontology, len(finals) + 1)
                 finals.append(fb)
             telemetry["fallbacks_used"] = shortage
 
+        telemetry["persona_pool_size"] = len(finals)
         return finals, telemetry
 
 
@@ -735,6 +762,27 @@ def _value_axes(value: Any) -> Dict[str, Any]:
         axes.update(value)
         return axes
     return dict(DEFAULT_VALUE_AXES)
+
+
+def _value_axes_for_index(
+    base_axes: Mapping[str, Any],
+    index: int,
+    target_count: int,
+) -> Dict[str, Any]:
+    axes = dict(base_axes)
+    if target_count <= 1:
+        return axes
+
+    # MiroFish-style large pools need spread across the MAP-Elites plane.
+    # Keep non-numeric axes from ontology, but distribute the two diversity
+    # axes deterministically so hundreds of personas do not collapse into one
+    # default cell.
+    grid = max(2, int((target_count - 1) ** 0.5) + 1)
+    row = index // grid
+    col = index % grid
+    axes["risk_tolerance"] = round((col + 0.5) / grid, 4)
+    axes["innovation_orientation"] = round((row + 0.5) / grid, 4)
+    return axes
 
 
 def _validate_value_axes(value: Any) -> List[str]:

@@ -58,6 +58,9 @@ def _fake_run_pipeline(topic, *, progress_callback=None, offline=None, require_l
         "depth": depth,
         "depth_profile": depth_profile(depth),
         "executed_council_round_count": 10,
+        "council_persona_pool_size": depth_profile(depth).persona_pool_size,
+        "active_council_persona_count": depth_profile(depth).active_persona_count,
+        "council_turn_transcript": [{"round": 1, "stage": "individual"}],
     }
 
 
@@ -83,6 +86,9 @@ def test_terminal_run_writes_report_events_and_summary(tmp_path: Path, monkeypat
     assert summary["depth"] == "deep"
     assert summary["target_runtime_seconds"] == 900
     assert summary["executed_council_round_count"] == 10
+    assert summary["council_persona_pool_size"] == 80
+    assert summary["active_council_persona_count"] == 10
+    assert summary["council_turn_count"] == 1
     events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
     assert events[0]["event"] == "terminal_run_started"
     assert events[0]["depth"] == "deep"
@@ -373,6 +379,24 @@ def test_terminal_app_supports_references_and_contracts(monkeypatch):
     assert [call[0] for call in calls] == ["references", "contracts"]
     assert "fake references" in stdout.getvalue()
     assert "fake contracts" in stdout.getvalue()
+
+
+def test_terminal_app_supports_slash_orchestrate(monkeypatch):
+    calls = []
+
+    def fake_render_orchestration(**kwargs):
+        calls.append(kwargs)
+        kwargs["stdout"].write("fake orchestration\n")
+        return {"ok": True}
+
+    monkeypatch.setattr(terminal_mod, "render_orchestration", fake_render_orchestration)
+    stdout = io.StringIO()
+
+    rc = terminal_mod.terminal_app(stdin=io.StringIO("/orchestrate\n/exit\n"), stdout=stdout)
+
+    assert rc == 0
+    assert calls
+    assert "fake orchestration" in stdout.getvalue()
 
 
 def test_terminal_app_supports_slash_demo(monkeypatch):
@@ -877,6 +901,99 @@ def test_main_runs_status_and_doctor_json(monkeypatch, capsys):
     assert report["schema_version"] == 1
 
 
+def test_main_orchestrate_json_and_human_output(monkeypatch, capsys):
+    fake_report = {
+        "schema_version": 1,
+        "command": "muchanipo orchestrate",
+        "session": "test",
+        "ok": True,
+        "tmux_available": True,
+        "plan": {},
+        "windows": [],
+        "panes": [],
+        "operators": [],
+        "warnings": [],
+    }
+    calls = []
+
+    def fake_orchestration_report(**kwargs):
+        calls.append(("json", kwargs))
+        return dict(fake_report, session=kwargs["session"])
+
+    def fake_render_orchestration(**kwargs):
+        calls.append(("human", kwargs))
+        kwargs["stdout"].write("fake orchestration\n")
+        return dict(fake_report, ok=False, session=kwargs["session"])
+
+    monkeypatch.setattr(terminal_mod, "orchestration_report", fake_orchestration_report)
+    monkeypatch.setattr(terminal_mod, "render_orchestration", fake_render_orchestration)
+
+    assert server_mod.main(["orchestrate", "--session", "demo", "--json", "--include-capture"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["command"] == "muchanipo orchestrate"
+    assert report["session"] == "demo"
+    assert calls[0] == (
+        "json",
+        {
+            "session": "demo",
+            "include_capture": True,
+            "cleanup_workers": False,
+            "dry_run": False,
+            "force": False,
+        },
+    )
+
+    assert server_mod.main(["orchestrate", "--cleanup-workers", "--dry-run"]) == 1
+    assert "fake orchestration" in capsys.readouterr().out
+    assert calls[1][0] == "human"
+    assert calls[1][1]["cleanup_workers"] is True
+    assert calls[1][1]["dry_run"] is True
+    assert calls[1][1]["force"] is False
+
+
+def test_main_orchestrate_rejects_destructive_cleanup_without_force(capsys):
+    assert server_mod.main(["orchestrate", "--cleanup-workers"]) == 2
+
+    assert "cleanup requires --dry-run or --force" in capsys.readouterr().err
+
+
+def test_main_orchestrate_cleanup_json_contract_variant(monkeypatch, capsys):
+    calls = []
+
+    def fake_cleanup_workers_report(**kwargs):
+        calls.append(kwargs)
+        return {
+            "session": kwargs["session"],
+            "ok": True,
+            "dry_run": kwargs["dry_run"],
+            "force": kwargs["force"],
+            "actions": [
+                {
+                    "target": "muni:4",
+                    "action": "kill-window",
+                    "status": "dry_run",
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("src.muchanipo.orchestration.cleanup_workers_report", fake_cleanup_workers_report)
+
+    assert server_mod.main(["orchestrate", "--json", "--cleanup-workers", "--dry-run"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    contract = terminal_mod.json_contracts_report()["contracts"]["muchanipo orchestrate"]
+    assert set(contract["required_top_level_keys"]).issubset(report)
+    assert report["cleanup"]["dry_run"] is True
+    assert report["cleanup"]["force"] is False
+    assert report["cleanup"]["actions"][0] == {
+        "target": "muni:4",
+        "action": "kill-window",
+        "status": "dry_run",
+    }
+    assert calls == [{"session": "muni", "dry_run": True, "force": False}]
+
+
 def test_main_contracts_json_documents_cli_json_contracts(capsys):
     assert server_mod.main(["contracts", "--json"]) == 0
 
@@ -889,6 +1006,7 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
         "muchanipo status",
         "muchanipo runs",
         "muchanipo references",
+        "muchanipo orchestrate",
     }
     assert contracts["muchanipo doctor"]["required_top_level_keys"] == [
         "schema_version",
@@ -906,7 +1024,20 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
         "stages",
         "references",
         "gaps",
+        "not_ready_references",
         "license_warnings",
+    ]
+    assert contracts["muchanipo orchestrate"]["required_top_level_keys"] == [
+        "schema_version",
+        "command",
+        "session",
+        "ok",
+        "tmux_available",
+        "plan",
+        "windows",
+        "panes",
+        "operators",
+        "warnings",
     ]
 
 
@@ -930,6 +1061,29 @@ def test_cli_json_reports_satisfy_documented_contracts(monkeypatch, tmp_path: Pa
         assert set(contract["required_top_level_keys"]).issubset(report)
 
 
+def test_orchestration_report_satisfies_documented_contract(monkeypatch):
+    def fake_status(**kwargs):
+        return {
+            "session": kwargs["session"],
+            "ok": True,
+            "tmux_available": True,
+            "plan": {"protected_window": 0, "worker_windows": [1, 2, 3, 4]},
+            "windows": [],
+            "panes": [],
+            "operators": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("src.muchanipo.orchestration.orchestration_status", fake_status)
+
+    report = terminal_mod.orchestration_report(session="demo")
+    contract = terminal_mod.json_contracts_report()["contracts"]["muchanipo orchestrate"]
+
+    assert report["schema_version"] == contract["schema_version"]
+    assert report["command"] == "muchanipo orchestrate"
+    assert set(contract["required_top_level_keys"]).issubset(report)
+
+
 def test_render_json_contracts_formats_human_summary():
     stdout = io.StringIO()
 
@@ -951,6 +1105,7 @@ def test_main_references_json_and_human_output(capsys):
     assert [stage["step"] for stage in report["stages"]] == [1, 2, 3, 4, 5, 6]
     assert any(item["name"] == "MiroFish" for item in report["license_warnings"])
     assert any(item["name"] == "MemPalace" for item in report["gaps"])
+    assert any(item["name"] == "MemPalace" for item in report["not_ready_references"])
 
     assert server_mod.main(["references"]) == 0
     text = capsys.readouterr().out
@@ -1155,3 +1310,6 @@ def test_subprocess_demo_command_completes_offline(tmp_path: Path):
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "completed"
     assert summary["offline"] is True
+    assert summary["council_persona_pool_size"] == 24
+    assert summary["active_council_persona_count"] == 6
+    assert summary["council_turn_count"] == 78

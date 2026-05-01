@@ -138,3 +138,39 @@ def test_plateau_detection_still_applies_to_repeated_same_layer_deliberation():
 
     assert session.stopped is True
     assert "plateau detected" in (session.stop_reason or "")
+
+
+def test_large_persona_pool_uses_active_sequential_speakers_and_transcript():
+    provider = StageProvider()
+    personas = [
+        _persona(f"p{i}", f"Reviewer {i}")
+        for i in range(1, 13)
+    ]
+    session = Session(
+        gateway=_gateway(provider),
+        layers=list(DEFAULT_LAYERS[:2]),
+        personas=personas,
+        active_persona_count=4,
+        plateau=PlateauDetector(window=3, tolerance=0.05),
+    )
+
+    results = session.run_all()
+
+    assert len(results) == 2
+    assert len(session.personas) == 12
+    assert len(session.active_persona_ids_by_round[1]) == 4
+    assert len(session.active_persona_ids_by_round[2]) == 4
+    # 4 individual + 4 peer-review + 1 chairman per round.
+    assert len(provider.calls) == 18
+    assert len(session.turn_transcript) == 18
+    assert [turn["stage"] for turn in session.turn_transcript[:9]] == [
+        "individual",
+        "individual",
+        "individual",
+        "individual",
+        "peer_review",
+        "peer_review",
+        "peer_review",
+        "peer_review",
+        "chairman",
+    ]

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from src.evidence.artifact import EvidenceRef
 from src.interview.brief import ResearchBrief
 from src.targeting import TargetingMap
+from src.targeting import builder as targeting_builder
 from src.targeting.builder import build_targeting_map, _decompose_domains, _build_search_queries
 
 
@@ -74,6 +76,32 @@ class TestBuildTargetingMap:
         for domain in tmap.domains:
             assert domain in tmap.search_queries
             assert len(tmap.search_queries[domain]) >= 2
+
+    def test_live_targeting_falls_back_to_multi_source_seed_papers(self, monkeypatch):
+        brief = ResearchBrief(
+            raw_idea="agent memory",
+            research_question="agent memory architectures",
+            purpose="research",
+        )
+        monkeypatch.setenv("MUCHANIPO_ACADEMIC_TARGETING", "1")
+        monkeypatch.setattr(targeting_builder, "query_seed_papers", lambda domains: ([], []))
+        monkeypatch.setattr(targeting_builder, "query_institutions", lambda domains: ([], []))
+        monkeypatch.setattr(targeting_builder, "query_journals", lambda domains: ([], []))
+        ref = EvidenceRef(
+            id="crossref:10.1234/memory",
+            source_url="https://doi.org/10.1234/memory",
+            source_title="Agent Memory Architectures",
+            quote="agent memory architectures",
+            source_grade="A",
+            provenance={"kind": "crossref", "doi": "10.1234/memory", "source_text": "agent memory architectures"},
+        )
+        monkeypatch.setattr(targeting_builder.academic_sync_search, "search", lambda query, limit=5: [ref])
+
+        tmap = build_targeting_map(brief)
+
+        assert tmap.seed_papers == ["10.1234/memory"]
+        assert tmap.provenance["seed_papers"][0]["source"] == "crossref"
+        assert tmap.provenance["seed_papers"][0]["paper_id"] == "crossref:10.1234/memory"
 
 
 class TestDecomposeDomains:

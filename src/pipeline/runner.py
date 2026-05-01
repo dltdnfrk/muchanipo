@@ -189,6 +189,9 @@ def run_pipeline(
         "depth": normalized_depth,
         "depth_profile": profile,
         "executed_council_round_count": len(result.council.rounds),
+        "council_persona_pool_size": len(result.council.personas),
+        "active_council_persona_count": profile.active_persona_count,
+        "council_turn_transcript": list(result.council.turn_transcript),
     }
 
 

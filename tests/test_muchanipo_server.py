@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from src.muchanipo import parse_action
+from src.muchanipo import server as server_mod
 from src.muchanipo.events import KNOWN_EVENTS, emit
 from src.muchanipo.server import _detect_offline_mode, serve
 
@@ -44,7 +45,7 @@ def _parse_lines(stdout: str) -> list[dict]:
 def test_serve_emits_canonical_phase_order(tmp_path: Path) -> None:
     report = tmp_path / "REPORT.md"
     proc = _run_serve(
-        ["--topic", "test", "--no-wait", "--report-path", str(report)],
+        ["--topic", "test", "--pipeline", "stub", "--no-wait", "--report-path", str(report)],
     )
     assert proc.returncode == 0, proc.stderr
     events = _parse_lines(proc.stdout)
@@ -56,7 +57,7 @@ def test_serve_emits_canonical_phase_order(tmp_path: Path) -> None:
 
 def test_serve_every_event_type_is_known(tmp_path: Path) -> None:
     proc = _run_serve(
-        ["--topic", "x", "--no-wait", "--report-path", str(tmp_path / "R.md")],
+        ["--topic", "x", "--pipeline", "stub", "--no-wait", "--report-path", str(tmp_path / "R.md")],
     )
     assert proc.returncode == 0, proc.stderr
     events = _parse_lines(proc.stdout)
@@ -68,7 +69,7 @@ def test_serve_every_event_type_is_known(tmp_path: Path) -> None:
 def test_serve_advances_after_interview_answer(tmp_path: Path) -> None:
     answer = json.dumps({"action": "interview_answer", "q_id": "Q1", "answer": "A"})
     proc = _run_serve(
-        ["--topic", "wired", "--report-path", str(tmp_path / "R.md")],
+        ["--topic", "wired", "--pipeline", "stub", "--report-path", str(tmp_path / "R.md")],
         stdin_text=answer + "\n",
     )
     assert proc.returncode == 0, proc.stderr
@@ -81,7 +82,7 @@ def test_serve_advances_after_interview_answer(tmp_path: Path) -> None:
 
 def test_serve_aborts_cleanly_on_abort_action(tmp_path: Path) -> None:
     proc = _run_serve(
-        ["--topic", "stop", "--report-path", str(tmp_path / "R.md")],
+        ["--topic", "stop", "--pipeline", "stub", "--report-path", str(tmp_path / "R.md")],
         stdin_text=json.dumps({"action": "abort"}) + "\n",
     )
     assert proc.returncode == 0, proc.stderr
@@ -118,6 +119,7 @@ def test_serve_in_process_writes_report(tmp_path: Path) -> None:
         wait_for_input=False,
         stdout=io.StringIO(),
         stdin=io.StringIO(),
+        pipeline="stub",
     )
     assert rc == 0
     assert report.read_text(encoding="utf-8").startswith("# in-process")
@@ -134,6 +136,7 @@ def test_serve_rejects_stub_pipeline_when_live_requested(tmp_path: Path, monkeyp
         wait_for_input=False,
         stdout=stdout,
         stdin=io.StringIO(),
+        pipeline="stub",
     )
 
     events = _parse_lines(stdout.getvalue())
@@ -142,6 +145,86 @@ def test_serve_rejects_stub_pipeline_when_live_requested(tmp_path: Path, monkeyp
     assert events[-2]["kind"] == "live_mode_violation"
     assert events[-1] == {"event": "done", "pipeline": "stub", "aborted": True}
     assert not report.exists()
+
+
+def test_serve_subcommand_accepts_depth_for_full_pipeline(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_serve(topic, *, report_path, wait_for_input, stdout, stdin, pipeline="full", depth="deep"):
+        calls.append(
+            {
+                "topic": topic,
+                "report_path": report_path,
+                "wait_for_input": wait_for_input,
+                "pipeline": pipeline,
+                "depth": depth,
+            }
+        )
+        return 0
+
+    monkeypatch.setattr(server_mod, "serve", fake_serve)
+
+    rc = server_mod.main([
+        "serve",
+        "--topic",
+        "depth bridge",
+        "--pipeline",
+        "full",
+        "--depth",
+        "shallow",
+        "--report-path",
+        str(tmp_path / "R.md"),
+        "--no-wait",
+    ])
+
+    assert rc == 0
+    assert calls == [
+        {
+            "topic": "depth bridge",
+            "report_path": tmp_path / "R.md",
+            "wait_for_input": False,
+            "pipeline": "full",
+            "depth": "shallow",
+        }
+    ]
+
+
+def test_serve_subcommand_defaults_to_full_pipeline(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_serve(topic, *, report_path, wait_for_input, stdout, stdin, pipeline="full", depth="deep"):
+        calls.append(
+            {
+                "topic": topic,
+                "report_path": report_path,
+                "wait_for_input": wait_for_input,
+                "pipeline": pipeline,
+                "depth": depth,
+            }
+        )
+        return 0
+
+    monkeypatch.setattr(server_mod, "serve", fake_serve)
+
+    rc = server_mod.main([
+        "serve",
+        "--topic",
+        "default full",
+        "--report-path",
+        str(tmp_path / "R.md"),
+        "--no-wait",
+    ])
+
+    assert rc == 0
+    assert calls == [
+        {
+            "topic": "default full",
+            "report_path": tmp_path / "R.md",
+            "wait_for_input": False,
+            "pipeline": "full",
+            "depth": "deep",
+        }
+    ]
 
 
 def test_detect_offline_mode_treats_local_cli_as_online(monkeypatch):

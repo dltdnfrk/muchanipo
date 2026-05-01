@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 TMP="${TMPDIR:-/tmp}"
 REPORT="$TMP/muchanipo_smoke_report.md"
 EVENTS="$TMP/muchanipo_smoke_events.jsonl"
@@ -14,7 +15,7 @@ rm -f "$REPORT" "$EVENTS"
 cd "$ROOT"
 
 echo "[smoke] running full pipeline…"
-MUCHANIPO_OFFLINE=1 python3 -m muchanipo serve \
+MUCHANIPO_OFFLINE=1 "$PYTHON_BIN" -m muchanipo serve \
   --topic "딸기 진단키트 시장성 (smoke)" \
   --pipeline full \
   --no-wait \

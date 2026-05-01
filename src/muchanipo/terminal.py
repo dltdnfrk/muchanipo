@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, IO
 
-from src.pipeline.runner import run_pipeline
 from src.research.depth import normalize_depth
 
 
@@ -75,7 +74,25 @@ CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
             "stages",
             "references",
             "gaps",
+            "not_ready_references",
             "license_warnings",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
+    "muchanipo orchestrate": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "tmux/smux operator hub and worker-window orchestration status.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "session",
+            "ok",
+            "tmux_available",
+            "plan",
+            "windows",
+            "panes",
+            "operators",
+            "warnings",
         ),
         "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
     },
@@ -95,6 +112,13 @@ STAGE_LABELS: dict[str, str] = {
 }
 
 STAGE_ORDER: tuple[str, ...] = tuple(STAGE_LABELS)
+
+
+def run_pipeline(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Lazy pipeline import so lightweight CLI inspection commands start fast."""
+    from src.pipeline.runner import run_pipeline as _run_pipeline
+
+    return _run_pipeline(*args, **kwargs)
 
 
 @dataclass
@@ -179,6 +203,9 @@ def terminal_app(
             continue
         if command == "references":
             render_references(stdout=out)
+            continue
+        if command == "orchestrate":
+            render_orchestration(stdout=out)
             continue
         if command == "contracts":
             render_json_contracts(stdout=out)
@@ -331,6 +358,9 @@ def terminal_run(
         "require_live": require_live,
         "depth": normalized_depth,
         "target_runtime_seconds": getattr(result.get("depth_profile"), "target_runtime_seconds", None),
+        "council_persona_pool_size": int(result.get("council_persona_pool_size") or 0),
+        "active_council_persona_count": int(result.get("active_council_persona_count") or 0),
+        "council_turn_count": len(result.get("council_turn_transcript") or []),
         "duration_sec": round(time.time() - started_at, 3),
         "round_count": len(result.get("rounds") or []),
         "executed_council_round_count": int(result.get("executed_council_round_count") or 0),
@@ -492,6 +522,9 @@ def _normalize_home_command(choice: str) -> str | None:
         "/status": "status",
         "/references": "references",
         "/refs": "references",
+        "/orchestrate": "orchestrate",
+        "/orchestration": "orchestrate",
+        "/ops": "orchestrate",
         "/contracts": "contracts",
         "/doctor": "doctor",
         "/help": "help",
@@ -518,12 +551,16 @@ def _normalize_home_command(choice: str) -> str | None:
         "5": "references",
         "references": "references",
         "refs": "references",
-        "6": "contracts",
+        "6": "orchestrate",
+        "orchestrate": "orchestrate",
+        "orchestration": "orchestrate",
+        "ops": "orchestrate",
+        "7": "contracts",
         "contracts": "contracts",
-        "7": "doctor",
+        "8": "doctor",
         "doctor": "doctor",
         "d": "doctor",
-        "8": "help",
+        "9": "help",
         "help": "help",
         "h": "help",
         "?": "help",
@@ -702,6 +739,7 @@ def render_references(*, stdout: IO[str] | None = None) -> dict[str, Any]:
     for stage in report["stages"]:
         out.write(
             f"{stage['step']}. {stage['name']}: "
+            f"{stage['ready_count']}/{stage['reference_count']} ready, "
             f"{stage['implemented_count']}/{stage['reference_count']} runtime-backed"
         )
         if stage["gap_count"]:
@@ -715,6 +753,108 @@ def render_references(*, stdout: IO[str] | None = None) -> dict[str, Any]:
         out.write("\nKnown gaps\n")
         for item in report["gaps"]:
             out.write(f"- {item['name']}: {item['gap']}\n")
+    out.write("\n")
+    out.flush()
+    return report
+
+
+def orchestration_report(
+    *,
+    session: str = "muni",
+    include_capture: bool = False,
+    cleanup_workers: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Return tmux/smux orchestration status in a stable JSON shape."""
+    from src.muchanipo.orchestration import (
+        DEFAULT_OPERATORS,
+        cleanup_workers_report,
+        orchestration_plan,
+        orchestration_status,
+    )
+
+    if cleanup_workers:
+        cleanup = cleanup_workers_report(session=session, dry_run=dry_run, force=force)
+        actions = list(cleanup.get("actions") or [])
+        return {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "command": "muchanipo orchestrate",
+            "session": session,
+            "ok": bool(cleanup.get("ok")),
+            "tmux_available": bool(cleanup.get("ok")) or bool(actions),
+            "plan": orchestration_plan(),
+            "windows": [],
+            "panes": [],
+            "operators": [operator.to_dict() for operator in DEFAULT_OPERATORS],
+            "warnings": list(cleanup.get("warnings") or []),
+            "cleanup": {
+                "dry_run": bool(cleanup.get("dry_run")),
+                "force": bool(cleanup.get("force")),
+                "actions": actions,
+            },
+        }
+    report = orchestration_status(session=session, include_capture=include_capture)
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "command": "muchanipo orchestrate",
+        **report,
+    }
+
+
+def render_orchestration(
+    *,
+    stdout: IO[str] | None = None,
+    session: str = "muni",
+    include_capture: bool = False,
+    cleanup_workers: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    out = stdout or sys.stdout
+    report = orchestration_report(
+        session=session,
+        include_capture=include_capture,
+        cleanup_workers=cleanup_workers,
+        dry_run=dry_run,
+        force=force,
+    )
+    out.write("\nOperator orchestration\n")
+    out.write("----------------------\n")
+    out.write(f"Session: {report['session']}\n")
+    out.write(f"Status : {'OK' if report.get('ok') else 'WARN'}\n")
+    if cleanup_workers:
+        out.write(f"Cleanup: {'dry run' if dry_run else 'forced' if force else 'requires force'}\n")
+        cleanup = report.get("cleanup") if isinstance(report.get("cleanup"), dict) else {}
+        for action in cleanup.get("actions", []):
+            out.write(f"- {action['status']}: {action['target']} {action['action']}\n")
+    else:
+        plan = report.get("plan") or {}
+        out.write(f"Protected window: {plan.get('protected_window')}\n")
+        out.write(f"Worker windows  : {', '.join(str(item) for item in plan.get('worker_windows', []))}\n")
+        out.write("\nOperators\n")
+        for operator in report.get("operators", []):
+            marker = "OK" if operator.get("operator_pane_present") and operator.get("worker_window_present") else "WARN"
+            out.write(
+                f"[{marker}] {operator['agent']:<8} pane={operator['pane']} "
+                f"worker={operator['assigned_window']} mode={operator['mode']}\n"
+            )
+            if operator.get("model_requirement"):
+                out.write(f"       model: {operator['model_requirement']}\n")
+        if report.get("windows"):
+            out.write("\nWindows\n")
+            for window in report["windows"]:
+                active = " active" if window.get("active") else ""
+                out.write(f"- {window['index']}: {window['name']} panes={window['pane_count']}{active}\n")
+        if include_capture and report.get("captures"):
+            out.write("\nCaptures\n")
+            for target, capture in report["captures"].items():
+                snippet = str(capture).strip().splitlines()[-1:] or [""]
+                out.write(f"- window {target}: {snippet[0]}\n")
+    if report.get("warnings"):
+        out.write("\nWarnings\n")
+        for warning in report["warnings"]:
+            out.write(f"- {warning}\n")
     out.write("\n")
     out.flush()
     return report
@@ -1025,9 +1165,10 @@ def _render_home(out: IO[str], *, runs_dir: Path | None = None) -> None:
     out.write("3. Runs\n")
     out.write("4. CLI status\n")
     out.write("5. Reference readiness\n")
-    out.write("6. JSON contracts\n")
-    out.write("7. Doctor\n")
-    out.write("8. Help\n")
+    out.write("6. Operator orchestration\n")
+    out.write("7. JSON contracts\n")
+    out.write("8. Doctor\n")
+    out.write("9. Help\n")
     out.write("q. Quit\n\n")
     out.flush()
 
@@ -1074,6 +1215,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo tui \"topic\"             dashboard run\n")
     out.write("muchanipo runs                    list previous runs\n")
     out.write("muchanipo status                  show local CLI provider status\n\n")
+    out.write("muchanipo orchestrate             show tmux/smux operator status\n")
     out.write("muchanipo contracts               show CLI JSON contracts\n")
     out.write("muchanipo references              show reference runtime readiness\n")
     out.write("muchanipo doctor                  check local runtime readiness\n\n")
@@ -1083,6 +1225,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("  /runs, /history   list previous runs\n")
     out.write("  /status           show local CLI provider status\n")
     out.write("  /references       show reference runtime readiness\n")
+    out.write("  /orchestrate      show tmux/smux operator status\n")
     out.write("  /contracts        show CLI JSON contracts\n")
     out.write("  /doctor           check local runtime readiness\n")
     out.write("  /help             show this help\n")

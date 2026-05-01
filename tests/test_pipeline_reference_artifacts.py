@@ -26,13 +26,14 @@ class RecordingReferenceRunner:
         refs = [
             EvidenceRef(
                 id=f"ref-{idx}",
-                source_url=f"https://example.org/strawberry-kit/{idx}",
+                source_url=f"https://doi.org/10.1234/strawberry-kit-{idx}",
                 source_title=f"Strawberry diagnostics source {idx}",
                 quote=query,
                 source_grade="A",
                 provenance={
                     "kind": "openalex",
-                    "source": f"https://example.org/strawberry-kit/{idx}",
+                    "doi": f"10.1234/strawberry-kit-{idx}",
+                    "source": f"https://doi.org/10.1234/strawberry-kit-{idx}",
                     "source_text": query,
                 },
             )
@@ -134,6 +135,9 @@ def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pip
     assert event["reference_step"] == 1
     assert event["reference_projects"] == ["GPTaku show-me-the-prd", "GStack office-hours"]
     assert event["artifacts"]["brief_id"] == result.brief.id
+    assert int(event["artifacts"]["interview_question_count"]) >= 5
+    assert "Q1_research_question" in event["artifacts"]["interview_question_order"]
+    assert "Q4_known" in event["artifacts"]["interview_question_order"]
     assert result.brief.research_question == result.design_doc.pain_root
     assert result.brief.purpose == result.design_doc.demand_reality
     assert result.brief.context == result.design_doc.contrary_framing
@@ -154,6 +158,9 @@ def test_step2_targeting_records_plan_review_and_academic_outputs(reference_pipe
     assert result.targeting_map.target_institutions == ["Seoul National University"]
     assert result.targeting_map.target_journals == ["Precision Agriculture"]
     assert result.targeting_map.seed_papers == ["doi:10.1234/strawberry-kit"]
+    assert event["artifacts"]["targeting_academic_sources"] == "openalex"
+    assert event["artifacts"]["plan_gate_mode"] == "auto_approve"
+    assert event["artifacts"]["plan_gate_synthetic"] == "true"
 
 
 def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_run):
@@ -167,8 +174,11 @@ def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_ru
     assert set(result.targeting_map.search_queries[result.targeting_map.domains[0]]) & set(runner.last_plan.queries)
     assert "counter-evidence query attempted before council" in runner.last_plan.stop_conditions
     assert "prefer academic APIs, official statistics, and local vault before general web snippets" in runner.last_plan.collection_rules
-    assert event["artifacts"]["research_memory_store"] == "MemPalace"
-    assert event["artifacts"]["research_memory_key"] == result.brief.id
+    assert event["artifacts"]["research_runner_kind"] == "RecordingReferenceRunner"
+    assert event["artifacts"]["research_backend_kinds"] == "untraced"
+    assert event["artifacts"]["research_evidence_kinds"] == "openalex"
+    assert event["artifacts"]["research_memory_store"] == "not_executed"
+    assert "research_memory_key" not in event["artifacts"]
     assert event["_research_runner_completed"] is True
 
 
@@ -183,6 +193,7 @@ def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipel
     assert result.evidence_summary["trusted"] == 4
     assert result.evidence_summary["verified_claim_ratio"] == 1.0
     assert event["artifacts"]["evidence_gate_status"] == result.hitl_results["evidence"].status == "approved"
+    assert event["artifacts"]["evidence_gate_synthetic"] == "true"
 
 
 def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run):
@@ -198,6 +209,14 @@ def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run
     assert event["artifacts"]["persona_diversity_framework"] == "MAP-Elites"
     assert event["artifacts"]["council_protocol"] == "OASIS / CAMEL-AI"
     assert event["artifacts"]["council_id"] == result.report.id
+    assert int(event["artifacts"]["persona_pool_size"]) >= int(event["artifacts"]["active_persona_count"])
+    assert event["artifacts"]["persona_pool_target_size"] == result.state.artifacts["council_persona_pool_size"]
+    assert event["artifacts"]["active_persona_count"] == result.state.artifacts["active_council_persona_count"]
+    assert int(event["artifacts"]["mirofish_entity_persona_count"]) >= 1
+    assert event["artifacts"]["mirofish_entity_persona_count"] == event["artifacts"][
+        "mirofish_validated_entity_persona_count"
+    ]
+    assert int(event["artifacts"]["council_turn_count"]) == len(result.council.turn_transcript)
     assert result.council.rounds
 
 
@@ -220,14 +239,18 @@ def test_step6_report_vault_agents_done_record_learning_outputs(reference_pipeli
     assert "## Evidence Index" in result.report_md
     assert "### Evidence Health" in result.report_md
     assert "- Trusted evidence: 4 / 4" in result.report_md
-    assert "URL: https://example.org/strawberry-kit/1" in result.report_md
+    assert "URL: https://doi.org/10.1234/strawberry-kit-1" in result.report_md
     assert "Grade: A" in result.report_md
     assert "Provenance: openalex" in result.report_md
     assert "## Claim Grounding Matrix" in result.report_md
     assert "(Evidence: `ref-" in result.report_md
     assert "## Chapter 1:" in result.report_md
     assert "## Chapter 6:" in result.report_md
+    assert "## ReACT Executed Sections" in result.report_md
+    assert "**도구 관찰:**" in result.report_md
     assert "## ReACT Execution Plan" in result.report_md
+    assert int(report_event["artifacts"]["react_executed_section_count"]) >= 1
+    assert int(report_event["artifacts"]["react_tool_call_count"]) >= 3
     assert "## GBrain Compiled Truth + Timeline" in result.report_md
     assert "### Evidence Summary" in result.report_md
     assert vault_event["artifacts"]["vault_path"] == str(result.vault_path)

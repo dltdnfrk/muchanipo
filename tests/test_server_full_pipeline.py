@@ -56,6 +56,25 @@ def test_serve_full_emits_ten_council_rounds(tmp_path):
     assert [e["round"] for e in starts] == list(range(1, 11))
 
 
+def test_serve_full_shallow_depth_emits_executed_round_count(tmp_path):
+    stdout = io.StringIO()
+    serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout, depth="shallow")
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    startup = next(e for e in events if e["event"] == "phase_change" and e["phase"] == "STARTUP")
+    starts = [e for e in events if e["event"] == "council_round_start"]
+    done = events[-1]
+
+    assert startup["data"]["depth"] == "shallow"
+    assert startup["data"]["council_persona_pool_size"] == 24
+    assert startup["data"]["active_council_persona_count"] == 6
+    assert len(starts) == 6
+    assert [e["round"] for e in starts] == list(range(1, 7))
+    assert done["depth"] == "shallow"
+    assert done["council_persona_pool_size"] == 24
+    assert done["active_council_persona_count"] == 6
+    assert done["council_turn_count"] > 0
+
+
 def test_serve_full_emits_six_report_chunks(tmp_path):
     stdout = io.StringIO()
     serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout)

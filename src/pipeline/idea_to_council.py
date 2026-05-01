@@ -1,6 +1,7 @@
 """End-to-end Idea-to-Council pipeline with offline and live-product modes."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from src.agents.generator import DebateAgentGenerator, DebateAgentSpec
 from src.agents.mirofish import debate_agent_to_council_persona
 from src.council.diversity_mapper import DiversityMap
 from src.council.parsers import RoundResult
-from src.council.persona_generator import PersonaGenerator
+from src.council.persona_generator import Draft, PersonaGenerator
 from src.council.persona_sampler import KoreaPersonaSampler
 from src.council.round_layers import DEFAULT_LAYERS
 from src.council.session import Session as KarpathySession
@@ -31,7 +32,8 @@ from src.intent.plan_review import ConsensusPlan, PlanReview
 from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
 from src.interview.session import InterviewSession
-from src.research.depth import depth_profile, normalize_depth
+from src.research.autoresearch_runtime import runtime_contract_for_profile
+from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
 from src.research.planner import ResearchPlanner
 from src.research.runner import MockResearchRunner, build_runner
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
@@ -109,15 +111,48 @@ class IdeaToCouncilPipeline:
 
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
+        runtime_contract = runtime_contract_for_profile(self.depth_profile)
         state.record_artifact("research_depth", self.depth)
         state.record_artifact("research_depth_description", self.depth_profile.description)
         state.record_artifact("research_query_limit", str(self.depth_profile.query_limit))
         state.record_artifact("council_round_budget", str(self.depth_profile.council_round_budget))
+        state.record_artifact("council_persona_pool_size", str(self.depth_profile.persona_pool_size))
+        state.record_artifact("active_council_persona_count", str(self.depth_profile.active_persona_count))
         state.record_artifact("target_runtime_seconds", str(self.depth_profile.target_runtime_seconds))
         state.record_artifact(
             "extended_test_time_compute",
             "enabled" if self.depth_profile.extended_test_time_compute else "disabled",
         )
+        state.record_artifact("autoresearch_execution_mode", runtime_contract.execution_mode)
+        state.record_artifact(
+            "autoresearch_async_background",
+            "enabled" if runtime_contract.async_background else "disabled",
+        )
+        state.record_artifact(
+            "autoresearch_hitl_state_gate",
+            "enforced" if runtime_contract.hitl_plan_gate_enforced else "prompt_only",
+        )
+        state.record_artifact(
+            "autoresearch_phase_trace",
+            json.dumps(runtime_contract.phase_trace_template(), ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact(
+            "autoresearch_stream_event_types",
+            ",".join(runtime_contract.stream_event_types),
+        )
+        state.record_artifact(
+            "autoresearch_usage_ledger_fields",
+            ",".join(runtime_contract.usage_ledger_fields),
+        )
+        state.record_artifact("autoresearch_stale_after_seconds", str(runtime_contract.stale_after_seconds))
+        state.record_artifact("autoresearch_client_timeout_seconds", str(runtime_contract.client_timeout_seconds))
+        if runtime_contract.observed_max_usage is not None:
+            max_usage = runtime_contract.observed_max_usage.to_dict()
+            state.record_artifact(
+                "deep_research_max_observed_usage",
+                json.dumps(max_usage, ensure_ascii=False, sort_keys=True),
+            )
+            state.record_artifact("deep_research_max_observed_total_tokens", str(max_usage["total_tokens"]))
 
         idea = capture_idea(raw_idea)
         self._emit(state, Stage.IDEA_DUMP)
@@ -127,6 +162,11 @@ class IdeaToCouncilPipeline:
         design_doc = OfficeHours().reframe(idea.raw_text)
         brief = self._brief_from_interview(interview, idea.raw_text, design_doc)
         state.record_artifact("brief_id", brief.id)
+        state.record_artifact("interview_question_count", str(len(getattr(brief, "interview_trace", []) or [])))
+        state.record_artifact(
+            "interview_question_order",
+            ",".join(item["dimension_id"] for item in getattr(brief, "interview_trace", []) or []),
+        )
         self._emit(state, Stage.INTERVIEW)
 
         consensus_plan = PlanReview().autoplan(design_doc)
@@ -145,16 +185,18 @@ class IdeaToCouncilPipeline:
                 "gate_reason": consensus_plan.gate_reason,
             },
         )
+        self._record_hitl_gate(state, "plan", hitl_results["plan"])
         self._require_approved_gate("plan", hitl_results["plan"])
-        state.record_artifact("plan_gate_status", hitl_results["plan"].status)
 
         state.advance(Stage.TARGETING)
         targeting_map = build_targeting_map(brief)
         setattr(brief, "targeting_map", targeting_map)
         state.record_artifact("targeting_domains", ",".join(targeting_map.domains))
+        state.record_artifact("targeting_academic_sources", ",".join(_targeting_academic_sources(targeting_map)))
         self._emit(state, Stage.TARGETING)
 
         hitl_results["brief"] = self.hitl_adapter.gate_brief(brief)
+        self._record_hitl_gate(state, "brief", hitl_results["brief"])
         self._require_approved_gate("brief", hitl_results["brief"])
         if hitl_results["brief"].status == "changes_requested":
             state.warnings.append("brief gate requested changes; re-interviewed once")
@@ -166,11 +208,19 @@ class IdeaToCouncilPipeline:
         state.advance(Stage.RESEARCH)
         plan = ResearchPlanner().plan(brief, max_queries=self.depth_profile.query_limit)
         state.record_artifact("research_query_count", str(len(plan.queries)))
-        state.record_artifact("research_memory_store", "MemPalace")
-        state.record_artifact("research_memory_key", brief.id)
         state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
         state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
         findings = list(self.research_runner.run(plan))
+        research_runtime = _research_runtime_artifacts(self.research_runner, findings)
+        state.record_artifact("research_runner_kind", research_runtime["runner_kind"])
+        state.record_artifact("research_backend_kinds", ",".join(research_runtime["backend_kinds"]))
+        state.record_artifact("research_evidence_kinds", ",".join(research_runtime["evidence_kinds"]))
+        state.record_artifact("research_backend_trace", json.dumps(research_runtime["backend_trace"], ensure_ascii=False, sort_keys=True))
+        state.record_artifact("research_memory_store", research_runtime["memory_store"])
+        if research_runtime["memory_store"] != "not_executed":
+            state.record_artifact("research_memory_key", brief.id)
+        else:
+            state.warnings.append("Stage 3 MemPalace adapter did not execute for this research run")
         self._emit(state, Stage.RESEARCH)
 
         state.advance(Stage.EVIDENCE)
@@ -185,8 +235,8 @@ class IdeaToCouncilPipeline:
         self._require_live_evidence(evidence_summary, evidence_refs)
 
         hitl_results["evidence"] = self.hitl_adapter.gate_evidence(evidence_refs)
+        self._record_hitl_gate(state, "evidence", hitl_results["evidence"])
         self._require_approved_gate("evidence", hitl_results["evidence"])
-        state.record_artifact("evidence_gate_status", hitl_results["evidence"].status)
         if hitl_results["evidence"].status == "changes_requested":
             state.warnings.append("evidence gate requested changes; augmented research once")
             findings = list(self.research_runner.run(plan))
@@ -220,6 +270,7 @@ class IdeaToCouncilPipeline:
             gateway=self.gateway_v2,
             consensus_plan=consensus_plan,
             targeting_map=targeting_map,
+            depth_profile=self.depth_profile,
             require_live=self.require_live,
         )
 
@@ -230,9 +281,11 @@ class IdeaToCouncilPipeline:
             gateway=self.gateway_v2,
             layers=list(DEFAULT_LAYERS[: self.depth_profile.council_round_budget]),
             personas=personas,
+            active_persona_count=self.depth_profile.active_persona_count,
         )
         council.run_all()
         state.record_artifact("council_id", report.id)
+        state.record_artifact("council_turn_count", str(len(council.turn_transcript)))
         self._emit(state, Stage.COUNCIL)
 
         reference_runtime_artifacts = build_reference_runtime_artifacts(
@@ -243,6 +296,18 @@ class IdeaToCouncilPipeline:
         state.record_artifact(
             "react_section_count",
             str(reference_runtime_artifacts["react"]["section_count"]),
+        )
+        state.record_artifact(
+            "react_executed_section_count",
+            str(reference_runtime_artifacts["react"].get("executed_section_count", 0)),
+        )
+        state.record_artifact(
+            "react_tool_call_count",
+            str(reference_runtime_artifacts["react"].get("total_tool_calls", 0)),
+        )
+        state.record_artifact(
+            "react_backend_tool_call_count",
+            str(reference_runtime_artifacts["react"].get("backend_tool_calls", 0)),
         )
         state.record_artifact(
             "gbrain_content_hash",
@@ -263,6 +328,7 @@ class IdeaToCouncilPipeline:
         self._emit(state, Stage.REPORT)
 
         hitl_results["report"] = self.hitl_adapter.gate_report(report_md)
+        self._record_hitl_gate(state, "report", hitl_results["report"])
         self._require_approved_gate("report", hitl_results["report"])
 
         state.advance(Stage.VAULT)
@@ -302,6 +368,11 @@ class IdeaToCouncilPipeline:
         if self.require_live:
             assert_live_hitl(gate_name, result)
 
+    def _record_hitl_gate(self, state: PipelineState, gate_name: str, result: HITLResult) -> None:
+        state.record_artifact(f"{gate_name}_gate_status", result.status)
+        state.record_artifact(f"{gate_name}_gate_mode", str(getattr(self.hitl_adapter, "mode", "custom")))
+        state.record_artifact(f"{gate_name}_gate_synthetic", "true" if result.synthetic else "false")
+
     def _require_live_evidence(self, evidence_summary: dict[str, Any], refs: list[EvidenceRef]) -> None:
         if self.require_live:
             assert_live_evidence(evidence_summary, refs)
@@ -318,15 +389,33 @@ class IdeaToCouncilPipeline:
         raw_text: str,
         design_doc: DesignDoc,
     ) -> ResearchBrief:
-        interview.answer("research_question", design_doc.pain_root or raw_text)
-        interview.answer("purpose", design_doc.demand_reality or "decide next action")
-        interview.answer("context", design_doc.contrary_framing or design_doc.status_quo)
-        interview.answer("deliverable_type", "research report")
-        interview.answer(
-            "quality_bar",
-            "source-backed, council-ready, and scoped by OfficeHours forcing questions",
-        )
+        answer_bank = {
+            "research_question": design_doc.pain_root or raw_text,
+            "purpose": design_doc.demand_reality or "decide next action",
+            "context": design_doc.contrary_framing or design_doc.status_quo,
+            "known": "; ".join(design_doc.implicit_capabilities) or "no prior facts provided",
+            "deliverable_type": "research report",
+            "quality_bar": "source-backed, council-ready, and scoped by OfficeHours forcing questions",
+        }
+        trace: list[dict[str, Any]] = []
+        for _ in range(6):
+            next_item = interview.next_question()
+            if next_item is None:
+                break
+            answer_key = _interview_answer_key(next_item.label)
+            answer_text = str(answer_bank.get(answer_key) or answer_bank["research_question"])
+            options = interview.question_options(next_item.dimension_id)
+            interview.answer(answer_key, answer_text)
+            trace.append(
+                {
+                    "dimension_id": next_item.dimension_id,
+                    "label": next_item.label,
+                    "answer_key": answer_key,
+                    "option_count": len(options),
+                }
+            )
         brief = interview.to_brief()
+        setattr(brief, "interview_trace", trace)
         brief.known_facts = list(design_doc.implicit_capabilities)
         brief.constraints = list(design_doc.challenged_premises)
         brief.success_criteria = [
@@ -556,6 +645,26 @@ def _table_cell(value: str) -> str:
 
 def _append_react_plan(lines: list[str], react: dict[str, Any]) -> None:
     lines.extend([
+        "## ReACT Executed Sections",
+        "",
+        (
+            "These sections are generated by executing the local ReACT loop: "
+            "tool calls are parsed, observations are collected, and final answers "
+            "are rendered from those observations."
+        ),
+        "",
+    ])
+    for idx, section in enumerate(react.get("sections", []), start=1):
+        section_markdown = str(section.get("section_markdown") or section.get("final_answer") or "").strip()
+        if not section_markdown:
+            continue
+        lines.extend([
+            f"### ReACT Output {idx}: {section.get('title', '')}",
+            "",
+            section_markdown,
+            "",
+        ])
+    lines.extend([
         "## ReACT Execution Plan",
         "",
         (
@@ -699,6 +808,24 @@ def _use_real_research_from_env() -> bool:
     return live_requested_from_env()
 
 
+def _interview_answer_key(label: str) -> str:
+    return {
+        "deliverable": "deliverable_type",
+        "quality": "quality_bar",
+    }.get(label, label)
+
+
+def _targeting_academic_sources(targeting_map: TargetingMap) -> list[str]:
+    sources: list[str] = []
+    for entries in (targeting_map.provenance or {}).values():
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if isinstance(item, dict) and item.get("source"):
+                sources.append(str(item["source"]))
+    return _dedupe_strings(sources) or ["none"]
+
+
 def _report_limitations(*, require_live: bool) -> list[str]:
     if require_live:
         return ["live run; source coverage, recency, and rate-limit gaps must be reviewed before external use"]
@@ -724,6 +851,51 @@ def _evidence_validation_summary(
         **base,
         "verified_claim_ratio": round(verified_ratio, 4),
         "unsupported_finding_count": unsupported,
+    }
+
+
+def _research_runtime_artifacts(runner: Any, findings: list[Finding]) -> dict[str, Any]:
+    backend_trace = [
+        {
+            "backend": str(item.get("backend") or "unknown"),
+            "query": str(item.get("query") or ""),
+            "status": str(item.get("status") or "unknown"),
+            "count": int(item.get("count") or 0),
+            **({"error": str(item.get("error"))} if item.get("error") else {}),
+        }
+        for item in getattr(runner, "last_backend_trace", []) or []
+        if isinstance(item, dict)
+    ]
+    backend_kinds = _dedupe_strings([
+        item["backend"]
+        for item in backend_trace
+        if item.get("backend")
+    ])
+    evidence_kinds = _dedupe_strings([
+        str((ref.provenance or {}).get("kind") or "unknown")
+        for finding in findings
+        for ref in finding.support
+    ])
+    memory_trace = [
+        item
+        for item in backend_trace
+        if item.get("backend") in {"vault", "insight_forge", "mempalace"}
+    ]
+    memory_evidence = any(kind in {"vault", "insight_forge", "mempalace"} for kind in evidence_kinds)
+    if any(int(item.get("count") or 0) > 0 for item in memory_trace) or memory_evidence:
+        memory_store = "MemPalace"
+    elif any(item.get("status") == "error" for item in memory_trace):
+        memory_store = "MemPalace:error"
+    elif memory_trace:
+        memory_store = "MemPalace:no_hits"
+    else:
+        memory_store = "not_executed"
+    return {
+        "runner_kind": type(runner).__name__,
+        "backend_trace": backend_trace,
+        "backend_kinds": backend_kinds or ["untraced"],
+        "evidence_kinds": evidence_kinds or ["none"],
+        "memory_store": memory_store,
     }
 
 
@@ -811,45 +983,97 @@ def _generate_council_personas(
     gateway: GatewayV2,
     consensus_plan: ConsensusPlan,
     targeting_map: TargetingMap,
+    depth_profile: ResearchDepthProfile,
     require_live: bool = False,
 ) -> tuple[list[Any], dict[str, Any]]:
-    ontology = {
-        **consensus_plan.to_ontology(),
-        "topic": report.title,
-        "roles": list(dict.fromkeys(
-            list(consensus_plan.to_ontology().get("roles", []))
-            + [agent.role for agent in agents]
-        )) or ["evidence_reviewer"],
-        "intents": list(consensus_plan.to_ontology().get("intents", [])) + [
-            agent.system_prompt or agent.perspective or "Evaluate topic-specific evidence."
-            for agent in agents
-        ] or ["Evaluate topic-specific evidence."],
-        "allowed_tools": list(dict.fromkeys(
-            list(consensus_plan.to_ontology().get("allowed_tools", []))
-            + ["model_gateway"]
-        )),
-        "required_outputs": ["council_round_response"],
-        "value_axes": dict(consensus_plan.to_ontology().get("value_axes") or {
+    consensus_ontology = consensus_plan.to_ontology()
+    ontology_entities = _build_mirofish_ontology_entities(
+        report=report,
+        agents=agents,
+        consensus_plan=consensus_plan,
+        targeting_map=targeting_map,
+    )
+    base_value_axes = dict(
+        consensus_ontology.get("value_axes") or {
             "time_horizon": "mid",
             "risk_tolerance": 0.35,
             "stakeholder_priority": ["primary", "secondary", "tertiary"],
             "innovation_orientation": 0.55,
-        }),
+        }
+    )
+    mirofish_drafts = _mirofish_entity_drafts(
+        ontology_entities,
+        topic=report.title,
+        limit=max(1, min(len(ontology_entities), depth_profile.persona_pool_size // 4)),
+        value_axes=base_value_axes,
+    )
+    ontology = {
+        **consensus_ontology,
+        "topic": report.title,
+        "entities": ontology_entities,
+        "roles": list(dict.fromkeys(
+            list(consensus_ontology.get("roles", []))
+            + [agent.role for agent in agents]
+            + [draft.role for draft in mirofish_drafts]
+        )) or ["evidence_reviewer"],
+        "intents": list(consensus_ontology.get("intents", [])) + [
+            agent.system_prompt or agent.perspective or "Evaluate topic-specific evidence."
+            for agent in agents
+        ] or ["Evaluate topic-specific evidence."],
+        "allowed_tools": list(dict.fromkeys(
+            list(consensus_ontology.get("allowed_tools", []))
+            + ["model_gateway"]
+        )),
+        "required_outputs": ["council_round_response"],
+        "value_axes": base_value_axes,
         "targeting_domains": list(targeting_map.domains),
     }
-    seed_personas = KoreaPersonaSampler(
-        data_path=Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl"),
-        seed=17,
-    ).agtech_farmer_seed(max(1, len(agents)))
-    diversity_map = DiversityMap()
-    finals, telemetry = PersonaGenerator(gateway=gateway).generate(
+    generator = PersonaGenerator(gateway=gateway)
+    diversity_map = DiversityMap(
+        bins_per_axis=_diversity_bins_for_pool(depth_profile.persona_pool_size)
+    )
+    mirofish_personas, mirofish_telemetry = generator.finalize_drafts(
+        mirofish_drafts,
         ontology,
-        target_count=max(1, len(agents)),
+        target_count=len(mirofish_drafts),
+        diversity_map=diversity_map,
+        topic=report.title,
+        allow_fallbacks=False,
+        revision_notes=[
+            "mirofish_ontology_entity_profile",
+            "schema_grounded",
+        ],
+    )
+    remaining_target = max(depth_profile.persona_pool_size - len(mirofish_personas), 0)
+    seed_personas = _korean_agtech_seed_personas(
+        ontology=ontology,
+        report=report,
+        count=remaining_target,
+    )
+    generated_personas, generated_telemetry = generator.generate(
+        ontology,
+        target_count=remaining_target,
         seed_personas=seed_personas,
         diversity_map=diversity_map,
         topic=report.title,
     )
-    persona_telemetry = _persona_generation_telemetry(finals, telemetry)
+    finals = (mirofish_personas + generated_personas)[: depth_profile.persona_pool_size]
+    telemetry = _combine_persona_telemetry(
+        mirofish_telemetry,
+        generated_telemetry,
+        diversity_map=diversity_map,
+        persona_pool_size=len(finals),
+        target_count=depth_profile.persona_pool_size,
+    )
+    persona_telemetry = _persona_generation_telemetry(
+        finals,
+        telemetry,
+        depth_profile=depth_profile,
+        ontology_entity_count=len(ontology_entities),
+        mirofish_entity_persona_count=len(mirofish_drafts),
+        mirofish_validated_entity_persona_count=len(mirofish_personas),
+        diversity_map=diversity_map,
+    )
     fallback_count = int(telemetry.get("fallbacks_used", 0) or 0)
     if require_live and fallback_count > 0:
         raise LiveModeViolation(
@@ -862,7 +1086,16 @@ def _generate_council_personas(
     return [debate_agent_to_council_persona(agent) for agent in agents], persona_telemetry
 
 
-def _persona_generation_telemetry(personas: list[Any], telemetry: dict[str, Any]) -> dict[str, Any]:
+def _persona_generation_telemetry(
+    personas: list[Any],
+    telemetry: dict[str, Any],
+    *,
+    depth_profile: ResearchDepthProfile,
+    ontology_entity_count: int,
+    mirofish_entity_persona_count: int,
+    mirofish_validated_entity_persona_count: int,
+    diversity_map: DiversityMap,
+) -> dict[str, Any]:
     seed_source = ""
     for persona in personas:
         manifest = getattr(persona, "manifest", {}) or {}
@@ -872,9 +1105,210 @@ def _persona_generation_telemetry(personas: list[Any], telemetry: dict[str, Any]
             break
     return {
         "persona_seed_source": seed_source or "none",
+        "ontology_entity_count": str(ontology_entity_count),
+        "mirofish_entity_persona_count": str(mirofish_entity_persona_count),
+        "mirofish_validated_entity_persona_count": str(
+            mirofish_validated_entity_persona_count
+        ),
+        "persona_pool_size": str(len(personas)),
+        "persona_pool_target_size": str(depth_profile.persona_pool_size),
+        "active_persona_count": str(depth_profile.active_persona_count),
         "persona_validation_framework": "HACHIMI",
         "persona_diversity_framework": "MAP-Elites",
         "council_protocol": "OASIS / CAMEL-AI",
+        "council_persona_strategy": "MiroFish ontology-derived pool with active sequential speakers",
         "persona_diversity_coverage": f"{float(telemetry.get('coverage_after_admit', 0.0) or 0.0):.4f}",
+        "persona_diversity_bins_per_axis": str(diversity_map.bins_per_axis),
         "persona_fallbacks_used": str(int(telemetry.get("fallbacks_used", 0) or 0)),
     }
+
+
+def _build_mirofish_ontology_entities(
+    *,
+    report: ResearchReport,
+    agents: list[DebateAgentSpec],
+    consensus_plan: ConsensusPlan,
+    targeting_map: TargetingMap,
+) -> list[dict[str, Any]]:
+    entities: list[dict[str, Any]] = [
+        {
+            "name": report.title,
+            "type": "research",
+            "summary": report.executive_summary,
+            "facts": [finding.claim for finding in report.findings[:4]],
+        }
+    ]
+    for domain in targeting_map.domains:
+        entities.append({
+            "name": domain,
+            "type": "market",
+            "summary": f"Targeting domain for {report.title}",
+            "facts": targeting_map.search_queries.get(domain, [])[:4],
+        })
+    for institution in targeting_map.target_institutions[:6]:
+        entities.append({
+            "name": institution,
+            "type": "organization",
+            "summary": f"Candidate institution linked to {report.title}",
+        })
+    for journal in targeting_map.target_journals[:4]:
+        entities.append({
+            "name": journal,
+            "type": "research",
+            "summary": f"Candidate publication venue for {report.title}",
+        })
+    for agent in agents:
+        entities.append({
+            "name": agent.name,
+            "type": "expert",
+            "summary": agent.system_prompt or agent.perspective or agent.role,
+            "attributes": {
+                "role": agent.role,
+                "expertise": ", ".join(agent.expertise),
+            },
+        })
+    for role in consensus_plan.to_ontology().get("roles", []) or []:
+        entities.append({
+            "name": str(role),
+            "type": "expert",
+            "summary": f"Consensus-plan role for {report.title}",
+        })
+    return entities
+
+
+def _combine_persona_telemetry(
+    mirofish_telemetry: dict[str, Any],
+    generated_telemetry: dict[str, Any],
+    *,
+    diversity_map: DiversityMap,
+    persona_pool_size: int,
+    target_count: int,
+) -> dict[str, Any]:
+    fast_failed_ids = list(mirofish_telemetry.get("fast_failed_ids", []) or [])
+    fast_failed_ids.extend(generated_telemetry.get("fast_failed_ids", []) or [])
+    deep_failed_ids = list(mirofish_telemetry.get("deep_failed_ids", []) or [])
+    deep_failed_ids.extend(generated_telemetry.get("deep_failed_ids", []) or [])
+    return {
+        **generated_telemetry,
+        "fast_failed_ids": fast_failed_ids,
+        "deep_failed_ids": deep_failed_ids,
+        "mirofish_fast_failed_ids": list(mirofish_telemetry.get("fast_failed_ids", []) or []),
+        "mirofish_deep_failed_ids": list(mirofish_telemetry.get("deep_failed_ids", []) or []),
+        "fallbacks_used": (
+            int(mirofish_telemetry.get("fallbacks_used", 0) or 0)
+            + int(generated_telemetry.get("fallbacks_used", 0) or 0)
+        ),
+        "coverage_after_admit": float(diversity_map.coverage()),
+        "persona_pool_size": int(persona_pool_size),
+        "target_count": int(target_count),
+    }
+
+
+def _mirofish_entity_drafts(
+    entities: list[dict[str, Any]],
+    *,
+    topic: str,
+    limit: int,
+    value_axes: dict[str, Any],
+) -> list[Draft]:
+    if limit < 1 or not entities:
+        return []
+    try:
+        runner = _load_council_runner_module()
+        generate_from_entity = getattr(runner, "generate_persona_from_entity")
+    except Exception:
+        return []
+
+    drafts: list[Draft] = []
+    for index, entity in enumerate(entities[:limit], start=1):
+        try:
+            profile = generate_from_entity(entity, topic)
+        except Exception:
+            continue
+        role = str(profile.get("role") or "ontology_reviewer")
+        intent = str(profile.get("perspective_bias") or "Evaluate ontology-grounded evidence.")
+        manifest = {
+            "expertise": _list_of_strings(profile.get("expertise")),
+            "argument_style": str(profile.get("argument_style") or ""),
+            "entity_context": str(profile.get("entity_context") or ""),
+            "entity_type": str(profile.get("entity_type") or entity.get("type") or ""),
+            "mirofish_source": "generate_persona_from_entity",
+            "debate_protocol": "OASIS / CAMEL-AI",
+        }
+        drafts.append(
+            Draft(
+                persona_id=f"mirofish-entity-{index:03d}",
+                name=str(profile.get("name") or entity.get("name") or f"Entity {index}"),
+                role=role,
+                intent=intent,
+                allowed_tools=["model_gateway"],
+                required_outputs=["council_round_response"],
+                value_axes=_distributed_value_axes(value_axes, index - 1, limit),
+                manifest=manifest,
+            )
+        )
+    return drafts
+
+
+def _distributed_value_axes(
+    base_value_axes: dict[str, Any],
+    index: int,
+    target_count: int,
+) -> dict[str, Any]:
+    axes = dict(base_value_axes)
+    if target_count <= 1:
+        return axes
+    grid = max(2, int((target_count - 1) ** 0.5) + 1)
+    row = index // grid
+    col = index % grid
+    axes["risk_tolerance"] = round((col + 0.5) / grid, 4)
+    axes["innovation_orientation"] = round((row + 0.5) / grid, 4)
+    return axes
+
+
+def _list_of_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _load_council_runner_module() -> Any:
+    path = Path(__file__).resolve().parents[1] / "council" / "council-runner.py"
+    spec = importlib.util.spec_from_file_location("src.council.council_runner_runtime", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load council runner from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _korean_agtech_seed_personas(
+    *,
+    ontology: dict[str, Any],
+    report: ResearchReport,
+    count: int,
+) -> list[dict[str, Any]] | None:
+    if count < 1:
+        return None
+    text = " ".join([
+        report.title,
+        report.executive_summary,
+        " ".join(str(role) for role in ontology.get("roles", []) or []),
+        " ".join(str(intent) for intent in ontology.get("intents", []) or []),
+    ]).lower()
+    agtech_signals = ("agtech", "농가", "농업", "딸기", "사과", "진단키트", "farmer", "orchard")
+    if not any(signal.lower() in text for signal in agtech_signals):
+        return None
+    return KoreaPersonaSampler(
+        data_path=Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl"),
+        seed=17,
+    ).agtech_farmer_seed(count)
+
+
+def _diversity_bins_for_pool(persona_pool_size: int) -> int:
+    bins = 2
+    while bins * bins < persona_pool_size:
+        bins += 1
+    return max(4, bins)

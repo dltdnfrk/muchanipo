@@ -10,10 +10,10 @@ Modes:
         summary under the local runs directory.
     tui
         Terminal dashboard wrapper around the same full pipeline core.
-    --pipeline=stub  (default, legacy)
+    --pipeline=stub  (legacy)
         Emits the canonical phase order (STARTUP → INTERVIEW → COUNCIL → REPORT
         → done) with placeholder council/report content.
-    --pipeline=full
+    --pipeline=full  (default)
         PRD-v2 §2.1 8-stage pipeline:
         intake → interview → targeting → research → evidence → council →
         report → finalize. Council generates 10 RoundDigest entries; report
@@ -99,6 +99,14 @@ def _build_parser() -> argparse.ArgumentParser:
     references = sub.add_parser("references", help="Show reference-project runtime readiness")
     references.add_argument("--json", action="store_true", help="Print reference readiness as JSON")
 
+    orchestrate = sub.add_parser("orchestrate", help="Show/manage tmux operator and worker orchestration")
+    orchestrate.add_argument("--session", default="muni", help="tmux session name (default: muni)")
+    orchestrate.add_argument("--json", action="store_true", help="Print orchestration status as JSON")
+    orchestrate.add_argument("--include-capture", action="store_true", help="Include recent capture-pane output")
+    orchestrate.add_argument("--cleanup-workers", action="store_true", help="Kill worker windows 1-4 after completion")
+    orchestrate.add_argument("--dry-run", action="store_true", help="Show cleanup actions without killing windows")
+    orchestrate.add_argument("--force", action="store_true", help="Required for destructive worker-window cleanup")
+
     demo = sub.add_parser("demo", help="Run a deterministic offline demo topic")
     demo.add_argument(
         "--report-path",
@@ -130,9 +138,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--pipeline",
         choices=("stub", "full"),
-        default="stub",
-        help="stub = legacy 4-phase placeholder, full = PRD-v2 §2.1 8-stage MBB pipeline",
+        default="full",
+        help="full = PRD-v2 §2.1 8-stage MBB pipeline (default), stub = legacy 4-phase placeholder",
     )
+    serve.add_argument("--depth", choices=VALID_DEPTHS, default="deep", help="Autoresearch depth budget")
     return parser
 
 
@@ -435,18 +444,28 @@ def serve_full(
     *,
     report_path: Path,
     stdout: IO[str],
+    depth: str = "deep",
 ) -> int:
     """PRD-v2 §2.1 full pipeline — uses real LLM providers when configured."""
     from src.pipeline.runner import run_pipeline
     from src.report.chapter_mapper import ChapterMapper
     from src.report.pyramid_formatter import PyramidFormatter
+    from src.research.depth import depth_profile
 
     offline = _detect_offline_mode()
+    profile = depth_profile(depth)
     emit(
         "phase_change",
         phase="STARTUP",
         stream=stdout,
-        data={"topic": topic, "pipeline": "full", "offline": offline},
+        data={
+            "topic": topic,
+            "pipeline": "full",
+            "offline": offline,
+            "depth": depth,
+            "council_persona_pool_size": profile.persona_pool_size,
+            "active_council_persona_count": profile.active_persona_count,
+        },
     )
 
     def emit_progress(event: dict[str, Any]) -> None:
@@ -457,7 +476,7 @@ def serve_full(
         emit(name, stream=stdout, **fields)
 
     try:
-        pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline)
+        pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline, depth=depth)
     except Exception as exc:
         from src.runtime.live_mode import LiveModeViolation
 
@@ -473,9 +492,23 @@ def serve_full(
         emit("done", stream=stdout, pipeline="full", aborted=True)
         return 1
     rounds = pipeline_result["rounds"]
+    executed_round_count = int(pipeline_result.get("executed_council_round_count") or len(rounds))
+    turn_transcript = list(pipeline_result.get("council_turn_transcript") or [])
 
-    for round_no, digest in enumerate(rounds, start=1):
+    for round_no, digest in enumerate(rounds[:executed_round_count], start=1):
         emit("council_round_start", stream=stdout, round=round_no, layer=digest.layer_id)
+        for turn in turn_transcript:
+            if int(turn.get("round") or 0) != round_no:
+                continue
+            emit(
+                "council_turn",
+                stream=stdout,
+                round=round_no,
+                layer=str(turn.get("layer_id") or digest.layer_id),
+                stage=str(turn.get("stage") or ""),
+                persona=str(turn.get("persona_id") or ""),
+                provider=str(turn.get("provider") or ""),
+            )
         emit(
             "council_persona_token",
             stream=stdout,
@@ -511,7 +544,16 @@ def serve_full(
         chapter_count=len(chapters),
         markdown=final_md,
     )
-    emit("done", stream=stdout, report_path=str(report_path), pipeline="full")
+    emit(
+        "done",
+        stream=stdout,
+        report_path=str(report_path),
+        pipeline="full",
+        depth=depth,
+        council_persona_pool_size=int(pipeline_result.get("council_persona_pool_size") or 0),
+        active_council_persona_count=int(pipeline_result.get("active_council_persona_count") or 0),
+        council_turn_count=len(turn_transcript),
+    )
     return 0
 
 
@@ -525,10 +567,11 @@ def serve(
     wait_for_input: bool,
     stdout: IO[str],
     stdin: IO[str],
-    pipeline: str = "stub",
+    pipeline: str = "full",
+    depth: str = "deep",
 ) -> int:
     if pipeline == "full":
-        return serve_full(topic, report_path=report_path, stdout=stdout)
+        return serve_full(topic, report_path=report_path, stdout=stdout, depth=depth)
     from src.runtime.live_mode import live_requested_from_env
 
     if live_requested_from_env():
@@ -561,7 +604,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write("muchanipo: interrupted\n")
             return 130
 
-    known_commands = {"run", "tui", "serve", "runs", "status", "doctor", "contracts", "references", "demo"}
+    known_commands = {
+        "run",
+        "tui",
+        "serve",
+        "runs",
+        "status",
+        "doctor",
+        "contracts",
+        "references",
+        "orchestrate",
+        "demo",
+    }
     if raw_argv[0] not in known_commands and not raw_argv[0].startswith("-"):
         topic, shortcut_options = _parse_topic_shortcut(raw_argv)
         if not topic:
@@ -655,6 +709,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             render_references(stdout=sys.stdout)
         return 0
 
+    if args.command == "orchestrate":
+        from src.muchanipo.terminal import orchestration_report, render_orchestration
+
+        if args.cleanup_workers and not args.dry_run and not args.force:
+            sys.stderr.write("muchanipo: orchestrate cleanup requires --dry-run or --force\n")
+            return 2
+        if args.json:
+            report = orchestration_report(
+                session=args.session,
+                include_capture=bool(args.include_capture),
+                cleanup_workers=bool(args.cleanup_workers),
+                dry_run=bool(args.dry_run),
+                force=bool(args.force),
+            )
+            _write_json(report)
+        else:
+            report = render_orchestration(
+                stdout=sys.stdout,
+                session=args.session,
+                include_capture=bool(args.include_capture),
+                cleanup_workers=bool(args.cleanup_workers),
+                dry_run=bool(args.dry_run),
+                force=bool(args.force),
+            )
+        return 0 if report.get("ok") else 1
+
     if args.command == "demo":
         from src.muchanipo.terminal import DEMO_TOPIC
 
@@ -681,6 +761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         stdout=sys.stdout,
         stdin=sys.stdin,
         pipeline=args.pipeline,
+        depth=args.depth,
     )
 
 

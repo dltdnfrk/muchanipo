@@ -81,6 +81,7 @@ def test_mock_first_pipeline_from_idea_to_vault(tmp_path: Path):
         assert stage in stage_names
 
     assert result.report_md.count("## Chapter ") == 6
+    assert "## ReACT Executed Sections" in result.report_md
     assert "## ReACT Execution Plan" in result.report_md
     assert "## GBrain Compiled Truth + Timeline" in result.report_md
     for chapter_no in range(1, 7):
@@ -98,6 +99,8 @@ def test_mock_first_pipeline_from_idea_to_vault(tmp_path: Path):
     report_events = [event for event in events if event["stage"] == "report"]
     assert report_events
     assert int(report_events[0]["artifacts"]["react_section_count"]) >= 1
+    assert int(report_events[0]["artifacts"]["react_executed_section_count"]) >= 1
+    assert int(report_events[0]["artifacts"]["react_tool_call_count"]) >= 3
     assert report_events[0]["artifacts"]["gbrain_content_hash"]
 
 
