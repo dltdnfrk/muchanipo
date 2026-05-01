@@ -28,7 +28,9 @@ API credentials and fails closed when live providers are requested but absent.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, IO, List, Sequence
 
@@ -89,6 +91,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Show local provider CLI status")
     status.add_argument("--json", action="store_true", help="Print provider CLI status as JSON")
+    status.add_argument(
+        "--probe",
+        action="store_true",
+        help="Run opt-in real prompt probes against installed provider CLIs",
+    )
 
     doctor = sub.add_parser("doctor", help="Check local runtime readiness")
     doctor.add_argument("--json", action="store_true", help="Print readiness checks as JSON")
@@ -406,7 +413,13 @@ def _detect_offline_mode() -> bool:
     cli_global = os.environ.get("MUCHANIPO_USE_CLI", "").strip().lower() in true_values
     provider_cli_requested = any(
         os.environ.get(flag, "").strip().lower() in true_values
-        for flag in ("ANTHROPIC_USE_CLI", "GEMINI_USE_CLI", "KIMI_USE_CLI", "CODEX_USE_CLI")
+        for flag in (
+            "ANTHROPIC_USE_CLI",
+            "GEMINI_USE_CLI",
+            "KIMI_USE_CLI",
+            "CODEX_USE_CLI",
+            "OPENCODE_USE_CLI",
+        )
     )
     if running_pytest and explicit_cli_preference is None and not cli_global and not provider_cli_requested:
         return True
@@ -415,6 +428,7 @@ def _detect_offline_mode() -> bool:
         ("GEMINI_USE_CLI", "GEMINI_BIN", "gemini"),
         ("KIMI_USE_CLI", "KIMI_BIN", "kimi"),
         ("CODEX_USE_CLI", "CODEX_BIN", "codex"),
+        ("OPENCODE_USE_CLI", "OPENCODE_BIN", "opencode"),
     ]
     for use_flag, bin_var, bin_name in cli_pairs:
         local_flag = os.environ.get(use_flag, "").strip().lower() in true_values
@@ -433,10 +447,347 @@ def _detect_offline_mode() -> bool:
         "OPENAI_API_KEY",
         "KIMI_API_KEY",
         "MOONSHOT_API_KEY",
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_API_KEY",
     ):
         if os.environ.get(key):
             return False
     return True
+
+
+@dataclass(frozen=True)
+class ServeInterviewResult:
+    status: str
+    topic: str | None = None
+    message: str = ""
+
+
+class JSONLineHITLAdapter:
+    """Interactive HITL adapter for the Tauri/serve JSON-line protocol."""
+
+    mode = "jsonline"
+
+    def __init__(self, *, stdout: IO[str], stdin: IO[str]) -> None:
+        self.stdout = stdout
+        self.stdin = stdin
+
+    def gate(self, gate_name: str, payload: dict) -> Any:
+        from src.hitl.plannotator_adapter import HITLResult
+
+        emit(
+            "hitl_gate",
+            stream=self.stdout,
+            gate=gate_name,
+            title=_hitl_gate_title(gate_name),
+            prompt=_hitl_gate_prompt(gate_name),
+            preview=_hitl_gate_preview(gate_name, payload),
+            options=[
+                {
+                    "key": "approve",
+                    "label": "승인하고 계속",
+                    "value": "approved",
+                    "description": "현재 계획/근거를 승인하고 다음 단계로 진행합니다.",
+                },
+                {
+                    "key": "changes",
+                    "label": "수정 필요",
+                    "value": "changes_requested",
+                    "description": "이 실행은 중단하고 보완이 필요하다고 표시합니다.",
+                },
+            ],
+            data={
+                "gate": gate_name,
+                "payload": _jsonable_payload(payload),
+            },
+        )
+        while True:
+            action = _read_action(self.stdin)
+            if action is None:
+                return HITLResult(
+                    status="pending",
+                    comments=[f"no HITL decision received for {gate_name}"],
+                    gate_id=f"{gate_name}-jsonline",
+                )
+            if action.action == "abort":
+                return HITLResult(
+                    status="changes_requested",
+                    comments=[f"aborted during HITL gate: {gate_name}"],
+                    gate_id=f"{gate_name}-jsonline",
+                )
+            if action.action != "hitl_decision":
+                emit(
+                    "warning",
+                    stream=self.stdout,
+                    message=f"ignoring unexpected action while waiting for HITL gate {gate_name}: {action.action}",
+                )
+                continue
+
+            requested_gate = str(action.fields.get("gate") or action.fields.get("gate_name") or gate_name)
+            if requested_gate != gate_name:
+                emit(
+                    "warning",
+                    stream=self.stdout,
+                    message=f"ignoring HITL decision for {requested_gate}; waiting for {gate_name}",
+                )
+                continue
+            status = str(action.fields.get("status") or "pending").strip()
+            if status not in {"approved", "changes_requested"}:
+                status = "pending"
+            return HITLResult(
+                status=status,
+                comments=[str(action.fields.get("comment") or f"jsonline decision: {status}")],
+                gate_id=f"{gate_name}-jsonline",
+                synthetic=False,
+            )
+
+    def gate_brief(self, brief: Any) -> Any:
+        return self.gate("brief", {"brief": _jsonable_payload(brief)})
+
+    def gate_evidence(self, evidence_refs: Any) -> Any:
+        return self.gate("evidence", {"evidence_refs": _jsonable_payload(evidence_refs)})
+
+    def gate_report(self, report_md: str) -> Any:
+        return self.gate("report", {"report_md": str(report_md)})
+
+
+def _jsonable_payload(payload: Any) -> Any:
+    try:
+        return json.loads(json.dumps(payload, ensure_ascii=False, default=_json_default))
+    except TypeError:
+        return str(payload)
+
+
+def _json_default(value: Any) -> Any:
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if hasattr(value, "to_ontology"):
+        return value.to_ontology()
+    if hasattr(value, "to_brief"):
+        return value.to_brief()
+    if hasattr(value, "__dict__"):
+        return vars(value)
+    return str(value)
+
+
+def _hitl_gate_title(gate_name: str) -> str:
+    return {
+        "plan": "리서치 계획 승인",
+        "brief": "타겟팅/브리프 승인",
+        "evidence": "수집 근거 승인",
+        "report": "최종 보고서 승인",
+    }.get(gate_name, f"{gate_name} 승인")
+
+
+def _hitl_gate_prompt(gate_name: str) -> str:
+    return {
+        "plan": "타겟팅과 리서치를 시작하기 전에 계획을 승인해야 합니다.",
+        "brief": "생성된 브리프와 타겟팅 범위를 승인해야 리서치로 넘어갑니다.",
+        "evidence": "수집된 근거를 승인해야 심의와 보고서 작성으로 넘어갑니다.",
+        "report": "최종 보고서를 저장하기 전에 승인해야 합니다.",
+    }.get(gate_name, "계속 진행하려면 승인하세요.")
+
+
+def _hitl_gate_preview(gate_name: str, payload: dict) -> str:
+    payload = _jsonable_payload(payload)
+    if gate_name == "plan" and isinstance(payload, dict):
+        plan = payload.get("consensus_plan") or {}
+        design_doc = payload.get("design_doc") or {}
+        return "\n".join(
+            line
+            for line in [
+                f"Gate reason: {payload.get('gate_reason', '')}",
+                f"Consensus score: {plan.get('consensus_score', '') if isinstance(plan, dict) else ''}",
+                f"Gate passed: {plan.get('gate_passed', '') if isinstance(plan, dict) else ''}",
+                "",
+                "Design brief:",
+                _compact_preview(design_doc, limit=1400),
+            ]
+            if line is not None
+        ).strip()
+    if gate_name == "brief" and isinstance(payload, dict):
+        return _compact_preview(payload.get("brief", payload), limit=1800)
+    if gate_name == "evidence" and isinstance(payload, dict):
+        refs = payload.get("evidence_refs") or []
+        if isinstance(refs, list):
+            lines = [f"Evidence count: {len(refs)}"]
+            for ref in refs[:8]:
+                if isinstance(ref, dict):
+                    lines.append(f"- {ref.get('id', '?')} | {ref.get('source_grade', '?')} | {ref.get('source_title', '')}")
+            return "\n".join(lines)
+    if gate_name == "report" and isinstance(payload, dict):
+        return _compact_preview(str(payload.get("report_md", "")), limit=2400)
+    return _compact_preview(payload, limit=1800)
+
+
+def _compact_preview(value: Any, *, limit: int) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _collect_serve_interview_answers(
+    topic: str,
+    *,
+    stdout: IO[str],
+    stdin: IO[str],
+) -> ServeInterviewResult:
+    """Run a show-me-the-prd style intake over the JSON-line serve protocol."""
+    from src.intake.idea_dump import IdeaDump
+    from src.intent.interview_prompts import merge_answers_to_text
+    from src.intent.office_hours import reframe_with_context
+    from src.interview.session import InterviewSession
+
+    session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
+    total_questions = 6
+    emit(
+        "phase_change",
+        phase="INTERVIEW",
+        stream=stdout,
+        data={
+            "workflow": "show-me-the-prd",
+            "question_count": total_questions,
+            "mode": getattr(session.plan, "mode", "deep"),
+        },
+    )
+
+    qa_pairs: list[dict[str, str]] = []
+    for idx in range(1, total_questions + 1):
+        item = session.next_question()
+        if item is None:
+            break
+        framed = reframe_with_context(item.dimension_id, topic, session.answers)
+        qid = item.dimension_id
+        question = str(framed.get("question") or item.research_question or qid).strip()
+        options = _normalize_show_prd_options(framed.get("options"))
+        header = _show_prd_header(qid)
+        preview = _show_prd_preview(qid, topic, session.answers)
+        emit(
+            "interview_question",
+            stream=stdout,
+            q_id=qid,
+            question_id=qid,
+            text=question,
+            prompt=question,
+            header=header,
+            options=options,
+            allow_other=True,
+            multiSelect=False,
+            preview=preview,
+            index=idx,
+            total=total_questions,
+            data={
+                "q_id": qid,
+                "text": question,
+                "header": header,
+                "options": options,
+                "allow_other": True,
+                "multiSelect": False,
+                "preview": preview,
+                "index": idx,
+                "total": total_questions,
+            },
+        )
+
+        action = _read_action(stdin)
+        if action is None:
+            return ServeInterviewResult(
+                status="error",
+                message=f"no interview answer received for {qid}",
+            )
+        if action.action == "abort":
+            return ServeInterviewResult(status="aborted")
+        if action.action != "interview_answer":
+            return ServeInterviewResult(
+                status="error",
+                message=f"unexpected action while waiting for {qid}: {action.action}",
+            )
+
+        answer = _interview_answer_from_action(action).strip()
+        if answer and answer.lower() not in {"skip", "pass", "건너뛰기"}:
+            session.answer(_serve_interview_answer_key(item.label), answer)
+            qa_pairs.append({"id": qid, "answer": answer})
+
+    if not qa_pairs:
+        return ServeInterviewResult(status="ok", topic=topic)
+    return ServeInterviewResult(status="ok", topic=merge_answers_to_text(topic, qa_pairs))
+
+
+def _normalize_show_prd_options(raw_options: Any) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    if not isinstance(raw_options, list):
+        return options
+    for idx, raw in enumerate(raw_options):
+        if not isinstance(raw, dict):
+            continue
+        label = str(raw.get("label") or "").strip()
+        if not label:
+            continue
+        description = str(raw.get("description") or "").strip()
+        recommended = idx == 0 and "추천" not in label and label != "Other"
+        display_label = f"{label} (추천)" if recommended else label
+        options.append(
+            {
+                "key": chr(ord("A") + len(options)),
+                "label": display_label,
+                "value": label,
+                "description": description,
+            }
+        )
+    return options
+
+
+def _show_prd_header(qid: str) -> str:
+    return {
+        "Q1_research_question": "아이디어 구체화",
+        "Q2_purpose": "목적",
+        "Q3_context": "맥락",
+        "Q4_known": "기존 정보",
+        "Q5_deliverable": "산출물",
+        "Q6_quality": "근거 품질",
+    }.get(qid, "인터뷰")
+
+
+def _show_prd_preview(qid: str, topic: str, answers: dict[str, str]) -> str:
+    if qid == "Q3_context":
+        return (
+            "선택한 맥락은 이후 검색 범위, 페르소나 구성, 비교 국가/산업 범위를 제한합니다.\n"
+            f"원 요청: {topic}"
+        )
+    if qid == "Q5_deliverable":
+        purpose = answers.get("purpose", "아직 목적 미정")
+        return (
+            "| 산출물 | 적합한 상황 |\n"
+            "| --- | --- |\n"
+            "| 결정서 | 빠른 Go/No-Go 판단 |\n"
+            "| 리서치 리포트 | 근거와 반론까지 필요한 검토 |\n"
+            "| Slide deck | 외부 공유/발표 |\n\n"
+            f"현재 목적: {purpose}"
+        )
+    if qid == "Q6_quality":
+        return (
+            "A/B급 기준을 고르면 속도는 느려지지만 mock·추정 결과가 최종 보고서에 섞이는 것을 더 강하게 막습니다."
+        )
+    return ""
+
+
+def _serve_interview_answer_key(label: str) -> str:
+    return {
+        "deliverable": "deliverable_type",
+        "quality": "quality_bar",
+    }.get(label, label)
+
+
+def _interview_answer_from_action(action: Action) -> str:
+    for key in ("answer", "other_text", "selected", "choice", "value"):
+        value = action.fields.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def serve_full(
@@ -444,6 +795,8 @@ def serve_full(
     *,
     report_path: Path,
     stdout: IO[str],
+    stdin: IO[str] | None = None,
+    wait_for_input: bool = False,
     depth: str = "deep",
 ) -> int:
     """PRD-v2 §2.1 full pipeline — uses real LLM providers when configured."""
@@ -468,15 +821,46 @@ def serve_full(
         },
     )
 
+    if wait_for_input:
+        interview_result = _collect_serve_interview_answers(
+            topic,
+            stdout=stdout,
+            stdin=stdin or sys.stdin,
+        )
+        if interview_result.status == "aborted":
+            emit("done", stream=stdout, pipeline="full", aborted=True)
+            return 0
+        if interview_result.status == "error":
+            emit("error", stream=stdout, message=interview_result.message or "interview failed")
+            return 1
+        topic = interview_result.topic or topic
+
+    streamed_council_events = 0
+
     def emit_progress(event: dict[str, Any]) -> None:
+        nonlocal streamed_council_events
         name = str(event.get("event") or "")
         fields = {key: value for key, value in event.items() if key != "event"}
         if name == "stage_started":
             emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
+        if name.startswith("council_"):
+            streamed_council_events += 1
         emit(name, stream=stdout, **fields)
 
     try:
-        pipeline_result = run_pipeline(topic, progress_callback=emit_progress, offline=offline, depth=depth)
+        hitl_adapter = (
+            JSONLineHITLAdapter(stdout=stdout, stdin=stdin or sys.stdin)
+            if wait_for_input
+            else None
+        )
+        pipeline_result = run_pipeline(
+            topic,
+            progress_callback=emit_progress,
+            offline=offline,
+            require_live=not offline,
+            depth=depth,
+            hitl_adapter=hitl_adapter,
+        )
     except Exception as exc:
         from src.runtime.live_mode import LiveModeViolation
 
@@ -495,27 +879,47 @@ def serve_full(
     executed_round_count = int(pipeline_result.get("executed_council_round_count") or len(rounds))
     turn_transcript = list(pipeline_result.get("council_turn_transcript") or [])
 
-    for round_no, digest in enumerate(rounds[:executed_round_count], start=1):
-        emit("council_round_start", stream=stdout, round=round_no, layer=digest.layer_id)
-        for turn in turn_transcript:
-            if int(turn.get("round") or 0) != round_no:
-                continue
+    if streamed_council_events == 0:
+        for round_no, digest in enumerate(rounds[:executed_round_count], start=1):
             emit(
-                "council_turn",
+                "council_round_start",
                 stream=stdout,
+                stage="council_progress",
+                pipeline_stage="council",
                 round=round_no,
-                layer=str(turn.get("layer_id") or digest.layer_id),
-                stage=str(turn.get("stage") or ""),
-                persona=str(turn.get("persona_id") or ""),
-                provider=str(turn.get("provider") or ""),
+                layer=digest.layer_id,
             )
-        emit(
-            "council_persona_token",
-            stream=stdout,
-            persona="agent",
-            delta=digest.key_claim,
-        )
-        emit("council_round_done", stream=stdout, round=round_no, score=round(digest.confidence * 100))
+            for turn in turn_transcript:
+                if int(turn.get("round") or 0) != round_no:
+                    continue
+                emit(
+                    "council_turn",
+                    stream=stdout,
+                    round=round_no,
+                    layer=str(turn.get("layer_id") or digest.layer_id),
+                    stage="council_progress",
+                    pipeline_stage="council",
+                    council_stage=str(turn.get("stage") or ""),
+                    persona=str(turn.get("persona_id") or ""),
+                    provider=str(turn.get("provider") or ""),
+                )
+            emit(
+                "council_persona_token",
+                stream=stdout,
+                stage="council_progress",
+                pipeline_stage="council",
+                council_stage="digest",
+                persona="agent",
+                delta=digest.key_claim,
+            )
+            emit(
+                "council_round_done",
+                stream=stdout,
+                stage="council_progress",
+                pipeline_stage="council",
+                round=round_no,
+                score=round(digest.confidence * 100),
+            )
 
     chapters = ChapterMapper().map(rounds)
     chapters = PyramidFormatter().reorder_all(chapters)
@@ -571,7 +975,14 @@ def serve(
     depth: str = "deep",
 ) -> int:
     if pipeline == "full":
-        return serve_full(topic, report_path=report_path, stdout=stdout, depth=depth)
+        return serve_full(
+            topic,
+            report_path=report_path,
+            stdout=stdout,
+            stdin=stdin,
+            wait_for_input=wait_for_input,
+            depth=depth,
+        )
     from src.runtime.live_mode import live_requested_from_env
 
     if live_requested_from_env():
@@ -676,9 +1087,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from src.muchanipo.terminal import render_cli_status, status_report
 
         if args.json:
-            _write_json(status_report())
+            _write_json(status_report(probe=bool(args.probe)))
         else:
-            render_cli_status(stdout=sys.stdout)
+            render_cli_status(stdout=sys.stdout, probe=bool(args.probe))
         return 0
 
     if args.command == "doctor":

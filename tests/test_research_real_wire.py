@@ -128,6 +128,20 @@ def test_web_runner_graceful_fallback_when_all_backends_empty():
     assert ev.provenance["kind"] == "empty"
 
 
+def test_web_runner_live_mode_omits_empty_fallback_evidence():
+    plan = _plan("Quoque obscura quaestio")
+    runner = WebResearchRunner(
+        web_search=lambda q: [],
+        vault_search=lambda q: [],
+        exa_search=lambda q: [],
+        emit_empty_fallback=False,
+    )
+
+    assert runner.run(plan) == []
+    assert runner.last_backend_trace
+    assert all(item["count"] == 0 for item in runner.last_backend_trace)
+
+
 def test_web_runner_swallows_backend_exceptions():
     plan = _plan()
 
@@ -345,6 +359,23 @@ def test_build_runner_factory_swaps_mock_and_real_with_same_interface():
     for runner in (mock, real):
         out = runner.run(plan)
         assert out and all(isinstance(f, Finding) for f in out)
+
+
+def test_build_runner_disables_empty_fallback_when_live_is_required(monkeypatch):
+    import src.research.runner as runner_mod
+
+    monkeypatch.setenv("MUCHANIPO_REQUIRE_LIVE", "1")
+
+    real = runner_mod.build_runner(
+        use_real=True,
+        web_search=None,
+        vault_search=lambda q: [],
+        exa_search=None,
+        academic_search=lambda q: [],
+        insight_forge_search=lambda q: [],
+    )
+
+    assert real.emit_empty_fallback is False
 
 
 def test_build_runner_factory_wires_default_academic_search(monkeypatch):

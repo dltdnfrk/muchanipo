@@ -30,6 +30,14 @@ export interface BackendEvent {
   prompt?: string;
   options?: unknown[];
   allow_other?: boolean;
+  multiSelect?: boolean;
+  multi_select?: boolean;
+  header?: string;
+  preview?: string;
+  index?: number;
+  total?: number;
+  // hitl_gate
+  gate?: string;
   // catch-all
   [key: string]: unknown;
 }
@@ -44,6 +52,12 @@ export type BackendAction =
       selected?: string;
       other_text?: string;
     }
+  | {
+      action: "hitl_decision";
+      gate: string;
+      status: "approved" | "changes_requested";
+      comment?: string;
+    }
   | { action: "approve_designdoc" }
   | { action: "abort" };
 
@@ -51,6 +65,7 @@ export type BackendAction =
 //   - "stub" : legacy 4-phase placeholder (interview Q&A, single chapter).
 //   - "full" : PRD-v2 §2.1 8-stage MBB pipeline (10 council rounds → 6 chapters).
 export type PipelineMode = "stub" | "full";
+export type ResearchDepth = "shallow" | "deep" | "max";
 
 export interface SCR {
   situation: string;
@@ -82,9 +97,10 @@ export interface FinalReport {
 export async function submitIdea(
   topic: string,
   pipeline: PipelineMode = "full",
+  depth: ResearchDepth = "deep",
   envs?: Record<string, string>,
 ): Promise<void> {
-  return invoke("start_pipeline", { topic, pipeline, envs });
+  return invoke("start_pipeline", { topic, pipeline, depth, envs });
 }
 
 /**
@@ -133,7 +149,7 @@ export interface CliAuthLaunch {
   login_command: string;
 }
 
-/** Probe local CLIs (claude / codex / gemini) for availability. */
+/** Probe local CLIs (claude / codex / gemini / kimi / opencode) for availability. */
 export async function checkCliStatus(): Promise<CliStatus[]> {
   return invoke<CliStatus[]>("check_cli_status");
 }

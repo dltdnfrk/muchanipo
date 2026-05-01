@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -415,10 +416,11 @@ def conduct_interview(
     session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
     plan = session.plan
     mode = plan.mode if plan is not None else "deep"
+    question_bank = {item["id"]: item["question"] for item in forcing_questions_korean()}
     if mode == "quick":
         questions = session.clarifications_for_quick_mode()
     else:
-        questions = forcing_questions_korean()
+        questions = []
 
     out.write("\n아이디어 심층 인터뷰\n")
     out.write("------------------\n")
@@ -427,9 +429,28 @@ def conduct_interview(
     out.flush()
 
     qa_pairs: list[dict[str, str]] = []
-    for idx, item in enumerate(questions, start=1):
-        qid = str(item.get("id") or f"Q{idx}")
-        question = str(item.get("question") or "").strip()
+    asked: set[str] = set()
+    for idx in range(1, 7):
+        if mode == "quick":
+            if idx > len(questions):
+                break
+            q = questions[idx - 1]
+            qid = str(q.get("id") or f"Q{idx}")
+            question = str(q.get("question") or "").strip()
+        else:
+            next_item = session.next_question()
+            if next_item is None:
+                break
+            if next_item.dimension_id in asked and session.rubric is not None:
+                next_item = next(
+                    (candidate for candidate in session.rubric.items if candidate.dimension_id not in asked),
+                    None,
+                )
+                if next_item is None:
+                    break
+            qid = next_item.dimension_id
+            question = question_bank.get(qid, next_item.research_question).strip()
+            asked.add(qid)
         out.write(f"{question}\n")
         answer = _read_prompt(inp, out, "answer> ")
         if answer is None:
@@ -438,6 +459,11 @@ def conduct_interview(
             break
         cleaned = answer.strip()
         if not cleaned or cleaned.lower() in {"skip", "pass", "건너뛰기"}:
+            if mode != "quick" and session.rubric is not None:
+                try:
+                    session.rubric.update(qid, "skipped", quality=0.7)
+                except KeyError:
+                    pass
             out.write("skipped\n\n")
             out.flush()
             continue
@@ -499,6 +525,7 @@ def _interview_answer_label(qid: str) -> str | None:
         "Q1_research_question": "research_question",
         "Q2_purpose": "purpose",
         "Q3_context": "context",
+        "Q4_known": "known",
         "Q5_deliverable": "deliverable_type",
         "Q6_quality": "quality_bar",
         "clarify_timeframe": "quality_bar",
@@ -663,7 +690,68 @@ def cli_statuses() -> list[dict[str, Any]]:
     return statuses
 
 
-def render_cli_status(*, stdout: IO[str] | None = None) -> list[dict[str, Any]]:
+def cli_prompt_probes(
+    records: list[dict[str, Any]] | None = None,
+    *,
+    timeout_sec: int | None = None,
+) -> list[dict[str, Any]]:
+    """Run an opt-in real prompt smoke against installed local providers.
+
+    Version checks are cheap and safe for every status call. Prompt probes can
+    consume provider quota, so they only run when callers explicitly ask for
+    them, e.g. ``muchanipo status --probe --json``.
+    """
+    timeout = timeout_sec or int(os.environ.get("MUCHANIPO_PROVIDER_PROBE_TIMEOUT_SEC", "90"))
+    records = list(records if records is not None else cli_statuses())
+
+    def probe_one(item: dict[str, Any]) -> dict[str, Any]:
+        name = str(item.get("name") or "")
+        path = item.get("path")
+        record: dict[str, Any] = {
+            "name": name,
+            "installed": bool(item.get("installed")),
+            "prompt_ok": False,
+            "json_ok": False,
+            "latency_ms": None,
+            "provider": None,
+            "model": None,
+            "error": None,
+        }
+        if not path:
+            record["error"] = "not installed"
+            return record
+        prompt = (
+            'Return exactly this JSON and nothing else: '
+            f'{{"ok":true,"provider":"{name}","probe":"muchanipo"}}'
+        )
+        started = time.monotonic()
+        try:
+            result = _call_provider_probe(name=name, path=str(path), prompt=prompt, timeout=timeout)
+            record["latency_ms"] = round((time.monotonic() - started) * 1000)
+            record["prompt_ok"] = bool(str(result.text or "").strip())
+            record["provider"] = result.provider
+            record["model"] = result.model
+            payload = _extract_json_object(result.text)
+            record["json_ok"] = bool(payload and payload.get("ok") is True)
+        except Exception as exc:  # pragma: no cover - host CLI behavior varies.
+            record["latency_ms"] = round((time.monotonic() - started) * 1000)
+            record["error"] = _first_error_line(str(exc)) or type(exc).__name__
+        return record
+
+    probes: list[dict[str, Any] | None] = [None] * len(records)
+    max_workers = max(1, min(5, len(records)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(probe_one, item): idx for idx, item in enumerate(records)}
+        for future in as_completed(future_map):
+            probes[future_map[future]] = future.result()
+    return [item for item in probes if item is not None]
+
+
+def render_cli_status(
+    *,
+    stdout: IO[str] | None = None,
+    probe: bool = False,
+) -> list[dict[str, Any]]:
     out = stdout or sys.stdout
     statuses = cli_statuses()
     out.write("\nCLI status\n")
@@ -677,17 +765,35 @@ def render_cli_status(*, stdout: IO[str] | None = None) -> list[dict[str, Any]]:
         path = item.get("path") or "-"
         out.write(f"[{marker}] {item['name']:<8} {detail}\n")
         out.write(f"     {path}\n")
+    if probe:
+        out.write("\nPrompt probes\n")
+        for item in cli_prompt_probes(statuses):
+            marker = "OK" if item.get("prompt_ok") and item.get("json_ok") else "WARN"
+            detail = (
+                f"prompt={item.get('prompt_ok')} json={item.get('json_ok')}"
+                f" latency={item.get('latency_ms')}ms"
+            )
+            if item.get("error"):
+                detail += f" error={item['error']}"
+            out.write(f"[{marker}] {item['name']:<8} {detail}\n")
     out.write("\n")
     out.flush()
     return statuses
 
 
-def status_report() -> dict[str, Any]:
+def status_report(*, probe: bool = False) -> dict[str, Any]:
     """Return provider CLI status in a stable JSON shape."""
-    return {
+    providers = cli_statuses()
+    report: dict[str, Any] = {
         "schema_version": JSON_SCHEMA_VERSION,
         "command": "muchanipo status",
-        "providers": cli_statuses(),
+        "providers": providers,
+        "probe_requested": bool(probe),
+    }
+    if probe:
+        report["prompt_probes"] = cli_prompt_probes(providers)
+    return {
+        **report,
     }
 
 
@@ -1106,6 +1212,67 @@ def _first_error_line(text: str) -> str:
         if line:
             return line[:160]
     return ""
+
+
+def _call_provider_probe(*, name: str, path: str, prompt: str, timeout: int):
+    if name == "claude":
+        from src.execution.providers.anthropic import AnthropicProvider
+
+        return AnthropicProvider(
+            offline=False,
+            use_cli=True,
+            claude_bin=path,
+        ).call("eval", prompt, timeout=timeout, allow_fallback=False)
+    if name == "codex":
+        from src.execution.providers.codex import CodexProvider
+
+        return CodexProvider(
+            offline=False,
+            use_cli=True,
+            codex_bin=path,
+        ).call("eval", prompt, timeout=timeout)
+    if name == "gemini":
+        from src.execution.providers.gemini import GeminiProvider
+
+        return GeminiProvider(
+            offline=False,
+            use_cli=True,
+            gemini_bin=path,
+        ).call("eval", prompt, timeout=timeout, search_grounding=False)
+    if name == "kimi":
+        from src.execution.providers.kimi import KimiProvider
+
+        return KimiProvider(
+            offline=False,
+            use_cli=True,
+            kimi_bin=path,
+        ).call("eval", prompt, timeout=timeout)
+    if name == "opencode":
+        from src.execution.providers.opencode import OpenCodeProvider
+
+        return OpenCodeProvider(
+            offline=False,
+            use_cli=True,
+            opencode_bin=path,
+        ).call("eval", prompt, timeout=timeout)
+    raise ValueError(f"unsupported provider probe {name!r}")
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _repo_root() -> Path:

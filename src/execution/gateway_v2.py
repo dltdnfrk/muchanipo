@@ -4,7 +4,7 @@ Stage routing per PRD-v2 §8.1 (Qwen 보류):
     Intake     → Gemini (Flash)
     Interview  → Anthropic Sonnet
     Targeting  → Gemini
-    Research   → Gemini + Kimi (parallel — chosen by caller)
+    Research   → Gemini + Kimi + OpenCode (parallel — chosen by caller)
     Evidence   → Kimi
     Council    → Anthropic Opus
     Report     → Anthropic Sonnet  (Qwen 로컬 보류)
@@ -39,6 +39,8 @@ PRIMARY_ROUTES: Dict[str, str] = {
     "council":   "anthropic",
     "report":    "anthropic",
     "eval":      "codex",
+    "utilities": "opencode",
+    "implementation_review": "opencode",
     # Convenience aliases used elsewhere
     "consensus": "anthropic",
     "ingest":    "gemini",
@@ -50,13 +52,15 @@ FALLBACK_CHAIN: Dict[str, List[str]] = {
     "intake":    ["gemini", "anthropic", "mock"],
     "interview": ["anthropic", "gemini", "mock"],
     "targeting": ["gemini", "anthropic", "mock"],
-    "research":  ["gemini", "kimi", "anthropic", "mock"],
-    "evidence":  ["kimi", "gemini", "anthropic", "mock"],
-    "council":   ["anthropic", "gemini", "mock"],
-    "report":    ["anthropic", "gemini", "mock"],
-    "eval":      ["codex", "anthropic", "mock"],
+    "research":  ["gemini", "kimi", "opencode", "anthropic", "mock"],
+    "evidence":  ["kimi", "gemini", "opencode", "anthropic", "mock"],
+    "council":   ["anthropic", "codex", "kimi", "gemini", "opencode", "mock"],
+    "report":    ["anthropic", "gemini", "opencode", "mock"],
+    "eval":      ["codex", "opencode", "anthropic", "mock"],
     "consensus": ["anthropic", "gemini", "mock"],
     "ingest":    ["gemini", "anthropic", "mock"],
+    "utilities": ["opencode", "codex", "mock"],
+    "implementation_review": ["opencode", "codex", "anthropic", "mock"],
 }
 
 
@@ -111,7 +115,7 @@ def build_default_providers(
     force_offline: bool = False,
     prefer_cli: bool = True,
 ) -> Dict[str, Provider]:
-    """기본 5종 provider (anthropic/gemini/kimi/codex/mock).
+    """기본 provider 세트 (anthropic/gemini/kimi/codex/opencode/mock).
 
     force_offline=True면 모든 LLM provider를 offline 모드로 강제 — 테스트용.
     """
@@ -120,12 +124,14 @@ def build_default_providers(
     from src.execution.providers.gemini import GeminiProvider
     from src.execution.providers.kimi import KimiProvider
     from src.execution.providers.mock import MockProvider
+    from src.execution.providers.opencode import OpenCodeProvider
 
     providers: Dict[str, Provider] = {
         "anthropic": AnthropicProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "gemini": GeminiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "kimi": KimiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "codex": CodexProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
+        "opencode": OpenCodeProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "mock": MockProvider(),
     }
     return providers

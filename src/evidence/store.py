@@ -62,10 +62,19 @@ def _validate_provenance(refs: list[EvidenceRef], *, require_live: bool = False)
         if require_live:
             raise LiveModeViolation("live mode provenance validation failed") from exc
         lockdown_flags = {ref.id: True for ref in refs}
-    return {
-        ref.id: bool(lockdown_flags.get(ref.id, True)) and bool(structural_flags.get(ref.id, False))
-        for ref in refs
-    }
+    combined: dict[str, bool] = {}
+    for ref in refs:
+        source_text = (ref.provenance or {}).get("source_text")
+        structural_ok = bool(structural_flags.get(ref.id, False))
+        # Academic clients keep source_text as structured metadata. The
+        # stdlib structural check understands that shape; lockdown's exact
+        # substring rule only understands plain source text and would reject
+        # valid metadata-derived quotes.
+        if source_text is not None and not isinstance(source_text, str):
+            combined[ref.id] = structural_ok
+        else:
+            combined[ref.id] = bool(lockdown_flags.get(ref.id, True)) and structural_ok
+    return combined
 
 
 def _structural_provenance_ok(ref: EvidenceRef) -> bool:

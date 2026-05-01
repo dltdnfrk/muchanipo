@@ -83,6 +83,21 @@ def test_reference_inventory_declared_tests_exist_for_runtime_backed_items():
             assert Path(test_path).exists(), f"{item['name']}: {test_path}"
 
 
+def test_provider_runtime_inventory_includes_opencode_adapter_and_tests():
+    report = reference_readiness_report()
+    provider_items = [
+        item
+        for item in report["references"]
+        if item["name"] == "Claude, Gemini, Codex, Kimi, OpenCode CLI 제공자"
+    ]
+
+    assert provider_items
+    provider_item = provider_items[0]
+    assert "src/execution/providers/opencode.py" in provider_item["code_paths"]
+    assert "tests/test_provider_opencode.py" in provider_item["test_paths"]
+    assert provider_item["ready"] is True
+
+
 def test_reference_inventory_does_not_mark_gap_items_ready():
     report = reference_readiness_report()
 

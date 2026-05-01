@@ -237,6 +237,8 @@ def test_detect_offline_mode_treats_local_cli_as_online(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
     monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "1")
 
     import shutil
@@ -246,10 +248,37 @@ def test_detect_offline_mode_treats_local_cli_as_online(monkeypatch):
     assert _detect_offline_mode() is False
 
 
+def test_detect_offline_mode_treats_opencode_cli_as_online(monkeypatch):
+    monkeypatch.delenv("MUCHANIPO_OFFLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "1")
+
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/opencode" if name == "opencode" else None)
+
+    assert _detect_offline_mode() is False
+
+
+def test_detect_offline_mode_treats_opencode_api_key_as_online(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("MUCHANIPO_OFFLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "0")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "oc-test")
+
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    assert _detect_offline_mode() is False
+
+
 def test_detect_offline_mode_can_disable_cli_preference(monkeypatch):
     monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "0")
     monkeypatch.delenv("MUCHANIPO_USE_CLI", raising=False)
     monkeypatch.delenv("ANTHROPIC_USE_CLI", raising=False)
+    monkeypatch.delenv("OPENCODE_USE_CLI", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -257,6 +286,8 @@ def test_detect_offline_mode_can_disable_cli_preference(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
 
     import shutil
 

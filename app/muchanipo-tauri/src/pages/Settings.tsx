@@ -5,6 +5,7 @@ import {
   openCliAuth,
   type CliSmokeResult,
   type CliStatus,
+  type ResearchDepth,
 } from "../lib/tauriClient";
 
 interface KeyForm {
@@ -19,6 +20,7 @@ const KEY_CONFIGS: KeyForm[] = [
   { label: "OpenAI API Key", key: "openai_api_key", type: "password", hint: "Eval / Codex 단계 (CLI 없을 때)" },
   { label: "Gemini API Key", key: "gemini_api_key", type: "password", hint: "Intake, Targeting, Research 단계용" },
   { label: "Kimi API Key", key: "kimi_api_key", type: "password", hint: "Evidence 단계 (Moonshot)" },
+  { label: "OpenCode Go API Key", key: "opencode_api_key", type: "password", hint: "OpenCode Go fallback / utility worker" },
   { label: "OpenAlex Email", key: "openalex_email", type: "text", hint: "polite pool 식별용 (무료 학술 API)" },
   { label: "Plannotator Key", key: "plannotator_key", type: "password", hint: "HITL 검토 (선택)" },
 ];
@@ -28,6 +30,7 @@ const CLI_HINTS: Record<string, string> = {
   codex: "codex login (또는 OPENAI_API_KEY 설정)",
   gemini: "터미널에서 직접 gemini 로그인",
   kimi: "터미널에서 직접 kimi login",
+  opencode: "opencode auth login / OpenCode Go 연결",
 };
 
 const CLI_STAGE_MAP: Record<string, string> = {
@@ -35,12 +38,42 @@ const CLI_STAGE_MAP: Record<string, string> = {
   codex: "OpenAI — Eval / Critic",
   gemini: "Google — Intake / Research / Evidence",
   kimi: "Moonshot — Evidence",
+  opencode: "OpenCode Go — Utility / Review / Fallback",
 };
+
+const DEPTH_OPTIONS: Array<{
+  key: ResearchDepth;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: "shallow",
+    label: "Quick",
+    hint: "짧은 탐색, 빠른 초안",
+  },
+  {
+    key: "deep",
+    label: "Deep",
+    hint: "기본 심층 리서치",
+  },
+  {
+    key: "max",
+    label: "Max",
+    hint: "확장 검토, 장시간 실행",
+  },
+];
+
+type BackendMode = "offline" | "cli" | "api";
+
+function isBackendMode(value: string | null): value is BackendMode {
+  return value === "offline" || value === "cli" || value === "api";
+}
 
 export default function Settings() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [pipelineMode, setPipelineMode] = useState<"full" | "stub">("full");
-  const [backendMode, setBackendMode] = useState<"cli" | "api">("cli");
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>("deep");
+  const [backendMode, setBackendMode] = useState<BackendMode>("cli");
   const [saved, setSaved] = useState(false);
   const [cliStatuses, setCliStatuses] = useState<CliStatus[]>([]);
   const [cliLoading, setCliLoading] = useState(false);
@@ -55,7 +88,14 @@ export default function Settings() {
     for (const cfg of KEY_CONFIGS) loaded[cfg.key] = localStorage.getItem(cfg.key) || "";
     setValues(loaded);
     setPipelineMode((localStorage.getItem("pipeline_mode") as "full" | "stub") || "full");
-    setBackendMode((localStorage.getItem("backend_mode") as "cli" | "api") || "cli");
+    const savedDepth = localStorage.getItem("research_depth");
+    setResearchDepth(
+      savedDepth === "shallow" || savedDepth === "deep" || savedDepth === "max"
+        ? savedDepth
+        : "deep",
+    );
+    const savedBackendMode = localStorage.getItem("backend_mode");
+    setBackendMode(isBackendMode(savedBackendMode) ? savedBackendMode : "cli");
   }, []);
 
   async function refreshCliStatus() {
@@ -123,6 +163,7 @@ export default function Settings() {
   const save = () => {
     for (const cfg of KEY_CONFIGS) localStorage.setItem(cfg.key, values[cfg.key] || "");
     localStorage.setItem("pipeline_mode", pipelineMode);
+    localStorage.setItem("research_depth", researchDepth);
     localStorage.setItem("backend_mode", backendMode);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
@@ -134,7 +175,7 @@ export default function Settings() {
         <div className="fade-in mb-8">
           <h1 className="text-xl font-semibold tracking-tight text-white">설정</h1>
           <p className="mt-1 text-sm text-tertiary">
-            Muchanipo는 로컬 CLI core를 우선 실행하고, Tauri는 진행상황과 보고서를 보여줍니다.
+            Muchanipo는 오프라인 데모, 로컬 CLI, API 키 실행을 선택할 수 있습니다.
           </p>
         </div>
 
@@ -143,7 +184,7 @@ export default function Settings() {
           <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
             Backend
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <button
               onClick={() => setBackendMode("cli")}
               className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition ${
@@ -154,7 +195,7 @@ export default function Settings() {
             >
               <div className="font-medium">로컬 CLI</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
-                claude / codex / gemini / kimi CLI 호출 (권장)
+                claude / codex / gemini / kimi 실호출, mock fallback 차단
               </div>
             </button>
             <button
@@ -168,6 +209,19 @@ export default function Settings() {
               <div className="font-medium">API Keys</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
                 직접 키를 발급해 사용 (서버 배포용)
+              </div>
+            </button>
+            <button
+              onClick={() => setBackendMode("offline")}
+              className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition ${
+                backendMode === "offline"
+                  ? "border-white/30 bg-white/10 text-white"
+                  : "border-white/10 bg-white/[0.02] text-secondary hover:border-white/20 hover:text-white"
+              }`}
+            >
+              <div className="font-medium">오프라인</div>
+              <div className="mt-0.5 text-[11px] text-tertiary">
+                API/CLI 없이 로컬 mock provider 사용
               </div>
             </button>
           </div>
@@ -368,6 +422,30 @@ export default function Settings() {
                 빠른 테스트 (4 phase 플레이스홀더)
               </div>
             </button>
+          </div>
+        </section>
+
+        {/* Research depth */}
+        <section className="mb-8">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+            Research depth
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {DEPTH_OPTIONS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setResearchDepth(option.key)}
+                className={`rounded-lg border px-4 py-3 text-left text-sm transition ${
+                  researchDepth === option.key
+                    ? "border-white/30 bg-white/10 text-white"
+                    : "border-white/10 bg-white/[0.02] text-secondary hover:border-white/20 hover:text-white"
+                }`}
+              >
+                <div className="font-medium">{option.label}</div>
+                <div className="mt-0.5 text-[11px] text-tertiary">{option.hint}</div>
+              </button>
+            ))}
           </div>
         </section>
 

@@ -105,6 +105,107 @@ def test_serve_full_emits_done_at_end(tmp_path):
     assert events[-1]["pipeline"] == "full"
 
 
+def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    calls: list[str] = []
+
+    def fake_run_pipeline(topic, **kwargs):
+        calls.append(topic)
+        return {
+            "rounds": _build_demo_rounds(topic),
+            "executed_council_round_count": 1,
+            "council_turn_transcript": [],
+            "report_md": "# Report\n\n## Chapter 1\n\nbody\n",
+            "council_persona_pool_size": 1,
+            "active_council_persona_count": 1,
+        }
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+    stdin = io.StringIO(
+        "\n".join(
+            json.dumps(
+                {
+                    "action": "interview_answer",
+                    "q_id": f"Q{idx}",
+                    "answer": f"answer {idx}",
+                }
+            )
+            for idx in range(1, 7)
+        )
+        + "\n"
+    )
+    stdout = io.StringIO()
+
+    rc = serve_full(
+        "base topic",
+        report_path=tmp_path / "R.md",
+        stdout=stdout,
+        stdin=stdin,
+        wait_for_input=True,
+    )
+
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    question_events = [e for e in events if e["event"] == "interview_question"]
+    first_pipeline_index = next(
+        i
+        for i, e in enumerate(events)
+        if e["event"] in {"council_round_start", "report_chunk", "done"}
+    )
+    first_question_index = next(i for i, e in enumerate(events) if e["event"] == "interview_question")
+
+    assert rc == 0
+    assert len(question_events) == 6
+    assert question_events[0]["q_id"] == "Q1_research_question"
+    assert question_events[0]["header"] == "아이디어 구체화"
+    assert question_events[0]["options"][0]["description"]
+    assert first_question_index < first_pipeline_index
+    assert calls and "answer 1" in calls[0]
+
+
+def test_serve_full_wires_jsonline_hitl_gate_when_waiting(tmp_path, monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    gate_statuses: list[str] = []
+
+    def fake_run_pipeline(topic, **kwargs):
+        hitl_adapter = kwargs["hitl_adapter"]
+        result = hitl_adapter.gate("plan", {"topic": topic})
+        gate_statuses.append(result.status)
+        return {
+            "rounds": _build_demo_rounds(topic),
+            "executed_council_round_count": 1,
+            "council_turn_transcript": [],
+            "report_md": "# Report\n\n## Chapter 1\n\nbody\n",
+            "council_persona_pool_size": 1,
+            "active_council_persona_count": 1,
+        }
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+    lines = [
+        json.dumps({"action": "interview_answer", "q_id": f"Q{idx}", "answer": f"answer {idx}"})
+        for idx in range(1, 7)
+    ]
+    lines.append(json.dumps({"action": "hitl_decision", "gate": "plan", "status": "approved"}))
+    stdin = io.StringIO("\n".join(lines) + "\n")
+    stdout = io.StringIO()
+
+    rc = serve_full(
+        "base topic",
+        report_path=tmp_path / "R.md",
+        stdout=stdout,
+        stdin=stdin,
+        wait_for_input=True,
+    )
+
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    gates = [event for event in events if event["event"] == "hitl_gate"]
+    assert rc == 0
+    assert gate_statuses == ["approved"]
+    assert gates and gates[0]["gate"] == "plan"
+    assert gates[0]["options"][0]["value"] == "approved"
+
+
 def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkeypatch):
     import src.pipeline.runner as runner_mod
 

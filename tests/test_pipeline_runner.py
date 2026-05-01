@@ -63,6 +63,15 @@ def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
     ]
     completed = [event["stage"] for event in events if event["event"] == "stage_completed"]
     assert completed == started
+    council_turn_idx = next(
+        idx for idx, event in enumerate(events) if event["event"] == "council_turn"
+    )
+    council_completed_idx = next(
+        idx
+        for idx, event in enumerate(events)
+        if event["event"] == "stage_completed" and event["stage"] == "council"
+    )
+    assert council_turn_idx < council_completed_idx
     assert [
         (event["event"], event["stage"])
         for event in events[:4]
@@ -243,6 +252,7 @@ def test_run_pipeline_offline_disables_live_academic_targeting(monkeypatch):
 
         def run(self, topic):
             assert openalex_mod._skip_live_targeting() is True
+            assert runner_mod.os.environ["MUCHANIPO_OFFLINE"] == "1"
             raise RuntimeError("stop after policy")
 
     def fail_http_client(*args, **kwargs):
@@ -258,6 +268,7 @@ def test_run_pipeline_offline_disables_live_academic_targeting(monkeypatch):
         runner_mod.run_pipeline("offline topic", offline=True)
 
     assert "MUCHANIPO_ACADEMIC_TARGETING" not in runner_mod.os.environ
+    assert "MUCHANIPO_OFFLINE" not in runner_mod.os.environ
 
 
 def test_run_pipeline_offline_overrides_stale_live_academic_targeting_env(monkeypatch):
@@ -270,6 +281,7 @@ def test_run_pipeline_offline_overrides_stale_live_academic_targeting_env(monkey
 
         def run(self, topic):
             assert openalex_mod._skip_live_targeting() is True
+            assert runner_mod.os.environ["MUCHANIPO_OFFLINE"] == "1"
             raise RuntimeError("stop after policy")
 
     monkeypatch.setenv("MUCHANIPO_ACADEMIC_TARGETING", "1")

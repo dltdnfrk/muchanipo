@@ -332,7 +332,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
         source_url="https://github.com/ComposioHQ/awesome-codex-skills",
     ),
     ReferenceInventoryItem(
-        name="Claude, Gemini, Codex, Kimi CLI 제공자",
+        name="Claude, Gemini, Codex, Kimi, OpenCode CLI 제공자",
         category=CATEGORY_EXTERNAL,
         license="provider terms",
         stages=(),
@@ -341,10 +341,17 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
             "src/execution/providers/gemini.py",
             "src/execution/providers/codex.py",
             "src/execution/providers/kimi.py",
+            "src/execution/providers/opencode.py",
             "src/execution/providers/cli_policy.py",
         ),
-        test_paths=("tests/test_provider_anthropic.py", "tests/test_provider_gemini.py", "tests/test_provider_codex.py", "tests/test_provider_kimi.py"),
-        implementation_notes="Local provider adapters call installed CLIs/API routes while each provider owns auth/session files.",
+        test_paths=(
+            "tests/test_provider_anthropic.py",
+            "tests/test_provider_gemini.py",
+            "tests/test_provider_codex.py",
+            "tests/test_provider_kimi.py",
+            "tests/test_provider_opencode.py",
+        ),
+        implementation_notes="Local provider adapters call installed CLIs/API routes while each provider owns auth/session files; OpenCode is called through its CLI or OpenCode Go API fallback without reading local auth files.",
     ),
     ReferenceInventoryItem(
         name="OpenRouter, Ollama, 로컬 모델 실행 환경",

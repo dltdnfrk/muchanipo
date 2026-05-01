@@ -55,6 +55,13 @@ export function markRunDone(runId: string): void {
   writeRuns(entries);
 }
 
+export function markRunRunning(runId: string): void {
+  const entries = listRuns().map((e) =>
+    e.runId === runId ? { ...e, status: "running" as const } : e,
+  );
+  writeRuns(entries);
+}
+
 export function deleteRun(runId: string): void {
   writeRuns(listRuns().filter((e) => e.runId !== runId));
   // Best-effort cleanup of associated keys.

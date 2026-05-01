@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.agents.generator import DebateAgentSpec
 from src.agents.mirofish import debate_agent_to_council_persona
@@ -16,6 +16,9 @@ from src.council.parsers import RoundResult, parse_council_response
 from src.council.round_layers import RoundLayer
 from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway
+
+
+ProgressCallback = Callable[[dict], None]
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,7 @@ class Session:
         personas: list[Any],
         plateau: PlateauDetector | None = None,
         active_persona_count: int | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         self.gateway = gateway
         self.layers = list(layers)
@@ -92,6 +96,7 @@ class Session:
         self.active_persona_ids_by_round: dict[int, list[str]] = {}
         self.stopped = False
         self.stop_reason: str | None = None
+        self.progress_callback = progress_callback
 
     def run_one_round(self, round_no: int) -> RoundResult:
         if round_no < 1:
@@ -105,6 +110,17 @@ class Session:
             _persona_id(persona, idx)
             for idx, persona in enumerate(active_personas, start=1)
         ]
+        self._emit_progress(
+            {
+                "event": "council_round_start",
+                "stage": "council_progress",
+                "pipeline_stage": "council",
+                "round": round_no,
+                "layer": layer.layer_id,
+                "active_persona_count": len(active_personas),
+                "active_persona_ids": list(self.active_persona_ids_by_round[round_no]),
+            }
+        )
         individuals = self._individual_stage(layer, active_personas, round_no)
         peer_reviews = self._peer_review_stage(individuals, layer, active_personas, round_no)
         round_result = self._chairman_synthesis(individuals, peer_reviews, layer)
@@ -114,6 +130,18 @@ class Session:
         self.stop_reason = reason
         if plateau:
             self.stopped = True
+        self._emit_progress(
+            {
+                "event": "council_round_done",
+                "stage": "council_progress",
+                "pipeline_stage": "council",
+                "round": round_no,
+                "layer": layer.layer_id,
+                "score": round(round_result.confidence_score * 100),
+                "stop_reason": self.stop_reason,
+                "stopped": self.stopped,
+            }
+        )
         return round_result
 
     def run_all(self, allow_early_stop: bool = False) -> list[RoundResult]:
@@ -244,17 +272,50 @@ class Session:
         prompt: str,
         result: Any,
     ) -> None:
+        response_text = getattr(result, "text", str(result)) if result else ""
+        provider = str(getattr(result, "provider", ""))
         self.turn_transcript.append(
             {
                 "round": round_no,
                 "layer_id": layer.layer_id,
                 "stage": stage,
                 "persona_id": persona_id,
-                "provider": str(getattr(result, "provider", "")),
+                "provider": provider,
                 "prompt_chars": len(prompt),
-                "response_chars": len(getattr(result, "text", str(result)) if result else ""),
+                "response_chars": len(response_text),
             }
         )
+        self._emit_progress(
+            {
+                "event": "council_turn",
+                "round": round_no,
+                "layer": layer.layer_id,
+                "stage": "council_progress",
+                "pipeline_stage": "council",
+                "council_stage": stage,
+                "persona": persona_id,
+                "provider": provider,
+                "prompt_chars": len(prompt),
+                "response_chars": len(response_text),
+            }
+        )
+        if response_text:
+            self._emit_progress(
+                {
+                    "event": "council_persona_token",
+                    "round": round_no,
+                    "layer": layer.layer_id,
+                    "stage": "council_progress",
+                    "pipeline_stage": "council",
+                    "council_stage": stage,
+                    "persona": persona_id,
+                    "delta": _preview_text(response_text),
+                }
+            )
+
+    def _emit_progress(self, event: dict[str, Any]) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(event)
 
 
 @dataclass
@@ -533,6 +594,13 @@ def _fallback_chairman_json(
         },
         ensure_ascii=False,
     )
+
+
+def _preview_text(text: str, limit: int = 1200) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: limit - 1].rstrip() + "…"
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:

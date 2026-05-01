@@ -9,11 +9,49 @@ from src.council.persona_generator import FinalPersona
 from src.evidence.artifact import EvidenceRef, Finding
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline
+from src.intake.idea_dump import IdeaDump
+from src.intent.office_hours import OfficeHours
+from src.interview.session import InterviewSession
 
 
 @pytest.fixture
 def korean_agtech_topic() -> str:
     return "한국 딸기 농가용 저비용 진단키트 시장성"
+
+
+def test_pipeline_brief_uses_jsonline_interview_answers():
+    raw = "\n".join(
+        [
+            "[원 요청] 딸기 농가용 저비용 분자진단 키트 시장성",
+            "[Q1_research_question] 딸기 농가가 저비용 분자진단 키트를 실제 구매할 시장성과 적정 가격을 알고 싶다",
+            "[Q2_purpose] 제품화 go/no-go 결정",
+            "[Q3_context] 한국 딸기 농가, 농협 유통, 현장 실증",
+            "[Q4_known] 저비용; 현장 사용성; 농가 지불의사",
+            "[Q5_deliverable] 6장 시장성 리서치 보고서",
+            "[Q6_quality] 실제 출처와 A/B급 근거 중심",
+        ]
+    )
+    idea = IdeaDump(raw_text=raw)
+    pipeline = IdeaToCouncilPipeline()
+    brief = pipeline._brief_from_interview(
+        InterviewSession.from_idea(idea),
+        raw,
+        OfficeHours().reframe(raw),
+    )
+
+    assert brief.research_question.startswith("딸기 농가가 저비용 분자진단 키트")
+    assert brief.purpose == "제품화 go/no-go 결정"
+    assert brief.context == "한국 딸기 농가, 농협 유통, 현장 실증"
+    assert "농가 지불의사" in brief.known_facts
+    assert brief.deliverable_type == "6장 시장성 리서치 보고서"
+    assert brief.quality_bar == "실제 출처와 A/B급 근거 중심"
+    assert brief.is_ready
+    assert getattr(brief, "interview_trace_source") == "user_interview"
+    assert getattr(brief, "synthetic_interview_trace") is False
+    assert getattr(brief, "mixed_interview_trace") is False
+    assert getattr(brief, "interview_user_answer_count") == 6
+    assert getattr(brief, "interview_office_hours_fill_count") == 0
+    assert all(item["source"] == "user" for item in getattr(brief, "interview_trace"))
 
 
 class RecordingReferenceRunner:
@@ -135,7 +173,16 @@ def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pip
     assert event["reference_step"] == 1
     assert event["reference_projects"] == ["GPTaku show-me-the-prd", "GStack office-hours"]
     assert event["artifacts"]["brief_id"] == result.brief.id
+    assert event["artifacts"]["brief_ready"] == "true"
+    assert event["artifacts"]["brief_coverage_score"] == "1.00"
+    assert event["artifacts"]["interview_trace_source"] == "office_hours_synthetic"
+    assert event["artifacts"]["synthetic_interview_trace"] == "true"
+    assert event["artifacts"]["mixed_interview_trace"] == "false"
+    assert event["artifacts"]["interview_user_answer_count"] == "0"
+    assert int(event["artifacts"]["interview_office_hours_fill_count"]) >= 5
+    assert int(event["artifacts"]["interview_reconstructed_question_count"]) >= 5
     assert int(event["artifacts"]["interview_question_count"]) >= 5
+    assert event["artifacts"]["interview_effective_answer_count"] == event["artifacts"]["interview_question_count"]
     assert "Q1_research_question" in event["artifacts"]["interview_question_order"]
     assert "Q4_known" in event["artifacts"]["interview_question_order"]
     assert result.brief.research_question == result.design_doc.pain_root

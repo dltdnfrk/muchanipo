@@ -12,7 +12,7 @@ from src.execution.models import ModelGateway, ModelResult
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, _round_digests
-from src.runtime.live_mode import LiveModeViolation, assert_live_report
+from src.runtime.live_mode import LiveModeViolation, assert_live_model_result, assert_live_report
 
 
 class _ApprovedHITLAdapter:
@@ -119,6 +119,18 @@ def test_gateway_live_mode_rejects_mock_provider_result():
 
     with pytest.raises(LiveModeViolation, match="mock model result"):
         gw.call("research", "ping", require_live=True)
+
+
+def test_live_mode_rejects_provider_fallback_marker():
+    with pytest.raises(LiveModeViolation, match="placeholder model output"):
+        assert_live_model_result(
+            "report",
+            ModelResult(
+                text="[anthropic fallback] rate limit",
+                provider="anthropic",
+                model="claude-live",
+            ),
+        )
 
 
 def test_gateway_default_live_mode_rejects_mock_provider_result_without_env():
