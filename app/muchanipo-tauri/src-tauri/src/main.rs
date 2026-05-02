@@ -5,8 +5,8 @@ mod events;
 mod python_bridge;
 
 use python_bridge::{
-    check_cli_smoke, check_cli_status, get_buffered_events, open_cli_auth, send_action,
-    start_pipeline, PythonBridge,
+    check_cli_smoke, check_cli_status, get_buffered_events, open_cli_auth, pipeline_runtime_status,
+    send_action, start_pipeline, PythonBridge,
 };
 
 #[tauri::command]
@@ -24,7 +24,8 @@ fn main() {
             check_cli_status,
             check_cli_smoke,
             open_cli_auth,
-            get_buffered_events
+            get_buffered_events,
+            pipeline_runtime_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running Muchanipo Tauri app");

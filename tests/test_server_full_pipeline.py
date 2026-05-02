@@ -7,11 +7,12 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from src.muchanipo.server import serve_full, _build_demo_rounds
+from src.muchanipo.server import JSONLineHITLAdapter, serve_full, _PipelineHeartbeat, _build_demo_rounds
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
 from src.report.pyramid_formatter import PyramidFormatter
 from src.runtime.live_mode import LiveModeViolation
@@ -47,6 +48,36 @@ def test_serve_full_emits_all_pipeline_stages(tmp_path):
     ]
 
 
+def test_serve_full_emits_runtime_identity(tmp_path):
+    stdout = io.StringIO()
+    serve_full("test topic", report_path=tmp_path / "R.md", stdout=stdout)
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    started = events[0]
+
+    assert started["event"] == "run_started"
+    assert started["pipeline"] == "full"
+    assert started["python_pid"] == os.getpid()
+    assert started["python_executable"] == sys.executable
+    assert started["run_id"]
+    assert started["started_at"]
+
+
+def test_pipeline_heartbeat_emits_runtime_liveness():
+    stdout = io.StringIO()
+    heartbeat = _PipelineHeartbeat(run_id="test-run", stream=stdout, interval_sec=0.05)
+
+    heartbeat.start()
+    time.sleep(0.08)
+    heartbeat.stop()
+
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    assert events
+    assert events[0]["event"] == "pipeline_heartbeat"
+    assert events[0]["run_id"] == "test-run"
+    assert events[0]["python_pid"] == os.getpid()
+    assert events[0]["python_executable"] == sys.executable
+
+
 def test_serve_full_emits_ten_council_rounds(tmp_path):
     stdout = io.StringIO()
     serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout)
@@ -54,6 +85,35 @@ def test_serve_full_emits_ten_council_rounds(tmp_path):
     starts = [e for e in events if e["event"] == "council_round_start"]
     assert len(starts) == 10
     assert [e["round"] for e in starts] == list(range(1, 11))
+
+
+def test_serve_full_streams_research_progress(tmp_path):
+    stdout = io.StringIO()
+    serve_full("strawberry diagnostics", report_path=tmp_path / "R.md", stdout=stdout)
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    progress = [event for event in events if event["event"] == "research_progress"]
+
+    assert progress
+    assert any(event["status"] == "searching" and event["query"] for event in progress)
+    assert any(event["status"] == "source_found" and event["source_title"] for event in progress)
+    assert all(event["stage"] == "research" for event in progress)
+
+
+def test_serve_full_streams_council_debate_progress(tmp_path):
+    stdout = io.StringIO()
+    serve_full("strawberry diagnostics", report_path=tmp_path / "R.md", stdout=stdout)
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+
+    starts = [event for event in events if event["event"] == "council_round_start"]
+    turns = [event for event in events if event["event"] == "council_turn"]
+    tokens = [event for event in events if event["event"] == "council_persona_token"]
+
+    assert starts and starts[0]["active_persona_count"] > 0
+    assert starts[0]["active_persona_ids"]
+    assert any(event["council_stage"] == "individual" for event in turns)
+    assert any(event["council_stage"] == "peer_review" for event in turns)
+    assert any(event["council_stage"] == "chairman" for event in turns)
+    assert any(event["delta"] and event["visualization_source"] for event in tokens)
 
 
 def test_serve_full_shallow_depth_emits_executed_round_count(tmp_path):
@@ -147,18 +207,27 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
 
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     question_events = [e for e in events if e["event"] == "interview_question"]
+    clarity_events = [e for e in events if e["event"] == "deep_interview_progress"]
     first_pipeline_index = next(
         i
         for i, e in enumerate(events)
         if e["event"] in {"council_round_start", "report_chunk", "done"}
     )
     first_question_index = next(i for i, e in enumerate(events) if e["event"] == "interview_question")
+    first_clarity_index = next(i for i, e in enumerate(events) if e["event"] == "deep_interview_progress")
 
     assert rc == 0
     assert len(question_events) == 6
+    assert clarity_events
+    assert first_clarity_index < first_question_index
+    assert clarity_events[0]["phase"] == "idea_dump"
+    assert clarity_events[0]["stage"] == "intake"
+    assert clarity_events[0]["ambiguity_score"] >= 0
     assert question_events[0]["q_id"] == "Q1_research_question"
     assert question_events[0]["header"] == "PRD 개요"
     assert question_events[0]["data"]["planning_schema"] == "prd_feature_user_flow"
+    assert question_events[0]["data"]["deep_interview"]["focus_dimension"] == "Q1_research_question"
+    assert question_events[0]["data"]["deep_interview"]["phase"] == "question"
     assert "PRD overview" in question_events[0]["preview"]
     assert question_events[0]["options"][0]["description"]
     assert first_question_index < first_pipeline_index
@@ -206,6 +275,22 @@ def test_serve_full_wires_jsonline_hitl_gate_when_waiting(tmp_path, monkeypatch)
     assert gate_statuses == ["approved"]
     assert gates and gates[0]["gate"] == "plan"
     assert gates[0]["options"][0]["value"] == "approved"
+
+
+def test_jsonline_report_hitl_gate_uses_compact_payload():
+    report_md = "# Report\n\n" + ("body\n" * 3000)
+    stdin = io.StringIO(json.dumps({"action": "hitl_decision", "gate": "report", "status": "approved"}) + "\n")
+    stdout = io.StringIO()
+
+    result = JSONLineHITLAdapter(stdout=stdout, stdin=stdin).gate_report(report_md)
+
+    event = json.loads(stdout.getvalue().splitlines()[0])
+    payload = event["data"]["payload"]
+    assert result.status == "approved"
+    assert event["gate"] == "report"
+    assert payload["report_md_chars"] == len(report_md)
+    assert "report_md" not in payload
+    assert len(json.dumps(event, ensure_ascii=False)) < 6000
 
 
 def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkeypatch):

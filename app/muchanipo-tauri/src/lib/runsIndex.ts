@@ -11,7 +11,7 @@ export interface RunIndexEntry {
   runId: string;
   topic: string;
   createdAt: number;
-  status: "running" | "done";
+  status: "running" | "done" | "failed";
 }
 
 export function listRuns(): RunIndexEntry[] {
@@ -20,10 +20,16 @@ export function listRuns(): RunIndexEntry[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e): e is RunIndexEntry =>
-        typeof e?.runId === "string" && typeof e?.topic === "string",
-    );
+    return parsed
+      .filter(
+        (e): e is RunIndexEntry =>
+          typeof e?.runId === "string" && typeof e?.topic === "string",
+      )
+      .map((e) => ({
+        ...e,
+        createdAt: typeof e.createdAt === "number" ? e.createdAt : 0,
+        status: e.status === "done" || e.status === "failed" ? e.status : "running",
+      }));
   } catch {
     return [];
   }
@@ -51,6 +57,13 @@ export function pushRun(runId: string, topic: string): void {
 export function markRunDone(runId: string): void {
   const entries = listRuns().map((e) =>
     e.runId === runId ? { ...e, status: "done" as const } : e,
+  );
+  writeRuns(entries);
+}
+
+export function markRunFailed(runId: string): void {
+  const entries = listRuns().map((e) =>
+    e.runId === runId ? { ...e, status: "failed" as const } : e,
   );
   writeRuns(entries);
 }

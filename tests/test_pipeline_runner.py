@@ -242,6 +242,41 @@ def test_run_pipeline_explicit_require_live_uses_live_hitl_gate(monkeypatch):
     assert captured == [("markdown", True)]
 
 
+def test_run_pipeline_preflights_live_provider_candidates(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    gateway_kwargs: list[dict] = []
+    preflight_stages: list[tuple[str, ...]] = []
+
+    class _Gateway:
+        def assert_live_provider_candidates(self, stages):
+            preflight_stages.append(tuple(stages))
+            return {stage: ["gemini"] for stage in stages}
+
+    class _StopAfterInitPipeline:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, topic):
+            raise RuntimeError("stop after live preflight")
+
+    def fake_default_gateway(**kwargs):
+        gateway_kwargs.append(dict(kwargs))
+        return _Gateway()
+
+    monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterInitPipeline)
+    monkeypatch.setattr(runner_mod, "default_gateway", fake_default_gateway)
+    monkeypatch.setattr(runner_mod, "build_runner", lambda **kwargs: object())
+
+    with pytest.raises(RuntimeError, match="stop after live preflight"):
+        runner_mod.run_pipeline("explicit live", offline=False, require_live=True)
+
+    assert gateway_kwargs[0]["require_live_default"] is True
+    assert preflight_stages == [
+        ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
+    ]
+
+
 def test_run_pipeline_offline_disables_live_academic_targeting(monkeypatch):
     import src.pipeline.runner as runner_mod
     import src.research.academic.openalex as openalex_mod

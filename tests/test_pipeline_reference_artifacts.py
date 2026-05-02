@@ -167,7 +167,7 @@ def reference_pipeline_run(tmp_path: Path, monkeypatch, korean_agtech_topic: str
 
 
 def _event(events: list[dict], stage: str) -> dict:
-    return next(event for event in events if event["stage"] == stage)
+    return next(event for event in events if event["stage"] == stage and "reference_step" in event)
 
 
 def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pipeline_run):

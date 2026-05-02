@@ -3,10 +3,17 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type BackendEventName =
   | "phase_change"
+  | "run_started"
+  | "pipeline_heartbeat"
+  | "deep_interview_progress"
   | "interview_question"
+  | "research_progress"
   | "council_round_start"
+  | "council_turn"
   | "council_persona_token"
   | "council_round_done"
+  | "final_report"
+  | "hitl_gate"
   | "report_chunk"
   | "done"
   | "warning"
@@ -28,6 +35,18 @@ export interface BackendAction {
   [key: string]: unknown;
 }
 
+export interface PipelineRuntimeStatus {
+  running: boolean;
+  stdin_open?: boolean;
+  child_tracked?: boolean;
+  buffered_event_count?: number;
+  child_pid?: number | null;
+  runtime_age_ms?: number | null;
+  last_event_elapsed_ms?: number | null;
+  app_binary_path?: string | null;
+  workspace_root?: string;
+}
+
 export function startPipeline(
   topic: string,
   pipeline: "stub" | "full" = "full",
@@ -38,6 +57,10 @@ export function startPipeline(
 
 export function sendAction(action: BackendAction): Promise<void> {
   return invoke("send_action", { action: normalizeAction(action) });
+}
+
+export function getPipelineRuntimeStatus(): Promise<PipelineRuntimeStatus> {
+  return invoke("pipeline_runtime_status");
 }
 
 export function listenBackendEvents(

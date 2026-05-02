@@ -112,8 +112,39 @@ def test_session_emits_council_progress_while_round_runs():
     assert [event["council_stage"] for event in turns] == ["individual", "peer_review", "chairman"]
     assert len(tokens) == 3
     assert all(str(event["delta"]).strip() for event in tokens)
+    assert {event["visualization_source"] for event in tokens} == {"raw"}
     assert events[-1]["event"] == "council_round_done"
     assert events[-1]["round"] == 1
+
+
+def test_session_can_use_ollama_for_local_council_visualization(monkeypatch):
+    provider = SequenceProvider([0.70, 0.72, 0.74])
+    events: list[dict[str, object]] = []
+
+    def fake_ollama_call(self, stage, prompt, **kwargs):
+        assert stage == "council_visualization"
+        assert "Return only the speech bubble text" in prompt
+        return ModelResult(text="로컬 요약 발화입니다.", provider="ollama", model=self.model)
+
+    monkeypatch.setenv("MUCHANIPO_COUNCIL_VISUALIZER", "ollama")
+    monkeypatch.setenv("MUCHANIPO_COUNCIL_VISUALIZER_MODEL", "qwen-test")
+    monkeypatch.setattr("src.execution.providers.ollama.OllamaProvider.call", fake_ollama_call)
+
+    session = Session(
+        gateway=_gateway(provider),
+        layers=list(DEFAULT_LAYERS[:1]),
+        personas=[_persona()],
+        plateau=PlateauDetector(window=3, tolerance=0.05),
+        progress_callback=events.append,
+    )
+
+    session.run_one_round(1)
+
+    tokens = [event for event in events if event["event"] == "council_persona_token"]
+    assert len(tokens) == 3
+    assert {event["delta"] for event in tokens} == {"로컬 요약 발화입니다."}
+    assert {event["visualization_source"] for event in tokens} == {"ollama"}
+    assert {event["visualizer_model"] for event in tokens} == {"qwen-test"}
 
 
 def test_session_run_all_traverses_default_layers_despite_flat_confidence():

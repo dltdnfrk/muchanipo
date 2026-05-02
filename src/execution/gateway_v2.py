@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
 from src.governance.budget import BudgetExceeded, provider_name, resolve_model
-from src.runtime.live_mode import assert_live_model_result, live_requested_from_env
+from src.runtime.live_mode import LiveModeViolation, assert_live_model_result, live_requested_from_env
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -203,6 +203,8 @@ class GatewayV2(ModelGateway):
             or live_requested_from_env()
         )
         chain_names = self.fallback_chain.get(stage)
+        if require_live and chain_names:
+            chain_names = self._live_chain_names(stage, chain_names)
         if not chain_names:
             # 체인 미정의 → 기본 ModelGateway 동작
             result = super().call(stage, prompt, **kwargs)
@@ -295,6 +297,42 @@ class GatewayV2(ModelGateway):
             "error": str(error),
         })
 
+    def _live_chain_names(self, stage: str, chain_names: Sequence[str]) -> List[str]:
+        live_names: List[str] = []
+        skipped: List[str] = []
+        for name in chain_names:
+            provider = self.providers.get(name)
+            if provider is None:
+                skipped.append(f"{name}:missing")
+                continue
+            if _is_live_provider_candidate(provider):
+                live_names.append(name)
+            else:
+                skipped.append(f"{name}:mock_or_offline")
+        if not live_names:
+            detail = ", ".join(skipped) if skipped else "empty chain"
+            raise LiveModeViolation(
+                f"live mode has no live provider candidates for stage {stage!r}: {detail}"
+            )
+        return live_names
+
+    def assert_live_provider_candidates(self, stages: Sequence[str]) -> Dict[str, List[str]]:
+        """Fail before pipeline work starts if any live stage can only route to mock/offline providers."""
+        status: Dict[str, List[str]] = {}
+        missing: List[str] = []
+        for stage in stages:
+            chain_names = self.fallback_chain.get(stage)
+            if not chain_names:
+                route = self.stage_routes.get(stage)
+                chain_names = [route] if route else []
+            try:
+                status[stage] = self._live_chain_names(stage, chain_names)
+            except LiveModeViolation as exc:
+                missing.append(str(exc))
+        if missing:
+            raise LiveModeViolation("; ".join(missing))
+        return status
+
     def _provider_from_result(self, result: ModelResult, default: Provider) -> Provider:
         provider_name = getattr(result, "provider", None)
         if isinstance(provider_name, str):
@@ -311,3 +349,11 @@ def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[st
     if getattr(provider, "name", "") == "anthropic":
         call_kwargs.setdefault("allow_fallback", False)
     return call_kwargs
+
+
+def _is_live_provider_candidate(provider: Provider) -> bool:
+    name = str(getattr(provider, "name", provider.__class__.__name__) or "").lower()
+    model = str(getattr(provider, "model", "") or "").lower()
+    if name == "mock" or model == "mock":
+        return False
+    return not bool(getattr(provider, "offline", False))

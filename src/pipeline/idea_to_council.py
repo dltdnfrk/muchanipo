@@ -263,7 +263,9 @@ class IdeaToCouncilPipeline:
         state.record_artifact("research_query_count", str(len(plan.queries)))
         state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
         state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
+        self._emit_research_plan_progress(plan)
         findings = list(self.research_runner.run(plan))
+        self._emit_research_source_progress(findings)
         research_runtime = _research_runtime_artifacts(self.research_runner, findings)
         state.record_artifact("research_runner_kind", research_runtime["runner_kind"])
         state.record_artifact("research_backend_kinds", ",".join(research_runtime["backend_kinds"]))
@@ -531,6 +533,59 @@ class IdeaToCouncilPipeline:
             event["reference_stage_name"] = contract.name
             event["reference_projects"] = list(contract.references)
             event["reference_notes"] = list(contract.notes)
+        self.progress_events.append(event)
+        if self.progress_callback is not None:
+            self.progress_callback(event)
+
+    def _emit_research_plan_progress(self, plan: Any) -> None:
+        queries = list(getattr(plan, "queries", []) or [])
+        if not queries:
+            return
+        backends = _research_backend_labels(self.research_runner)
+        for index, query in enumerate(queries, start=1):
+            self._emit_progress(
+                {
+                    "event": "research_progress",
+                    "stage": Stage.RESEARCH.value,
+                    "status": "searching",
+                    "query": query,
+                    "query_index": index,
+                    "query_count": len(queries),
+                    "backends": backends,
+                }
+            )
+
+    def _emit_research_source_progress(self, findings: list[Finding]) -> None:
+        seen: set[str] = set()
+        emitted = 0
+        for finding in findings:
+            for ref in finding.support:
+                key = f"{ref.source_title}|{ref.source_url}|{ref.quote}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                emitted += 1
+                provenance = ref.provenance or {}
+                metadata = provenance.get("metadata", {}) if isinstance(provenance, dict) else {}
+                query = metadata.get("query", "") if isinstance(metadata, dict) else ""
+                claim_prefix = "Initial research direction for: "
+                if not query and finding.claim.startswith(claim_prefix):
+                    query = finding.claim[len(claim_prefix):]
+                self._emit_progress(
+                    {
+                        "event": "research_progress",
+                        "stage": Stage.RESEARCH.value,
+                        "status": "source_found",
+                        "query": query,
+                        "source_title": ref.source_title,
+                        "source_url": ref.source_url,
+                        "source_grade": ref.source_grade,
+                    }
+                )
+                if emitted >= 8:
+                    return
+
+    def _emit_progress(self, event: dict[str, Any]) -> None:
         self.progress_events.append(event)
         if self.progress_callback is not None:
             self.progress_callback(event)
@@ -1035,6 +1090,23 @@ def _research_runtime_artifacts(runner: Any, findings: list[Finding]) -> dict[st
         "evidence_kinds": evidence_kinds or ["none"],
         "memory_store": memory_store,
     }
+
+
+def _research_backend_labels(runner: Any) -> list[str]:
+    labels: list[str] = []
+    for attr, label in (
+        ("insight_forge_search", "InsightForge"),
+        ("vault_search", "Local vault"),
+        ("academic_search", "Academic APIs"),
+        ("web_search", "Web search"),
+        ("exa_search", "Exa"),
+    ):
+        if getattr(runner, attr, None) is not None:
+            labels.append(label)
+    if labels:
+        return labels
+    runner_name = runner.__class__.__name__.replace("ResearchRunner", "").strip()
+    return [runner_name or "Research runner"]
 
 
 def _dedupe_evidence_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:

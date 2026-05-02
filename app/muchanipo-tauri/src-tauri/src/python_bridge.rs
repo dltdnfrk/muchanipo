@@ -16,6 +16,9 @@ use crate::events::{BackendAction, BackendEvent};
 pub struct PythonBridge {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     child: Arc<Mutex<Option<Child>>>,
+    child_pid: Arc<Mutex<Option<u32>>>,
+    child_started_at: Arc<Mutex<Option<Instant>>>,
+    last_event_at: Arc<Mutex<Option<Instant>>>,
     // In-memory log of every JSON-line event emitted by the active Python
     // pipeline. RunProgress (or any listener that mounts after the pipeline
     // has already emitted some events) calls `get_buffered_events` on mount
@@ -34,6 +37,12 @@ fn push_event_buffer(bridge: &PythonBridge, line: &str) {
             buf.drain(0..drop);
         }
         buf.push(line.to_string());
+    }
+}
+
+fn mark_backend_event_seen(bridge: &PythonBridge) {
+    if let Ok(mut last_event_at) = bridge.last_event_at.lock() {
+        *last_event_at = Some(Instant::now());
     }
 }
 
@@ -63,6 +72,15 @@ pub async fn start_pipeline(
     // events from a previous, unrelated pipeline.
     if let Ok(mut buf) = bridge.event_buffer.lock() {
         buf.clear();
+    }
+    if let Ok(mut last_event_at) = bridge.last_event_at.lock() {
+        *last_event_at = None;
+    }
+    if let Ok(mut started_at) = bridge.child_started_at.lock() {
+        *started_at = None;
+    }
+    if let Ok(mut pid) = bridge.child_pid.lock() {
+        *pid = None;
     }
 
     {
@@ -116,6 +134,7 @@ pub async fn start_pipeline(
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start python pipeline: {error}"))?;
+    let child_pid = child.id();
 
     let stdout = child
         .stdout
@@ -139,6 +158,14 @@ pub async fn start_pipeline(
         let mut slot = bridge.child.lock().map_err(lock_error)?;
         *slot = Some(child);
     }
+    {
+        let mut slot = bridge.child_pid.lock().map_err(lock_error)?;
+        *slot = Some(child_pid);
+    }
+    {
+        let mut slot = bridge.child_started_at.lock().map_err(lock_error)?;
+        *slot = Some(Instant::now());
+    }
 
     let stdout_app = app.clone();
     let stderr_app = app.clone();
@@ -151,6 +178,7 @@ pub async fn start_pipeline(
             match line {
                 Ok(line) if line.trim().is_empty() => {}
                 Ok(line) => {
+                    mark_backend_event_seen(&bridge_for_stdout);
                     if should_buffer_backend_line(&line) {
                         push_event_buffer(&bridge_for_stdout, &line);
                     }
@@ -219,6 +247,9 @@ pub async fn start_pipeline(
 
         if let Ok(mut stdin) = bridge_for_wait.stdin.lock() {
             *stdin = None;
+        }
+        if let Ok(mut pid) = bridge_for_wait.child_pid.lock() {
+            *pid = None;
         }
     });
 
@@ -290,6 +321,8 @@ fn is_allowed_renderer_env(key: &str) -> bool {
             | "OPENALEX_EMAIL"
             | "PLANNOTATOR_API_KEY"
             | "MUCHANIPO_VAULT_ROOT"
+            | "MUCHANIPO_COUNCIL_VISUALIZER"
+            | "MUCHANIPO_COUNCIL_VISUALIZER_MODEL"
     )
 }
 
@@ -306,14 +339,18 @@ fn is_boolean_env_value(value: &str) -> bool {
 
 fn resolve_python_bin() -> Result<String, String> {
     let candidates = python_bin_candidates();
-    select_python_bin(&candidates, python_candidate_exists, python_imports_pipeline_deps)
-        .ok_or_else(|| {
-            format!(
-                "no Python interpreter with Muchanipo dependencies found; tried {}. \
+    select_python_bin(
+        &candidates,
+        python_candidate_exists,
+        python_imports_pipeline_deps,
+    )
+    .ok_or_else(|| {
+        format!(
+            "no Python interpreter with Muchanipo dependencies found; tried {}. \
 Install project deps into one of those interpreters or set MUCHANIPO_PYTHON.",
-                candidates.join(", ")
-            )
-        })
+            candidates.join(", ")
+        )
+    })
 }
 
 fn python_bin_candidates() -> Vec<String> {
@@ -374,6 +411,96 @@ fn python_imports_pipeline_deps(bin: &str) -> bool {
 pub async fn get_buffered_events(bridge: State<'_, PythonBridge>) -> Result<Vec<String>, String> {
     let buf = bridge.event_buffer.lock().map_err(lock_error)?;
     Ok(buf.clone())
+}
+
+#[derive(serde::Serialize)]
+pub struct PipelineRuntimeStatus {
+    pub running: bool,
+    pub stdin_open: bool,
+    pub child_tracked: bool,
+    pub buffered_event_count: usize,
+    pub child_pid: Option<u32>,
+    pub runtime_age_ms: Option<u128>,
+    pub last_event_elapsed_ms: Option<u128>,
+    pub app_binary_path: Option<String>,
+    pub workspace_root: String,
+}
+
+#[tauri::command]
+pub async fn pipeline_runtime_status(
+    bridge: State<'_, PythonBridge>,
+) -> Result<PipelineRuntimeStatus, String> {
+    let stdin_open = bridge.stdin.lock().map_err(lock_error)?.is_some();
+    let mut child_tracked = false;
+    let mut child_running = false;
+    let mut child_exited = false;
+
+    match bridge.child.try_lock() {
+        Ok(mut child_slot) => {
+            if let Some(child) = child_slot.as_mut() {
+                child_tracked = true;
+                match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        child_exited = true;
+                        *child_slot = None;
+                    }
+                    Ok(None) => {
+                        child_running = true;
+                    }
+                    Err(_error) => {
+                        child_tracked = true;
+                    }
+                }
+            }
+        }
+        Err(_error) => {
+            // The wait thread holds this lock while the child is active.
+            // Treat an open stdin pipe as runtime evidence without blocking
+            // the UI thread behind a long-running pipeline.
+            child_tracked = true;
+            child_running = stdin_open;
+        }
+    }
+
+    if child_exited {
+        if let Ok(mut stdin_slot) = bridge.stdin.lock() {
+            *stdin_slot = None;
+        }
+        if let Ok(mut pid_slot) = bridge.child_pid.lock() {
+            *pid_slot = None;
+        }
+        if let Ok(mut started_at_slot) = bridge.child_started_at.lock() {
+            *started_at_slot = None;
+        }
+    }
+
+    let buffered_event_count = bridge.event_buffer.lock().map_err(lock_error)?.len();
+    let child_pid = *bridge.child_pid.lock().map_err(lock_error)?;
+    let runtime_age_ms = bridge
+        .child_started_at
+        .lock()
+        .map_err(lock_error)?
+        .as_ref()
+        .map(|started_at| started_at.elapsed().as_millis());
+    let last_event_elapsed_ms = bridge
+        .last_event_at
+        .lock()
+        .map_err(lock_error)?
+        .as_ref()
+        .map(|last_event_at| last_event_at.elapsed().as_millis());
+    Ok(PipelineRuntimeStatus {
+        running: child_running || (stdin_open && !child_exited),
+        stdin_open: stdin_open && !child_exited,
+        child_tracked,
+        buffered_event_count,
+        child_pid,
+        runtime_age_ms,
+        last_event_elapsed_ms,
+        app_binary_path: std::env::current_exe()
+            .ok()
+            .map(|path| path.display().to_string()),
+        workspace_root: workspace_root().display().to_string(),
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -462,7 +589,10 @@ pub async fn check_cli_status() -> Result<Vec<CliStatus>, String> {
 #[tauri::command]
 pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
     let name = name.trim().to_lowercase();
-    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi" | "opencode") {
+    if !matches!(
+        name.as_str(),
+        "claude" | "codex" | "gemini" | "kimi" | "opencode"
+    ) {
         return Err(format!("unsupported CLI: {name}"));
     }
     let Some(bin) = which_binary(&name) else {
@@ -549,7 +679,10 @@ pub async fn check_cli_smoke(name: String) -> Result<CliSmokeResult, String> {
 #[tauri::command]
 pub async fn open_cli_auth(name: String) -> Result<CliAuthLaunch, String> {
     let name = name.trim().to_lowercase();
-    if !matches!(name.as_str(), "claude" | "codex" | "gemini" | "kimi" | "opencode") {
+    if !matches!(
+        name.as_str(),
+        "claude" | "codex" | "gemini" | "kimi" | "opencode"
+    ) {
         return Err(format!("unsupported CLI: {name}"));
     }
     if which_binary(&name).is_none() {
@@ -743,10 +876,12 @@ fn run_command_with_timeout(
 }
 
 fn should_buffer_backend_line(line: &str) -> bool {
-    // Token deltas are useful live but can evict stage/final-report events
-    // from the bounded replay buffer during long council runs.
+    // High-frequency live-only events can evict stage/final-report events
+    // from the bounded replay buffer during long runs.
     !line.contains("\"event\":\"council_persona_token\"")
         && !line.contains("\"event\": \"council_persona_token\"")
+        && !line.contains("\"event\":\"pipeline_heartbeat\"")
+        && !line.contains("\"event\": \"pipeline_heartbeat\"")
 }
 
 fn cli_diagnosis(name: &str) -> Option<&'static str> {
@@ -945,10 +1080,12 @@ mod tests {
             ("OPENCODE_GO_API_KEY", "oc-go-key"),
             ("OPENALEX_EMAIL", "dev@example.com"),
             ("PLANNOTATOR_API_KEY", "p-key"),
+            ("MUCHANIPO_COUNCIL_VISUALIZER", "ollama"),
+            ("MUCHANIPO_COUNCIL_VISUALIZER_MODEL", "qwen3.6-a3b:latest"),
         ]))
         .expect("expected allowlisted envs");
 
-        assert_eq!(sanitized.len(), 12);
+        assert_eq!(sanitized.len(), 14);
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_USE_CLI"));
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_OFFLINE"));
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_ONLINE"));
@@ -997,7 +1134,10 @@ mod tests {
     fn normalize_pipeline_depth_defaults_to_deep_and_accepts_valid_depths() {
         assert_eq!(normalize_pipeline_depth(None).unwrap(), "deep");
         assert_eq!(normalize_pipeline_depth(Some("")).unwrap(), "deep");
-        assert_eq!(normalize_pipeline_depth(Some("shallow")).unwrap(), "shallow");
+        assert_eq!(
+            normalize_pipeline_depth(Some("shallow")).unwrap(),
+            "shallow"
+        );
         assert_eq!(normalize_pipeline_depth(Some("deep")).unwrap(), "deep");
         assert_eq!(normalize_pipeline_depth(Some("max")).unwrap(), "max");
     }
@@ -1112,6 +1252,9 @@ mod tests {
     fn replay_buffer_skips_council_token_deltas() {
         assert!(!should_buffer_backend_line(
             r#"{"event":"council_persona_token","delta":"x"}"#
+        ));
+        assert!(!should_buffer_backend_line(
+            r#"{"event":"pipeline_heartbeat","stage":"research"}"#
         ));
         assert!(should_buffer_backend_line(
             r#"{"event":"final_report","markdown":"done"}"#

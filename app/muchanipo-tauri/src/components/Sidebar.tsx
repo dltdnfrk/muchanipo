@@ -156,6 +156,8 @@ export default function Sidebar() {
                   const targetPath =
                     r.status === "done" ? `/report/${r.runId}` : `/run/${r.runId}`;
                   const isActive = activeRunId === r.runId;
+                  const statusLabel =
+                    r.status === "failed" ? "실패" : r.status === "running" ? "진행" : "";
                   return (
                     <li key={r.runId}>
                       <Link
@@ -168,6 +170,17 @@ export default function Sidebar() {
                         title={r.topic}
                       >
                         <span className="truncate flex-1">{r.topic || "(주제 없음)"}</span>
+                        {statusLabel && (
+                          <span
+                            className={`ml-2 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
+                              r.status === "failed"
+                                ? "border-red-400/20 text-red-300"
+                                : "border-amber-400/20 text-amber-200"
+                            }`}
+                          >
+                            {statusLabel}
+                          </span>
+                        )}
                         <button
                           onClick={(e) => handleDelete(e, r.runId)}
                           className="ml-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-tertiary transition hover:bg-white/10 hover:text-white group-hover:flex"

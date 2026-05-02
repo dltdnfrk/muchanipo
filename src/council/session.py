@@ -1,6 +1,7 @@
 """Council session for report-derived debate agents."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -300,17 +301,26 @@ class Session:
             }
         )
         if response_text:
+            delta, visualization = _visualized_preview(
+                response_text=response_text,
+                round_no=round_no,
+                layer=layer,
+                council_stage=stage,
+                persona_id=persona_id,
+            )
+            token_event = {
+                "event": "council_persona_token",
+                "round": round_no,
+                "layer": layer.layer_id,
+                "stage": "council_progress",
+                "pipeline_stage": "council",
+                "council_stage": stage,
+                "persona": persona_id,
+                "delta": delta,
+            }
+            token_event.update(visualization)
             self._emit_progress(
-                {
-                    "event": "council_persona_token",
-                    "round": round_no,
-                    "layer": layer.layer_id,
-                    "stage": "council_progress",
-                    "pipeline_stage": "council",
-                    "council_stage": stage,
-                    "persona": persona_id,
-                    "delta": _preview_text(response_text),
-                }
+                token_event
             )
 
     def _emit_progress(self, event: dict[str, Any]) -> None:
@@ -601,6 +611,100 @@ def _preview_text(text: str, limit: int = 1200) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[: limit - 1].rstrip() + "…"
+
+
+def _visualized_preview(
+    *,
+    response_text: str,
+    round_no: int,
+    layer: RoundLayer,
+    council_stage: str,
+    persona_id: str,
+) -> tuple[str, dict[str, str]]:
+    fallback = _preview_text(response_text)
+    mode = os.environ.get("MUCHANIPO_COUNCIL_VISUALIZER", "").strip().lower()
+    if mode not in {"ollama", "qwen", "qwen3.6", "local"}:
+        return fallback, {"visualization_source": "raw"}
+
+    model = os.environ.get("MUCHANIPO_COUNCIL_VISUALIZER_MODEL", "qwen3.6-a3b:latest").strip()
+    if not model:
+        model = "qwen3.6-a3b:latest"
+    timeout = _env_float("MUCHANIPO_COUNCIL_VISUALIZER_TIMEOUT_SEC", 20.0)
+    prompt = _visualizer_prompt(
+        response_text=response_text,
+        round_no=round_no,
+        layer=layer,
+        council_stage=council_stage,
+        persona_id=persona_id,
+    )
+    try:
+        from src.execution.providers.ollama import OllamaProvider
+
+        result = OllamaProvider(model=model, timeout=timeout).call(
+            stage="council_visualization",
+            prompt=prompt,
+            options={"temperature": 0.2, "num_predict": 256},
+        )
+        visualized = _strip_qwen_thinking(str(result.text or ""))
+        if not visualized:
+            raise ValueError("empty Ollama visualization")
+        return (
+            _preview_text(visualized, limit=420),
+            {
+                "visualization_source": "ollama",
+                "visualizer_provider": str(result.provider),
+                "visualizer_model": str(result.model),
+            },
+        )
+    except Exception as exc:
+        return (
+            fallback,
+            {
+                "visualization_source": "raw_fallback",
+                "visualizer_provider": "ollama",
+                "visualizer_model": model,
+                "visualizer_error": _preview_text(str(exc), limit=180),
+            },
+        )
+
+
+def _visualizer_prompt(
+    *,
+    response_text: str,
+    round_no: int,
+    layer: RoundLayer,
+    council_stage: str,
+    persona_id: str,
+) -> str:
+    clipped = _preview_text(response_text, limit=2400)
+    return (
+        "You are a local-only UI renderer for Muchanipo council deliberation.\n"
+        "Rewrite the source response as one concise Korean speech bubble.\n"
+        "Do not add facts, numbers, sources, or conclusions that are not in the source.\n"
+        "Preserve disagreement, risk, or confidence when present.\n"
+        "Return only the speech bubble text, max two short sentences.\n\n"
+        f"Round: {round_no}\n"
+        f"Layer: {layer.layer_id} / {layer.chapter_title}\n"
+        f"Council stage: {council_stage}\n"
+        f"Persona: {persona_id}\n\n"
+        f"Source response:\n{clipped}"
+    )
+
+
+def _strip_qwen_thinking(text: str) -> str:
+    stripped = text.strip()
+    if "</think>" in stripped:
+        stripped = stripped.split("</think>", 1)[1].strip()
+    if stripped.startswith("<think>") and "</think>" not in stripped:
+        return ""
+    return stripped
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:

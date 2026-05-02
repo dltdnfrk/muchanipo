@@ -154,7 +154,8 @@ def run_pipeline(
         return PROGRESS_STAGE_ORDER[idx + 1]
 
     def handle_progress(event: dict[str, Any]) -> None:
-        if str(event.get("event") or "").startswith("council_"):
+        name = str(event.get("event") or "")
+        if name:
             if progress_callback is not None:
                 progress_callback(event)
             return
@@ -171,7 +172,11 @@ def run_pipeline(
             if next_stage is not None:
                 emit_stage_started(next_stage, {"run_id": event.get("run_id")})
 
-    gateway = default_gateway(force_offline=offline)
+    gateway = default_gateway(force_offline=offline, require_live_default=live_required)
+    if live_required and hasattr(gateway, "assert_live_provider_candidates"):
+        gateway.assert_live_provider_candidates(
+            ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
+        )
     pipeline = IdeaToCouncilPipeline(
         hitl_adapter=hitl_adapter
         or HITLAdapter(

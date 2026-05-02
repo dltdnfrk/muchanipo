@@ -38,6 +38,45 @@ export interface BackendEvent {
   total?: number;
   // hitl_gate
   gate?: string;
+  // deep_interview_progress
+  mode?: string;
+  research_type?: string;
+  rationale?: string;
+  coverage_score?: number;
+  ambiguity_score?: number;
+  missing_dimensions?: string[];
+  focus_dimension?: string;
+  focus_label?: string;
+  focus_question?: string;
+  // research_progress
+  status?: string;
+  run_id?: string;
+  started_at?: string;
+  python_pid?: number;
+  python_executable?: string;
+  cwd?: string;
+  elapsed_sec?: number;
+  detail?: string;
+  query?: string;
+  query_index?: number;
+  query_count?: number;
+  backends?: string[];
+  source_title?: string | null;
+  source_url?: string | null;
+  source_grade?: string | null;
+  // council progress
+  active_persona_count?: number;
+  active_persona_ids?: string[];
+  council_stage?: string;
+  provider?: string;
+  prompt_chars?: number;
+  response_chars?: number;
+  stopped?: boolean;
+  stop_reason?: string;
+  visualization_source?: string;
+  visualizer_provider?: string;
+  visualizer_model?: string;
+  visualizer_error?: string;
   // catch-all
   [key: string]: unknown;
 }
@@ -88,6 +127,18 @@ export interface FinalReport {
   report_path: string;
   chapter_count: number;
   markdown: string;
+}
+
+export interface PipelineRuntimeStatus {
+  running: boolean;
+  stdin_open?: boolean;
+  child_tracked?: boolean;
+  buffered_event_count?: number;
+  child_pid?: number | null;
+  runtime_age_ms?: number | null;
+  last_event_elapsed_ms?: number | null;
+  app_binary_path?: string | null;
+  workspace_root?: string;
 }
 
 /**
@@ -181,6 +232,10 @@ export async function getBufferedEvents(): Promise<BackendEvent[]> {
     }
   }
   return out;
+}
+
+export async function getPipelineRuntimeStatus(): Promise<PipelineRuntimeStatus> {
+  return invoke<PipelineRuntimeStatus>("pipeline_runtime_status");
 }
 
 // Legacy alias kept for existing UI components.

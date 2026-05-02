@@ -29,10 +29,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, IO, List, Sequence
+from uuid import uuid4
 
 from .events import Action, emit, parse_action
 from src.research.depth import VALID_DEPTHS
@@ -495,10 +500,7 @@ class JSONLineHITLAdapter:
                     "description": "이 실행은 중단하고 보완이 필요하다고 표시합니다.",
                 },
             ],
-            data={
-                "gate": gate_name,
-                "payload": _jsonable_payload(payload),
-            },
+            data=_hitl_gate_data(gate_name, payload),
         )
         while True:
             action = _read_action(self.stdin)
@@ -555,6 +557,21 @@ def _jsonable_payload(payload: Any) -> Any:
         return json.loads(json.dumps(payload, ensure_ascii=False, default=_json_default))
     except TypeError:
         return str(payload)
+
+
+def _hitl_gate_data(gate_name: str, payload: dict) -> dict[str, Any]:
+    if gate_name == "report":
+        report_md = str(payload.get("report_md", ""))
+        return {
+            "gate": gate_name,
+            "payload": {
+                "report_md_chars": len(report_md),
+            },
+        }
+    return {
+        "gate": gate_name,
+        "payload": _jsonable_payload(payload),
+    }
 
 
 def _json_default(value: Any) -> Any:
@@ -647,6 +664,19 @@ def _collect_serve_interview_answers(
     question_contract = planning_question_contract()
     total_questions = 6
     emit(
+        "deep_interview_progress",
+        stream=stdout,
+        stage="intake",
+        phase="idea_dump",
+        mode=getattr(session.plan, "mode", "deep"),
+        research_type=getattr(session.plan, "research_type", "exploratory"),
+        rationale=getattr(session.plan, "rationale", ""),
+        coverage_score=round(float(session.coverage_score), 3),
+        ambiguity_score=round(1.0 - float(session.coverage_score), 3),
+        missing_dimensions=list(session.missing_dimensions),
+        planning_schema="prd_feature_user_flow",
+    )
+    emit(
         "phase_change",
         phase="INTERVIEW",
         stream=stdout,
@@ -670,6 +700,15 @@ def _collect_serve_interview_answers(
         options = _normalize_show_prd_options(framed.get("options"))
         header = _show_prd_header(qid)
         preview = _show_prd_preview(qid, topic, session.answers)
+        clarity = _interview_clarity_payload(
+            session,
+            qid=qid,
+            label=item.label,
+            round_index=idx,
+            total_questions=total_questions,
+            phase="question",
+        )
+        emit("deep_interview_progress", stream=stdout, stage="interview", **clarity)
         emit(
             "interview_question",
             stream=stdout,
@@ -695,6 +734,7 @@ def _collect_serve_interview_answers(
                 "planning_schema": "prd_feature_user_flow",
                 "index": idx,
                 "total": total_questions,
+                "deep_interview": clarity,
             },
         )
 
@@ -716,10 +756,58 @@ def _collect_serve_interview_answers(
         if answer and answer.lower() not in {"skip", "pass", "건너뛰기"}:
             session.answer(_serve_interview_answer_key(item.label), answer)
             qa_pairs.append({"id": qid, "answer": answer})
+            emit(
+                "deep_interview_progress",
+                stream=stdout,
+                stage="interview",
+                **_interview_clarity_payload(
+                    session,
+                    qid=qid,
+                    label=item.label,
+                    round_index=idx,
+                    total_questions=total_questions,
+                    phase="answer_recorded",
+                ),
+            )
 
     if not qa_pairs:
         return ServeInterviewResult(status="ok", topic=topic)
     return ServeInterviewResult(status="ok", topic=merge_answers_to_text(topic, qa_pairs))
+
+
+def _interview_clarity_payload(
+    session: Any,
+    *,
+    qid: str,
+    label: str,
+    round_index: int,
+    total_questions: int,
+    phase: str,
+) -> dict[str, Any]:
+    coverage = float(getattr(session, "coverage_score", 0.0) or 0.0)
+    plan = getattr(session, "plan", None)
+    item = None
+    rubric = getattr(session, "rubric", None)
+    if rubric is not None:
+        try:
+            item = rubric.get(qid)
+        except Exception:
+            item = None
+    return {
+        "phase": phase,
+        "mode": getattr(plan, "mode", "deep"),
+        "research_type": getattr(plan, "research_type", "exploratory"),
+        "rationale": getattr(plan, "rationale", ""),
+        "round": round_index,
+        "total": total_questions,
+        "focus_dimension": qid,
+        "focus_label": label,
+        "focus_question": str(getattr(item, "research_question", "") or ""),
+        "coverage_score": round(coverage, 3),
+        "ambiguity_score": round(1.0 - coverage, 3),
+        "missing_dimensions": list(getattr(session, "missing_dimensions", []) or []),
+        "planning_schema": "prd_feature_user_flow",
+    }
 
 
 def _normalize_show_prd_options(raw_options: Any) -> list[dict[str, str]]:
@@ -811,6 +899,64 @@ def _interview_answer_from_action(action: Action) -> str:
     return ""
 
 
+class _PipelineHeartbeat:
+    """Emit low-cardinality liveness evidence while a JSONL pipeline is active."""
+
+    def __init__(self, *, run_id: str, stream: IO[str], interval_sec: float) -> None:
+        self.run_id = run_id
+        self.stream = stream
+        self.interval_sec = max(0.05, interval_sec)
+        self.started_monotonic = time.monotonic()
+        self.stage = "startup"
+        self.detail = ""
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="muchanipo-heartbeat", daemon=True)
+        self._thread.start()
+
+    def update(self, *, stage: str | None = None, detail: str | None = None) -> None:
+        with self._lock:
+            if stage:
+                self.stage = stage
+            if detail is not None:
+                self.detail = detail
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_sec):
+            with self._lock:
+                stage = self.stage
+                detail = self.detail
+            emit(
+                "pipeline_heartbeat",
+                stream=self.stream,
+                run_id=self.run_id,
+                stage=stage,
+                detail=detail,
+                elapsed_sec=round(time.monotonic() - self.started_monotonic, 3),
+                python_pid=os.getpid(),
+                python_executable=sys.executable,
+            )
+
+
+def _heartbeat_interval_sec() -> float:
+    raw = os.environ.get("MUCHANIPO_HEARTBEAT_INTERVAL_SEC", "10")
+    try:
+        return float(raw)
+    except ValueError:
+        return 10.0
+
+
 def serve_full(
     topic: str,
     *,
@@ -828,6 +974,26 @@ def serve_full(
 
     offline = _detect_offline_mode()
     profile = depth_profile(depth)
+    run_id = f"{int(time.time())}-{os.getpid()}-{uuid4().hex[:8]}"
+    started_at = datetime.now(timezone.utc).isoformat()
+    heartbeat = _PipelineHeartbeat(
+        run_id=run_id,
+        stream=stdout,
+        interval_sec=_heartbeat_interval_sec(),
+    )
+    emit(
+        "run_started",
+        stream=stdout,
+        run_id=run_id,
+        pipeline="full",
+        topic=topic,
+        offline=offline,
+        depth=depth,
+        started_at=started_at,
+        python_pid=os.getpid(),
+        python_executable=sys.executable,
+        cwd=str(Path.cwd()),
+    )
     emit(
         "phase_change",
         phase="STARTUP",
@@ -841,39 +1007,53 @@ def serve_full(
             "active_council_persona_count": profile.active_persona_count,
         },
     )
-
-    if wait_for_input:
-        interview_result = _collect_serve_interview_answers(
-            topic,
-            stdout=stdout,
-            stdin=stdin or sys.stdin,
-        )
-        if interview_result.status == "aborted":
-            emit("done", stream=stdout, pipeline="full", aborted=True)
-            return 0
-        if interview_result.status == "error":
-            emit("error", stream=stdout, message=interview_result.message or "interview failed")
-            return 1
-        topic = interview_result.topic or topic
-
-    streamed_council_events = 0
-
-    def emit_progress(event: dict[str, Any]) -> None:
-        nonlocal streamed_council_events
-        name = str(event.get("event") or "")
-        fields = {key: value for key, value in event.items() if key != "event"}
-        if name == "stage_started":
-            emit("phase_change", phase=str(fields.get("stage", "")).upper(), stream=stdout, data={"stage": fields.get("stage")})
-        if name.startswith("council_"):
-            streamed_council_events += 1
-        emit(name, stream=stdout, **fields)
+    heartbeat.start()
 
     try:
+        if wait_for_input:
+            heartbeat.update(stage="interview", detail="waiting_for_interview_answers")
+            interview_result = _collect_serve_interview_answers(
+                topic,
+                stdout=stdout,
+                stdin=stdin or sys.stdin,
+            )
+            if interview_result.status == "aborted":
+                heartbeat.stop()
+                emit("done", stream=stdout, pipeline="full", aborted=True)
+                return 0
+            if interview_result.status == "error":
+                heartbeat.stop()
+                emit("error", stream=stdout, message=interview_result.message or "interview failed")
+                return 1
+            topic = interview_result.topic or topic
+
+        streamed_council_events = 0
+
+        def emit_progress(event: dict[str, Any]) -> None:
+            nonlocal streamed_council_events
+            name = str(event.get("event") or "")
+            fields = {key: value for key, value in event.items() if key != "event"}
+            if name == "stage_started":
+                stage_name = str(fields.get("stage", ""))
+                heartbeat.update(stage=stage_name, detail="stage_started")
+                emit(
+                    "phase_change",
+                    phase=stage_name.upper(),
+                    stream=stdout,
+                    data={"stage": fields.get("stage")},
+                )
+            elif name == "stage_completed":
+                heartbeat.update(stage=str(fields.get("stage", "")), detail="stage_completed")
+            if name.startswith("council_"):
+                streamed_council_events += 1
+            emit(name, stream=stdout, **fields)
+
         hitl_adapter = (
             JSONLineHITLAdapter(stdout=stdout, stdin=stdin or sys.stdin)
             if wait_for_input
             else None
         )
+        heartbeat.update(stage="pipeline", detail="run_pipeline")
         pipeline_result = run_pipeline(
             topic,
             progress_callback=emit_progress,
@@ -886,7 +1066,9 @@ def serve_full(
         from src.runtime.live_mode import LiveModeViolation
 
         if not isinstance(exc, LiveModeViolation):
+            heartbeat.stop()
             raise
+        heartbeat.stop()
         emit(
             "error",
             stream=stdout,
@@ -958,6 +1140,7 @@ def serve_full(
             source_layers=list(ch.source_layers),
         )
 
+    heartbeat.update(stage="report", detail="write_report")
     final_md = str(pipeline_result.get("report_md") or "\n".join(md_parts))
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_md, encoding="utf-8")
@@ -965,6 +1148,8 @@ def serve_full(
     vault_path_value = pipeline_result.get("vault_path")
     vault_path_str = str(vault_path_value) if vault_path_value else None
 
+    heartbeat.update(stage="finalize", detail="final_report")
+    heartbeat.stop()
     emit(
         "final_report",
         stream=stdout,

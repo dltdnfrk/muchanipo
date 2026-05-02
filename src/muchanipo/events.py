@@ -16,8 +16,13 @@ from typing import Any, IO
 KNOWN_EVENTS = frozenset(
     {
         "phase_change",
+        "run_started",
+        "pipeline_heartbeat",
+        "deep_interview_progress",
         "interview_question",
+        "research_progress",
         "council_round_start",
+        "council_turn",
         "council_persona_token",
         "council_round_done",
         "report_chunk",

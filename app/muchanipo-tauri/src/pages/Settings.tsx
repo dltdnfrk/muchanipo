@@ -41,6 +41,23 @@ const CLI_STAGE_MAP: Record<string, string> = {
   opencode: "OpenCode Go — Utility / Review / Fallback",
 };
 
+function readSessionCredential(key: string): string {
+  try {
+    return sessionStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSessionCredential(key: string, value: string): void {
+  try {
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 const DEPTH_OPTIONS: Array<{
   key: ResearchDepth;
   label: string;
@@ -64,9 +81,14 @@ const DEPTH_OPTIONS: Array<{
 ];
 
 type BackendMode = "offline" | "cli" | "api";
+type CouncilVisualizer = "off" | "ollama";
 
 function isBackendMode(value: string | null): value is BackendMode {
   return value === "offline" || value === "cli" || value === "api";
+}
+
+function isCouncilVisualizer(value: string | null): value is CouncilVisualizer {
+  return value === "off" || value === "ollama";
 }
 
 export default function Settings() {
@@ -74,6 +96,8 @@ export default function Settings() {
   const [pipelineMode, setPipelineMode] = useState<"full" | "stub">("full");
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>("deep");
   const [backendMode, setBackendMode] = useState<BackendMode>("cli");
+  const [councilVisualizer, setCouncilVisualizer] = useState<CouncilVisualizer>("off");
+  const [councilVisualizerModel, setCouncilVisualizerModel] = useState("qwen3.6-a3b:latest");
   const [saved, setSaved] = useState(false);
   const [cliStatuses, setCliStatuses] = useState<CliStatus[]>([]);
   const [cliLoading, setCliLoading] = useState(false);
@@ -85,7 +109,7 @@ export default function Settings() {
 
   useEffect(() => {
     const loaded: Record<string, string> = {};
-    for (const cfg of KEY_CONFIGS) loaded[cfg.key] = localStorage.getItem(cfg.key) || "";
+    for (const cfg of KEY_CONFIGS) loaded[cfg.key] = readSessionCredential(cfg.key);
     setValues(loaded);
     setPipelineMode((localStorage.getItem("pipeline_mode") as "full" | "stub") || "full");
     const savedDepth = localStorage.getItem("research_depth");
@@ -96,6 +120,13 @@ export default function Settings() {
     );
     const savedBackendMode = localStorage.getItem("backend_mode");
     setBackendMode(isBackendMode(savedBackendMode) ? savedBackendMode : "cli");
+    const savedCouncilVisualizer = localStorage.getItem("council_visualizer");
+    setCouncilVisualizer(
+      isCouncilVisualizer(savedCouncilVisualizer) ? savedCouncilVisualizer : "off",
+    );
+    setCouncilVisualizerModel(
+      localStorage.getItem("council_visualizer_model") || "qwen3.6-a3b:latest",
+    );
   }, []);
 
   async function refreshCliStatus() {
@@ -161,10 +192,12 @@ export default function Settings() {
   }, [backendMode]);
 
   const save = () => {
-    for (const cfg of KEY_CONFIGS) localStorage.setItem(cfg.key, values[cfg.key] || "");
+    for (const cfg of KEY_CONFIGS) writeSessionCredential(cfg.key, values[cfg.key] || "");
     localStorage.setItem("pipeline_mode", pipelineMode);
     localStorage.setItem("research_depth", researchDepth);
     localStorage.setItem("backend_mode", backendMode);
+    localStorage.setItem("council_visualizer", councilVisualizer);
+    localStorage.setItem("council_visualizer_model", councilVisualizerModel.trim() || "qwen3.6-a3b:latest");
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -208,7 +241,7 @@ export default function Settings() {
             >
               <div className="font-medium">API Keys</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
-                직접 키를 발급해 사용 (서버 배포용)
+                직접 키를 발급해 사용 (현재 세션에만 보관)
               </div>
             </button>
             <button
@@ -423,6 +456,60 @@ export default function Settings() {
               </div>
             </button>
           </div>
+        </section>
+
+        {/* Council visualization */}
+        <section className="mb-8">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+            Council visualization
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setCouncilVisualizer("off")}
+              className={`rounded-lg border px-4 py-3 text-left text-sm transition ${
+                councilVisualizer === "off"
+                  ? "border-white/30 bg-white/10 text-white"
+                  : "border-white/10 bg-white/[0.02] text-secondary hover:border-white/20 hover:text-white"
+              }`}
+            >
+              <div className="font-medium">원문 스트림</div>
+              <div className="mt-0.5 text-[11px] text-tertiary">
+                추가 모델 호출 없이 심의 응답 프리뷰 표시
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCouncilVisualizer("ollama")}
+              className={`rounded-lg border px-4 py-3 text-left text-sm transition ${
+                councilVisualizer === "ollama"
+                  ? "border-white/30 bg-white/10 text-white"
+                  : "border-white/10 bg-white/[0.02] text-secondary hover:border-white/20 hover:text-white"
+              }`}
+            >
+              <div className="font-medium">Ollama Qwen</div>
+              <div className="mt-0.5 text-[11px] text-tertiary">
+                로컬 모델이 긴 응답을 짧은 말풍선으로 압축
+              </div>
+            </button>
+          </div>
+          {councilVisualizer === "ollama" && (
+            <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
+              <label htmlFor="council_visualizer_model" className="mb-1 block text-xs text-secondary">
+                Ollama model
+              </label>
+              <input
+                id="council_visualizer_model"
+                value={councilVisualizerModel}
+                onChange={(e) => setCouncilVisualizerModel(e.target.value)}
+                placeholder="qwen3.6-a3b:latest"
+                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 font-mono text-sm text-white placeholder-tertiary outline-none transition focus:border-white/30 focus:bg-black/30"
+              />
+              <p className="mt-1 text-[11px] text-tertiary">
+                Ollama가 응답하지 않으면 자동으로 원문 프리뷰로 돌아갑니다.
+              </p>
+            </div>
+          )}
         </section>
 
         {/* Research depth */}

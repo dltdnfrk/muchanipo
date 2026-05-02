@@ -117,7 +117,7 @@ def test_gateway_live_mode_rejects_mock_provider_result():
         fallback_chain={"research": ["mock"]},
     )
 
-    with pytest.raises(LiveModeViolation, match="mock model result"):
+    with pytest.raises(LiveModeViolation, match="no live provider candidates"):
         gw.call("research", "ping", require_live=True)
 
 
@@ -141,7 +141,7 @@ def test_gateway_default_live_mode_rejects_mock_provider_result_without_env():
         require_live_default=True,
     )
 
-    with pytest.raises(LiveModeViolation, match="mock model result"):
+    with pytest.raises(LiveModeViolation, match="no live provider candidates"):
         gw.call("research", "ping")
 
 
@@ -154,7 +154,7 @@ def test_gateway_real_research_env_rejects_mock_provider_result(monkeypatch):
         fallback_chain={"research": ["mock"]},
     )
 
-    with pytest.raises(LiveModeViolation, match="mock model result"):
+    with pytest.raises(LiveModeViolation, match="no live provider candidates"):
         gw.call("research", "ping")
 
 
@@ -169,6 +169,30 @@ def test_gateway_live_mode_allows_non_mock_result():
 
     assert result.provider == "gemini"
     assert result.text == "source-backed answer"
+
+
+def test_gateway_live_mode_skips_mock_and_offline_candidates():
+    class _OfflineProvider:
+        name = "anthropic"
+        offline = True
+
+        def call(self, stage: str, prompt: str, **kwargs):
+            raise AssertionError("offline provider must not be called in live mode")
+
+    gw = GatewayV2(
+        providers={
+            "mock": MockProvider(),
+            "anthropic": _OfflineProvider(),
+            "gemini": _SuccessProvider(),
+        },
+        stage_routes={"research": "mock"},
+        fallback_chain={"research": ["mock", "anthropic", "gemini"]},
+    )
+
+    result = gw.call("research", "ping", require_live=True)
+
+    assert result.provider == "gemini"
+    assert gw.assert_live_provider_candidates(("research",)) == {"research": ["gemini"]}
 
 
 def test_gateway_live_mode_rejects_empty_or_short_output():
@@ -336,7 +360,7 @@ def test_pipeline_constructor_require_live_propagates_to_gateway(tmp_path: Path,
         require_live=True,
     )
 
-    with pytest.raises(LiveModeViolation, match="mock model result"):
+    with pytest.raises(LiveModeViolation, match="no live provider candidates"):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
