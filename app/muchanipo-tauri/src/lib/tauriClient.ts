@@ -113,6 +113,19 @@ export type BackendAction =
 export type PipelineMode = "stub" | "full";
 export type ResearchDepth = "shallow" | "deep" | "max";
 
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") return false;
+  const tauriWindow = window as Window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
+}
+
+function tauriOnlyError(action: string): Error {
+  return new Error(`${action}은 Tauri 데스크톱 앱에서만 사용할 수 있습니다.`);
+}
+
 export interface SCR {
   situation: string;
   complication: string;
@@ -158,6 +171,7 @@ export async function submitIdea(
   depth: ResearchDepth = "deep",
   envs?: Record<string, string>,
 ): Promise<void> {
+  if (!isTauriRuntime()) throw tauriOnlyError("리서치 실행");
   return invoke("start_pipeline", { topic, pipeline, depth, envs });
 }
 
@@ -168,6 +182,10 @@ export async function submitIdea(
 export async function onBackendEvent(
   handler: (e: BackendEvent) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    void handler;
+    return () => {};
+  }
   return listen<BackendEvent>("backend_event", ({ payload }) => {
     handler(payload);
   });
@@ -178,6 +196,7 @@ export async function onBackendEvent(
  * approval, or abort). Mirrors the JSON-line action protocol.
  */
 export async function sendAction(action: BackendAction): Promise<void> {
+  if (!isTauriRuntime()) throw tauriOnlyError("파이프라인 응답 전송");
   return invoke("send_action", { action });
 }
 
@@ -209,16 +228,36 @@ export interface CliAuthLaunch {
 
 /** Probe local CLIs (claude / codex / gemini / kimi / opencode) for availability. */
 export async function checkCliStatus(): Promise<CliStatus[]> {
+  if (!isTauriRuntime()) {
+    return ["claude", "codex", "gemini", "kimi", "opencode"].map((name) => ({
+      name,
+      installed: false,
+      error: "Tauri 데스크톱 앱에서만 로컬 CLI 상태를 확인할 수 있습니다.",
+      diagnosis: "브라우저 미리보기는 UI 점검 전용입니다. 실제 pipeline 실행은 Tauri 앱에서 검증하세요.",
+      pipeline_supported: false,
+      smoke_supported: false,
+    }));
+  }
   return invoke<CliStatus[]>("check_cli_status");
 }
 
 /** Execute a tiny real CLI prompt to verify auth + native runtime health. */
 export async function checkCliSmoke(name: string): Promise<CliSmokeResult> {
+  if (!isTauriRuntime()) {
+    return {
+      name,
+      ok: false,
+      output: null,
+      error: "Tauri 데스크톱 앱에서만 실호출 테스트를 실행할 수 있습니다.",
+      timed_out: false,
+    };
+  }
   return invoke<CliSmokeResult>("check_cli_smoke", { name });
 }
 
 /** Open the provider's interactive CLI auth flow in Terminal. */
 export async function openCliAuth(name: string): Promise<CliAuthLaunch> {
+  if (!isTauriRuntime()) throw tauriOnlyError(`${name} CLI 연결`);
   return invoke<CliAuthLaunch>("open_cli_auth", { name });
 }
 
@@ -229,6 +268,7 @@ export async function openCliAuth(name: string): Promise<CliAuthLaunch> {
  * sidebar) so the stage list reflects actual pipeline state.
  */
 export async function getBufferedEvents(): Promise<BackendEvent[]> {
+  if (!isTauriRuntime()) return [];
   const lines = await invoke<string[]>("get_buffered_events");
   const out: BackendEvent[] = [];
   for (const line of lines) {
@@ -242,6 +282,17 @@ export async function getBufferedEvents(): Promise<BackendEvent[]> {
 }
 
 export async function getPipelineRuntimeStatus(): Promise<PipelineRuntimeStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      running: false,
+      stdin_open: false,
+      child_tracked: false,
+      buffered_event_count: 0,
+      child_pid: null,
+      runtime_age_ms: null,
+      last_event_elapsed_ms: null,
+    };
+  }
   return invoke<PipelineRuntimeStatus>("pipeline_runtime_status");
 }
 
