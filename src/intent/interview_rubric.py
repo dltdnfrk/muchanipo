@@ -60,8 +60,9 @@ def _default_items() -> List[RubricItem]:
         RubricItem(
             dimension_id="Q1_research_question",
             label="research_question",
-            research_question="사용자가 정확히 무엇을 알아내고 싶은가?",
+            research_question="PRD 개요: 무엇을 만들거나 검증하려는 아이디어인가?",
             probe_hints=[
+                "한 문장 제품 정의",
                 "원 토픽보다 한 단계 좁힌 질문",
                 "측정 가능한 결과 형태",
                 "목표 시점/범위",
@@ -70,26 +71,29 @@ def _default_items() -> List[RubricItem]:
         RubricItem(
             dimension_id="Q2_purpose",
             label="purpose",
-            research_question="답을 얻으면 어디에 쓰는가? (의사결정 / IR / 과제 / 내부)",
-            probe_hints=["의사결정용", "외부 보고용", "지속 모니터링용"],
+            research_question="핵심 가치: 어떤 문제를 어떻게 해결하고 무엇을 결정하는가?",
+            probe_hints=["사용자 문제", "해결 방식", "차별점", "의사결정용"],
         ),
         RubricItem(
             dimension_id="Q3_context",
             label="context",
-            research_question="도메인 맥락은 어디까지인가? (지리/산업/기술 범위)",
-            probe_hints=["국가/지역", "산업 도메인", "기술 스택", "고객군"],
+            research_question="타겟 및 시나리오: 누가 어떤 상황에서 사용하는가?",
+            probe_hints=["핵심 사용자", "사용 시나리오", "국가/지역", "산업 도메인"],
         ),
         RubricItem(
             dimension_id="Q4_known",
             label="known",
-            research_question="사용자가 이미 알고 있거나 확정한 사실은?",
-            probe_hints=["이미 시도한 접근", "보유 데이터", "결정 완료 사항"],
+            research_question="배경·제약: 이미 알고 있거나 피해야 할 것은?",
+            probe_hints=["이미 시도한 접근", "보유 데이터", "결정 완료 사항", "법무·예산·일정 제약"],
         ),
         RubricItem(
             dimension_id="Q5_deliverable",
             label="deliverable",
-            research_question="결과 산출물은 어떤 형태인가?",
+            research_question="기능명세 seed: 요구사항, 기능, 상세기능은 무엇인가?",
             probe_hints=[
+                "요구사항",
+                "기능",
+                "상세 기능",
                 "1페이지 요약",
                 "리서치 리포트",
                 "Slide deck",
@@ -99,8 +103,10 @@ def _default_items() -> List[RubricItem]:
         RubricItem(
             dimension_id="Q6_quality",
             label="quality",
-            research_question="근거 품질 기준은? (Source A-D)",
+            research_question="성공 지표와 검증 기준은? (Source A-D)",
             probe_hints=[
+                "KPI",
+                "리스크",
                 "A: peer-review/공식 통계만",
                 "B: 학술+산업 리포트",
                 "C: 블로그/뉴스 포함",

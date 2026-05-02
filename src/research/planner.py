@@ -28,11 +28,19 @@ class ResearchPlanner:
         ) or [query]
         targeting_queries = _queries_from_targeting_map(brief)
         queries = _dedupe(queries + targeting_queries, limit=max(1, max_queries))
+        evidence_targets = _dedupe(
+            ([brief.context] if brief.context else []) + _planning_evidence_targets(brief),
+            limit=8,
+        )
+        expected_deliverables = _dedupe(
+            [brief.deliverable_type] + _feature_deliverables(brief),
+            limit=6,
+        )
         return ResearchPlan(
             brief_id=brief.id,
             queries=queries,
-            evidence_targets=[brief.context] if brief.context else [],
-            expected_deliverables=[brief.deliverable_type],
+            evidence_targets=evidence_targets,
+            expected_deliverables=expected_deliverables,
             stop_conditions=[
                 "at least one A/B-grade source or explicit D-grade fallback per major claim",
                 "counter-evidence query attempted before council",
@@ -60,6 +68,54 @@ def _queries_from_targeting_map(brief: ResearchBrief) -> list[str]:
         if isinstance(values, (list, tuple)):
             out.extend(str(value) for value in values if str(value).strip())
     return out
+
+
+def _planning_evidence_targets(brief: ResearchBrief) -> list[str]:
+    prd = getattr(brief, "planning_prd", None)
+    if not isinstance(prd, dict):
+        return []
+    targets: list[str] = []
+    for scenario in prd.get("target_scenarios", []) or []:
+        if isinstance(scenario, dict):
+            value = str(scenario.get("scenario") or scenario.get("user_group") or "").strip()
+            if value and not _is_planning_placeholder(value):
+                targets.append(value)
+    for metric in prd.get("success_metrics", []) or []:
+        text = str(metric).strip()
+        if text and not _is_planning_placeholder(text):
+            targets.append(text)
+    return targets[:6]
+
+
+def _feature_deliverables(brief: ResearchBrief) -> list[str]:
+    hierarchy = getattr(brief, "feature_hierarchy", None)
+    if not isinstance(hierarchy, list):
+        return []
+    out: list[str] = []
+    for requirement in hierarchy:
+        if not isinstance(requirement, dict):
+            continue
+        name = str(requirement.get("name") or "").strip()
+        if name:
+            out.append(name)
+        for feature in requirement.get("features", []) or []:
+            if isinstance(feature, dict):
+                feature_name = str(feature.get("name") or "").strip()
+                if feature_name:
+                    out.append(feature_name)
+    return out
+
+
+def _is_planning_placeholder(value: str) -> bool:
+    lowered = " ".join(str(value).strip().casefold().split())
+    if not lowered:
+        return True
+    return (
+        lowered.startswith("pending ")
+        or " pending " in lowered
+        or "placeholder" in lowered
+        or lowered in {"unspecified", "target scenario pending"}
+    )
 
 
 def _dedupe(values: list[str], limit: int) -> list[str]:

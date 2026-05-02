@@ -15,6 +15,17 @@ def test_rubric_default_six_items():
     assert "Q6_quality" in ids
 
 
+def test_q5_probe_hints_keep_legacy_and_planning_terms():
+    r = InterviewRubric(topic="MIRIVA 가격 책정")
+    q5 = next(item for item in r.items if item.dimension_id == "Q5_deliverable")
+    hints = " ".join(q5.probe_hints)
+    assert "요구사항" in hints
+    assert "상세 기능" in hints
+    assert "1페이지 요약" in hints
+    assert "Slide deck" in hints
+    assert "Obsidian vault" in hints
+
+
 def test_coverage_rate_zero_initial():
     r = InterviewRubric(topic="x")
     assert r.coverage_rate() == 0.0

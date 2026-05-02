@@ -18,6 +18,61 @@ def test_research_planner_creates_query_from_brief():
     assert any("provenance" in rule for rule in plan.collection_rules)
 
 
+def test_research_planner_uses_product_planning_projection():
+    brief = ResearchBrief(
+        raw_idea="farm diagnostic workflow",
+        research_question="Can farms use a 30 minute diagnostic kit?",
+        purpose="go/no-go",
+        context="Korean strawberry farms",
+        deliverable_type="research report",
+        planning_prd={
+            "target_scenarios": [
+                {"scenario": "Korean strawberry farms field diagnosis"},
+            ],
+            "success_metrics": ["30 minute turnaround", "A/B source evidence"],
+        },
+        feature_hierarchy=[
+            {
+                "name": "Field diagnosis requirement",
+                "features": [{"name": "On-site sample workflow"}],
+            }
+        ],
+    )
+
+    plan = ResearchPlanner().plan(brief)
+
+    assert "Korean strawberry farms field diagnosis" in plan.evidence_targets
+    assert "30 minute turnaround" in plan.evidence_targets
+    assert "Field diagnosis requirement" in plan.expected_deliverables
+    assert "On-site sample workflow" in plan.expected_deliverables
+
+
+def test_research_planner_filters_pending_planning_placeholders():
+    brief = ResearchBrief(
+        raw_idea="x",
+        research_question="What should be validated?",
+        purpose="plan",
+        context="",
+        planning_prd={
+            "target_scenarios": [
+                {"scenario": "target scenario pending"},
+                {"scenario": "real farm workflow"},
+            ],
+            "success_metrics": [
+                "success criteria pending interview answer",
+                "30 minute turnaround",
+            ],
+        },
+    )
+
+    plan = ResearchPlanner().plan(brief)
+
+    assert "target scenario pending" not in plan.evidence_targets
+    assert "success criteria pending interview answer" not in plan.evidence_targets
+    assert "real farm workflow" in plan.evidence_targets
+    assert "30 minute turnaround" in plan.evidence_targets
+
+
 def test_expand_query_adds_evidence_intents_without_duplicates():
     queries = expand_query(
         "Korean agtech diagnostic kit pricing",

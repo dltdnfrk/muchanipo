@@ -56,12 +56,26 @@ class IdeaDump:
         empty as the C31 mock did.
         """
         from src.interview.brief import ResearchBrief
+        from src.interview.product_planning import build_product_planning_projection
 
         design = self.reframe()
         question = design.pain_root or self.raw_text
         context = design.contrary_framing
         known_facts = list(design.implicit_capabilities)
         constraints = list(design.challenged_premises)
+        answers = {
+            "research_question": question,
+            "purpose": purpose or "clarify next decision",
+            "context": context,
+            "known": "; ".join(known_facts),
+            "deliverable_type": deliverable_type,
+            "quality_bar": quality_bar,
+        }
+        planning = build_product_planning_projection(
+            self.raw_text,
+            answers,
+            design_doc=design,
+        )
         return ResearchBrief(
             raw_idea=self.raw_text,
             research_question=question,
@@ -71,5 +85,10 @@ class IdeaDump:
             deliverable_type=deliverable_type,
             quality_bar=quality_bar,
             constraints=constraints,
+            success_criteria=planning["planning_prd"].get("success_metrics", []),
             coverage_score=coverage_score,
+            planning_prd=planning["planning_prd"],
+            feature_hierarchy=planning["feature_hierarchy"],
+            user_flow=planning["user_flow"],
+            planning_review_policy=planning["planning_review_policy"],
         )

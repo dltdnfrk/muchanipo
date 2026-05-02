@@ -19,6 +19,10 @@ from src.intent.interview_prompts import (
     select_next_question,
 )
 from src.intent.interview_rubric import InterviewRubric, RubricItem
+from src.interview.product_planning import (
+    build_product_planning_projection,
+    split_planning_items,
+)
 
 from .brief import ResearchBrief
 from .rubric import (
@@ -85,12 +89,23 @@ class InterviewSession:
     def to_brief(self) -> ResearchBrief:
         question = self.answers.get("research_question") or self.raw_idea
         purpose = self.answers.get("purpose") or "clarify next decision"
+        planning = build_product_planning_projection(self.raw_idea, self.answers)
         return ResearchBrief(
             raw_idea=self.raw_idea,
             research_question=question,
             purpose=purpose,
             context=self.answers.get("context", ""),
+            known_facts=_split_answer_list(self.answers.get("known", "")),
             deliverable_type=self.answers.get("deliverable_type", "report"),
             quality_bar=self.answers.get("quality_bar", "evidence-backed"),
+            success_criteria=planning["planning_prd"].get("success_metrics", []),
             coverage_score=self.coverage_score,
+            planning_prd=planning["planning_prd"],
+            feature_hierarchy=planning["feature_hierarchy"],
+            user_flow=planning["user_flow"],
+            planning_review_policy=planning["planning_review_policy"],
         )
+
+
+def _split_answer_list(value: str) -> list[str]:
+    return split_planning_items(value)

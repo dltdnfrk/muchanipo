@@ -32,6 +32,7 @@ from src.intent.office_hours import DesignDoc, OfficeHours
 from src.intent.plan_review import ConsensusPlan, PlanReview
 from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
+from src.interview.product_planning import build_product_planning_projection
 from src.interview.session import InterviewSession
 from src.research.autoresearch_runtime import runtime_contract_for_profile
 from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
@@ -172,6 +173,19 @@ class IdeaToCouncilPipeline:
         state.record_artifact("brief_ready", "true" if brief.is_ready else "false")
         state.record_artifact("brief_coverage_score", f"{brief.coverage_score:.2f}")
         state.record_artifact(
+            "planning_prd_sections",
+            ",".join((brief.planning_prd or {}).keys()),
+        )
+        state.record_artifact("planning_feature_hierarchy_count", str(len(brief.feature_hierarchy or [])))
+        state.record_artifact(
+            "planning_user_flow_node_count",
+            str(len((brief.user_flow or {}).get("nodes", []) or [])),
+        )
+        state.record_artifact(
+            "planning_review_gate",
+            str((brief.planning_review_policy or {}).get("review_gate", "brief")),
+        )
+        state.record_artifact(
             "interview_trace_source",
             str(getattr(brief, "interview_trace_source", "unknown")),
         )
@@ -223,13 +237,6 @@ class IdeaToCouncilPipeline:
         self._record_hitl_gate(state, "plan", hitl_results["plan"])
         self._require_approved_gate("plan", hitl_results["plan"])
 
-        state.advance(Stage.TARGETING)
-        targeting_map = build_targeting_map(brief)
-        setattr(brief, "targeting_map", targeting_map)
-        state.record_artifact("targeting_domains", ",".join(targeting_map.domains))
-        state.record_artifact("targeting_academic_sources", ",".join(_targeting_academic_sources(targeting_map)))
-        self._emit(state, Stage.TARGETING)
-
         hitl_results["brief"] = self.hitl_adapter.gate_brief(brief)
         self._record_hitl_gate(state, "brief", hitl_results["brief"])
         self._require_approved_gate("brief", hitl_results["brief"])
@@ -243,8 +250,13 @@ class IdeaToCouncilPipeline:
                     f"coverage={brief.coverage_score:.2f}, "
                     f"missing={','.join(interview.missing_dimensions)}"
                 )
-            targeting_map = build_targeting_map(brief)
-            setattr(brief, "targeting_map", targeting_map)
+
+        state.advance(Stage.TARGETING)
+        targeting_map = build_targeting_map(brief)
+        setattr(brief, "targeting_map", targeting_map)
+        state.record_artifact("targeting_domains", ",".join(targeting_map.domains))
+        state.record_artifact("targeting_academic_sources", ",".join(_targeting_academic_sources(targeting_map)))
+        self._emit(state, Stage.TARGETING)
 
         state.advance(Stage.RESEARCH)
         plan = ResearchPlanner().plan(brief, max_queries=self.depth_profile.query_limit)
@@ -488,6 +500,23 @@ class IdeaToCouncilPipeline:
         ]
         if embedded_answers.get("quality_bar"):
             brief.success_criteria.append(embedded_answers["quality_bar"])
+        planning_answers = {
+            "research_question": brief.research_question,
+            "purpose": brief.purpose,
+            "context": brief.context,
+            "known": "; ".join(brief.known_facts),
+            "deliverable_type": brief.deliverable_type,
+            "quality_bar": brief.quality_bar,
+        }
+        planning = build_product_planning_projection(
+            raw_text,
+            planning_answers,
+            design_doc=design_doc,
+        )
+        brief.planning_prd = planning["planning_prd"]
+        brief.feature_hierarchy = planning["feature_hierarchy"]
+        brief.user_flow = planning["user_flow"]
+        brief.planning_review_policy = planning["planning_review_policy"]
         return brief
 
     def _emit(self, state: PipelineState, stage: Stage) -> None:
