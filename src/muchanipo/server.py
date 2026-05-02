@@ -639,10 +639,12 @@ def _collect_serve_interview_answers(
     """Run a show-me-the-prd style intake over the JSON-line serve protocol."""
     from src.intake.idea_dump import IdeaDump
     from src.intent.interview_prompts import merge_answers_to_text
+    from src.interview.product_planning import planning_question_contract
     from src.intent.office_hours import reframe_with_context
     from src.interview.session import InterviewSession
 
     session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
+    question_contract = planning_question_contract()
     total_questions = 6
     emit(
         "phase_change",
@@ -650,6 +652,8 @@ def _collect_serve_interview_answers(
         stream=stdout,
         data={
             "workflow": "show-me-the-prd",
+            "planning_schema": "prd_feature_user_flow",
+            "question_contract": question_contract,
             "question_count": total_questions,
             "mode": getattr(session.plan, "mode", "deep"),
         },
@@ -688,6 +692,7 @@ def _collect_serve_interview_answers(
                 "allow_other": True,
                 "multiSelect": False,
                 "preview": preview,
+                "planning_schema": "prd_feature_user_flow",
                 "index": idx,
                 "total": total_questions,
             },
@@ -743,34 +748,50 @@ def _normalize_show_prd_options(raw_options: Any) -> list[dict[str, str]]:
 
 def _show_prd_header(qid: str) -> str:
     return {
-        "Q1_research_question": "아이디어 구체화",
-        "Q2_purpose": "목적",
-        "Q3_context": "맥락",
-        "Q4_known": "기존 정보",
-        "Q5_deliverable": "산출물",
-        "Q6_quality": "근거 품질",
+        "Q1_research_question": "PRD 개요",
+        "Q2_purpose": "핵심 가치",
+        "Q3_context": "타겟·시나리오",
+        "Q4_known": "배경·제약",
+        "Q5_deliverable": "기능명세 seed",
+        "Q6_quality": "성공·검증 기준",
     }.get(qid, "인터뷰")
 
 
 def _show_prd_preview(qid: str, topic: str, answers: dict[str, str]) -> str:
+    if qid == "Q1_research_question":
+        return (
+            "이 답변은 PRD overview.one_line과 리서치 핵심 질문으로 저장됩니다.\n"
+            f"원 요청: {topic}"
+        )
+    if qid == "Q2_purpose":
+        return (
+            "이 답변은 core_value.problem/resolution과 제품 목표로 저장됩니다. "
+            "이후 brief HITL gate에서 승인·수정 대상이 됩니다."
+        )
     if qid == "Q3_context":
         return (
-            "선택한 맥락은 이후 검색 범위, 페르소나 구성, 비교 국가/산업 범위를 제한합니다.\n"
+            "선택한 맥락은 target_scenarios, 사용자 역할, 사용 환경, 이후 검색 범위를 제한합니다.\n"
             f"원 요청: {topic}"
+        )
+    if qid == "Q4_known":
+        context = answers.get("context", "아직 타겟 시나리오 미정")
+        return (
+            "기존 자료와 제약은 PRD background, differentiator, risk/open issue 후보로 저장됩니다.\n"
+            f"현재 타겟: {context}"
         )
     if qid == "Q5_deliverable":
         purpose = answers.get("purpose", "아직 목적 미정")
         return (
-            "| 산출물 | 적합한 상황 |\n"
+            "| 기능명세 단계 | 이 답변에서 채울 내용 |\n"
             "| --- | --- |\n"
-            "| 결정서 | 빠른 Go/No-Go 판단 |\n"
-            "| 리서치 리포트 | 근거와 반론까지 필요한 검토 |\n"
-            "| Slide deck | 외부 공유/발표 |\n\n"
+            "| Requirement | 최상위 목표와 수용 기준 |\n"
+            "| Feature | 사용자가 수행할 기능 단위 |\n"
+            "| Specification | 실제 동작·정책·검증 조건 |\n\n"
             f"현재 목적: {purpose}"
         )
     if qid == "Q6_quality":
         return (
-            "A/B급 기준을 고르면 속도는 느려지지만 mock·추정 결과가 최종 보고서에 섞이는 것을 더 강하게 막습니다."
+            "성공 지표와 Source A/B급 기준을 고르면 속도는 느려지지만 mock·추정 결과가 최종 보고서에 섞이는 것을 더 강하게 막습니다."
         )
     return ""
 
@@ -941,10 +962,14 @@ def serve_full(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_md, encoding="utf-8")
 
+    vault_path_value = pipeline_result.get("vault_path")
+    vault_path_str = str(vault_path_value) if vault_path_value else None
+
     emit(
         "final_report",
         stream=stdout,
         report_path=str(report_path),
+        vault_path=vault_path_str,
         chapter_count=len(chapters),
         markdown=final_md,
     )
@@ -952,6 +977,7 @@ def serve_full(
         "done",
         stream=stdout,
         report_path=str(report_path),
+        vault_path=vault_path_str,
         pipeline="full",
         depth=depth,
         council_persona_pool_size=int(pipeline_result.get("council_persona_pool_size") or 0),

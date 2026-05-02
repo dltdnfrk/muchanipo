@@ -45,6 +45,10 @@ def test_pipeline_brief_uses_jsonline_interview_answers():
     assert "농가 지불의사" in brief.known_facts
     assert brief.deliverable_type == "6장 시장성 리서치 보고서"
     assert brief.quality_bar == "실제 출처와 A/B급 근거 중심"
+    assert brief.planning_prd["overview"]["one_line"].startswith("딸기 농가가 저비용 분자진단 키트")
+    assert brief.planning_prd["core_value"]["resolution"] == "제품화 go/no-go 결정"
+    assert brief.feature_hierarchy[0]["features"][0]["name"] == "6장 시장성 리서치 보고서"
+    assert brief.user_flow["nodes"][0]["id"] == "start"
     assert brief.is_ready
     assert getattr(brief, "interview_trace_source") == "user_interview"
     assert getattr(brief, "synthetic_interview_trace") is False
@@ -175,6 +179,10 @@ def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pip
     assert event["artifacts"]["brief_id"] == result.brief.id
     assert event["artifacts"]["brief_ready"] == "true"
     assert event["artifacts"]["brief_coverage_score"] == "1.00"
+    assert "overview" in event["artifacts"]["planning_prd_sections"]
+    assert event["artifacts"]["planning_feature_hierarchy_count"] == "1"
+    assert int(event["artifacts"]["planning_user_flow_node_count"]) >= 5
+    assert event["artifacts"]["planning_review_gate"] == "brief"
     assert event["artifacts"]["interview_trace_source"] == "office_hours_synthetic"
     assert event["artifacts"]["synthetic_interview_trace"] == "true"
     assert event["artifacts"]["mixed_interview_trace"] == "false"
@@ -201,6 +209,7 @@ def test_step2_targeting_records_plan_review_and_academic_outputs(reference_pipe
     assert event["reference_projects"] == ["GStack plan-review", "학술 자료 검색 API", "GBrain 지식 구조", "Plannotator"]
     assert event["artifacts"]["plan_review_gate"] == ("passed" if result.consensus_plan.gate_passed else "blocked")
     assert event["artifacts"]["plan_review_consensus"] == f"{result.consensus_plan.consensus_score:.2f}"
+    assert event["artifacts"]["brief_gate_status"] == "approved"
     assert event["artifacts"]["targeting_domains"] == ",".join(result.targeting_map.domains)
     assert result.targeting_map.target_institutions == ["Seoul National University"]
     assert result.targeting_map.target_journals == ["Precision Agriculture"]

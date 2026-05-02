@@ -157,7 +157,9 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     assert rc == 0
     assert len(question_events) == 6
     assert question_events[0]["q_id"] == "Q1_research_question"
-    assert question_events[0]["header"] == "아이디어 구체화"
+    assert question_events[0]["header"] == "PRD 개요"
+    assert question_events[0]["data"]["planning_schema"] == "prd_feature_user_flow"
+    assert "PRD overview" in question_events[0]["preview"]
     assert question_events[0]["options"][0]["description"]
     assert first_question_index < first_pipeline_index
     assert calls and "answer 1" in calls[0]

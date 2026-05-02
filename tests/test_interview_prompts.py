@@ -14,6 +14,7 @@ from src.intent.interview_prompts import (
     route_mode,
     format_mode_routing_decision,
     select_next_question,
+    planning_question_contract,
 )
 from src.intent.interview_rubric import InterviewRubric
 from src.intent.office_hours import OfficeHours
@@ -69,18 +70,35 @@ def test_forcing_questions_returns_six():
     assert "Q6_quality" in ids            # 품질 기준
 
 
-def test_forcing_questions_use_research_tone_not_startup():
-    """gstack startup 톤(pain/10-star/scope) 대신 리서치 brief 톤 검증."""
+def test_forcing_questions_use_product_planning_tone_not_startup():
+    """gstack startup 톤(pain/10-star/scope) 대신 제품 기획 + 리서치 brief 톤 검증."""
     qs = forcing_questions_korean()
     full_text = " ".join(q["question"] for q in qs)
-    # 리서치 톤 키워드는 있어야
-    assert "알아내고" in full_text or "알고" in full_text  # 무엇을 알아내고
-    assert "어디에 쓰" in full_text or "목적" in full_text or "용도" in full_text  # 왜
-    assert "도메인" in full_text or "맥락" in full_text  # 맥락
-    assert "출처" in full_text or "신뢰도" in full_text  # 품질
+    # 제품 기획 + 리서치 톤 키워드는 있어야
+    assert "PRD" in full_text
+    assert "핵심 가치" in full_text
+    assert "타겟" in full_text or "시나리오" in full_text
+    assert "요구사항" in full_text and "상세 기능" in full_text
+    assert "출처" in full_text or "성공 지표" in full_text
     # 스타트업 비즈니스 톤 키워드는 없어야 (재사용된 텍스트면 잔재 점검)
     assert "10-star" not in full_text
     assert "Scope Expansion" not in full_text or "비교" in full_text  # alternatives 톤 잔재 X
+
+
+def test_planning_question_contract_maps_all_six_questions():
+    contract = planning_question_contract()
+    assert [item["id"] for item in contract] == [
+        "Q1_research_question",
+        "Q2_purpose",
+        "Q3_context",
+        "Q4_known",
+        "Q5_deliverable",
+        "Q6_quality",
+    ]
+    targets = {item["planning_target"] for item in contract}
+    assert "prd.overview" in targets
+    assert "feature_hierarchy" in targets
+    assert "prd.success_metrics" in targets
 
 
 def test_quick_clarification_max_two():
@@ -268,6 +286,8 @@ def test_q5_options_includes_obsidian_vault():
     opts = build_question_options("Q5_deliverable", "any topic")
     labels = " ".join(o["label"] for o in opts)
     assert "Obsidian" in labels or "vault" in labels.lower()
+    assert "Requirement" in labels and "Feature" in labels
+    assert "Slide deck" in labels
     assert opts[-1]["label"] == "Other"
 
 

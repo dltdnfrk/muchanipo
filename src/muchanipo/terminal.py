@@ -424,7 +424,7 @@ def conduct_interview(
 
     out.write("\n아이디어 심층 인터뷰\n")
     out.write("------------------\n")
-    out.write("show-me-the-prd 방식으로 요구사항을 먼저 좁힌 뒤 리서치를 시작합니다.\n")
+    out.write("show-me-the-prd 방식으로 PRD, 기능명세, 유저플로우 seed를 먼저 좁힌 뒤 리서치를 시작합니다.\n")
     out.write("빈 줄 또는 'skip'은 해당 질문을 건너뜁니다.\n\n")
     out.flush()
 

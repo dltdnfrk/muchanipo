@@ -23,6 +23,10 @@ class ResearchBrief:
     success_criteria: list[str] = field(default_factory=list)
     coverage_score: float = 0.0
     targeting_map: "TargetingMap | None" = None
+    planning_prd: dict[str, Any] = field(default_factory=dict)
+    feature_hierarchy: list[dict[str, Any]] = field(default_factory=list)
+    user_flow: dict[str, Any] = field(default_factory=dict)
+    planning_review_policy: dict[str, Any] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -51,6 +55,10 @@ class ResearchBrief:
             "success_criteria": self.success_criteria,
             "coverage_score": self.coverage_score,
             "is_ready": self.is_ready,
+            "planning_prd": self.planning_prd,
+            "feature_hierarchy": self.feature_hierarchy,
+            "user_flow": self.user_flow,
+            "planning_review_policy": self.planning_review_policy,
         }
         if self.targeting_map is not None:
             data["targeting_map"] = self.targeting_map.to_dict()
@@ -71,11 +79,23 @@ class ResearchBrief:
             research_question=data.get("research_question", ""),
             purpose=data.get("purpose", ""),
             context=data.get("context", ""),
-            known_facts=list(data.get("known_facts", [])),
+            known_facts=_list_or_empty(data.get("known_facts")),
             deliverable_type=data.get("deliverable_type", "report"),
             quality_bar=data.get("quality_bar", "evidence-backed"),
-            constraints=list(data.get("constraints", [])),
-            success_criteria=list(data.get("success_criteria", [])),
+            constraints=_list_or_empty(data.get("constraints")),
+            success_criteria=_list_or_empty(data.get("success_criteria")),
             coverage_score=float(data.get("coverage_score", 0.0)),
             targeting_map=tmap,
+            planning_prd=_dict_or_empty(data.get("planning_prd")),
+            feature_hierarchy=_list_or_empty(data.get("feature_hierarchy")),
+            user_flow=_dict_or_empty(data.get("user_flow")),
+            planning_review_policy=_dict_or_empty(data.get("planning_review_policy")),
         )
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []

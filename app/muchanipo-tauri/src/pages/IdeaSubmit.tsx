@@ -14,11 +14,26 @@ const SAMPLES = [
   "AI 코딩 어시스턴트 기업용 보안 게이트웨이",
 ];
 
+const IDEA_SUGGESTIONS = [
+  "현장 농가가 병해를 30분 안에 판별하는 저비용 진단 워크플로우",
+  "소규모 병원이 검사 의뢰부터 결과 공유까지 관리하는 재택의료 협업 SaaS",
+  "기업 개발팀이 AI 코드 변경을 승인 전 검증하는 보안 게이트웨이",
+  "B2B 영업팀이 회의록에서 PRD와 기능명세 초안을 자동 생성하는 도구",
+];
+
 export default function IdeaSubmit() {
   const [idea, setIdea] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const navigate = useNavigate();
+
+  function suggestIdea() {
+    const next = IDEA_SUGGESTIONS[suggestionIndex % IDEA_SUGGESTIONS.length];
+    setIdea(next);
+    setSuggestionIndex((idx) => idx + 1);
+    setError("");
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -98,24 +113,34 @@ export default function IdeaSubmit() {
                 </kbd>
                 <span className="ml-1.5">to send</span>
               </p>
-              <button
-                type="submit"
-                aria-label="리서치 시작"
-                title="리서치 시작"
-                disabled={loading || !idea.trim()}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-              >
-                {loading ? (
-                  <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.3" strokeWidth="3" />
-                    <path d="M12 2a10 10 0 0110 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                  </svg>
-                ) : (
-                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 4l-1.4 1.4 5.6 5.6H4v2h12.2l-5.6 5.6L12 20l8-8-8-8z" />
-                  </svg>
-                )}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={suggestIdea}
+                  disabled={loading}
+                  className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-secondary transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  주제 추천
+                </button>
+                <button
+                  type="submit"
+                  aria-label="리서치 시작"
+                  title="리서치 시작"
+                  disabled={loading || !idea.trim()}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {loading ? (
+                    <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.3" strokeWidth="3" />
+                      <path d="M12 2a10 10 0 0110 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 4l-1.4 1.4 5.6 5.6H4v2h12.2l-5.6 5.6L12 20l8-8-8-8z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </form>

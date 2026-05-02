@@ -78,6 +78,44 @@ def test_rubric_coverage_gate_drives_quick_complete():
     assert pending == ["Q4_known"]
 
 
+def test_session_to_brief_preserves_product_planning_projection():
+    idea = IdeaDump(raw_text="한국 농가 진단키트 현장 사용성 검증")
+    session = InterviewSession.from_idea(idea)
+    session.answer("research_question", "농가가 현장에서 쓸 수 있는 진단키트인가")
+    session.answer("purpose", "제품화 go/no-go 결정")
+    session.answer("context", "한국 딸기 농가, 현장 진단")
+    session.answer("known", "저비용; 30분 내 판독; 농가 교육 필요")
+    session.answer("deliverable_type", "Requirement → Feature → Spec 트리")
+    session.answer("quality_bar", "A/B급 출처와 현장 KPI")
+
+    brief = session.to_brief()
+
+    assert brief.planning_prd["overview"]["one_line"] == "농가가 현장에서 쓸 수 있는 진단키트인가"
+    assert brief.planning_prd["core_value"]["resolution"] == "제품화 go/no-go 결정"
+    assert brief.feature_hierarchy[0]["features"][0]["specifications"]
+    assert brief.user_flow["nodes"][0]["type"] == "start"
+    assert brief.planning_review_policy["review_gate"] == "brief"
+
+
+def test_known_answer_splitting_matches_planning_projection():
+    session = InterviewSession.from_idea(IdeaDump(raw_text="진단키트 기획"))
+    session.answer("research_question", "현장 진단 가능성")
+    session.answer("purpose", "go/no-go")
+    session.answer("context", "한국 농가")
+    session.answer("known", "저비용, 30분 내 판독; 농가 교육 필요")
+    session.answer("deliverable_type", "report")
+    session.answer("quality_bar", "A/B evidence")
+
+    brief = session.to_brief()
+
+    assert brief.known_facts == ["저비용", "30분 내 판독", "농가 교육 필요"]
+    spec_text = " ".join(
+        spec["description"]
+        for spec in brief.feature_hierarchy[0]["features"][0]["specifications"]
+    )
+    assert "저비용; 30분 내 판독; 농가 교육 필요" in spec_text
+
+
 def test_idea_dump_to_research_brief_e2e_via_office_hours():
     idea = IdeaDump(raw_text="LangGraph vs CrewAI — 한국 SaaS 의사결정 비교 분석")
     brief = idea.to_research_brief(
@@ -94,6 +132,9 @@ def test_idea_dump_to_research_brief_e2e_via_office_hours():
     assert isinstance(brief.known_facts, list)
     # The Q3 implicit-capabilities heuristic should fire on '비교'.
     assert any("비교" in cap for cap in brief.known_facts)
+    assert brief.planning_prd["overview"]["one_line"]
+    assert brief.feature_hierarchy
+    assert brief.user_flow["edges"]
     assert brief.is_ready
 
 

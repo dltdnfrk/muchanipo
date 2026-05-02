@@ -125,6 +125,12 @@ def run_pipeline(
     profile = depth_profile(normalized_depth)
     live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
+    vault_root_env = os.environ.get("MUCHANIPO_VAULT_ROOT", "").strip()
+    vault_dir = (
+        Path(vault_root_env).expanduser()
+        if vault_root_env
+        else (scratch / "vault" / "insights")
+    )
     emitted_stages: set[str] = set()
     started_stages: set[str] = set()
 
@@ -174,7 +180,7 @@ def run_pipeline(
         ),
         research_runner=build_runner(use_real=(live_required or not offline)),
         model_gateway=gateway,
-        vault_dir=scratch / "vault" / "insights",
+        vault_dir=vault_dir,
         council_log_dir=scratch / "council",
         progress_callback=handle_progress,
         require_live=live_required,

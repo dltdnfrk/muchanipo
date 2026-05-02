@@ -468,21 +468,24 @@ def reframe_with_context(
 
     # base question text — dim별 PRD 톤
     base_questions: Dict[str, str] = {
-        "Q1_research_question": "정확히 무엇을 알아내고 싶나요?",
-        "Q2_purpose": "결과를 어디에 쓰시나요?",
-        "Q3_context": "도메인 맥락은 어디까지인가요?",
-        "Q4_known": "이미 알고 있는 게 있나요?",
-        "Q5_deliverable": "산출물은 어떤 형태인가요?",
-        "Q6_quality": "근거 품질 기준은? (Source A-D)",
+        "Q1_research_question": "PRD 개요로 한 문장 제품 정의와 핵심 검증 질문을 적어주세요.",
+        "Q2_purpose": "핵심 가치는 무엇이고, 답을 얻으면 무엇을 결정하나요?",
+        "Q3_context": "타겟 사용자와 실제 사용 시나리오는 무엇인가요?",
+        "Q4_known": "이미 알고 있는 배경, 제약, 리스크는 무엇인가요?",
+        "Q5_deliverable": "요구사항→기능→상세기능 또는 원하는 산출물 형태는 무엇인가요?",
+        "Q6_quality": "성공 지표와 근거 품질 기준은 무엇인가요? (Source A-D)",
     }
     question = base_questions.get(dim_id, dim_id)
 
     # 이전 답변 기반 보정 — Q3이 이전에 답해졌으면 Q4에 연결
-    if dim_id == "Q4_known" and "Q3_context" in prev_answers:
-        question = f"({prev_answers['Q3_context']} 맥락에서) 이미 알고 있는 게 있나요?"
-    elif dim_id == "Q5_deliverable" and "Q2_purpose" in prev_answers:
-        question = f"({prev_answers['Q2_purpose']} 목적에 맞춰) 어떤 형태의 산출물을 원하세요?"
-    elif dim_id == "Q6_quality" and "Q5_deliverable" in prev_answers:
-        question = f"({prev_answers['Q5_deliverable']} 산출물에 맞는) 근거 품질 기준은? (Source A-D)"
+    context_answer = prev_answers.get("Q3_context") or prev_answers.get("context")
+    purpose_answer = prev_answers.get("Q2_purpose") or prev_answers.get("purpose")
+    deliverable_answer = prev_answers.get("Q5_deliverable") or prev_answers.get("deliverable_type")
+    if dim_id == "Q4_known" and context_answer:
+        question = f"({context_answer} 맥락에서) 이미 알고 있는 배경·제약·리스크는 무엇인가요?"
+    elif dim_id == "Q5_deliverable" and purpose_answer:
+        question = f"({purpose_answer} 목적에 맞춰) 요구사항→기능→상세기능을 어떻게 쪼갤까요?"
+    elif dim_id == "Q6_quality" and deliverable_answer:
+        question = f"({deliverable_answer} 산출물에 맞는) 성공 지표와 근거 품질 기준은? (Source A-D)"
 
     return {"dim_id": dim_id, "question": question, "options": options}

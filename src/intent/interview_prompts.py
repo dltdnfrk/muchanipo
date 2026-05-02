@@ -22,6 +22,8 @@ try:  # pragma: no cover — optional import for tests that path-inject src/inte
 except ImportError:  # noqa: F401
     from src.intent.interview_rubric import InterviewRubric, RubricItem  # type: ignore
 
+from src.intent.planning_contract import planning_question_contract
+
 
 # ---------------------------------------------------------------------------
 # Triage (Phase 0a)
@@ -132,11 +134,12 @@ def assess(user_input: str) -> InterviewPlan:
 # Forcing questions (Phase 0b — Deep mode)
 # ---------------------------------------------------------------------------
 def forcing_questions_korean() -> List[Dict[str, str]]:
-    """리서치 토픽 정밀화 6 questions (PRD-style — 리서치 주제를 끄집어내는 톤).
+    """아이디어를 PRD/기능명세/유저플로우 seed로 정밀화하는 6 questions.
 
     원본 gstack /office-hours는 YC 파운더 office hours 톤이라 비즈니스 의사결정에 치우침.
-    사용자 요청에 맞춰 '리서치 brief'를 만드는 PRD 인터뷰 톤으로 재구성: 무엇/왜/맥락/이미 아는 것/
-    산출물 형태/품질 기준. 이 6가지가 답해지면 council이 어긋나지 않고 사용자 의도대로 진행 가능.
+    사용자 요청에 맞춰 '리서치 brief'와 제품 기획 초안을 동시에 만드는 톤으로 재구성:
+    PRD 개요/핵심 가치/타겟 시나리오/기존 정보/기능 계층/성공 기준.
+    이 6가지가 답해지면 council이 어긋나지 않고 사용자 의도대로 진행 가능.
 
     Claude이 사용자에게 그대로 출력해 한 번에 하나씩 답변을 받는다.
     """
@@ -144,8 +147,9 @@ def forcing_questions_korean() -> List[Dict[str, str]]:
         {
             "id": "Q1_research_question",
             "question": (
-                "**Q1 / 6 — 정확히 무엇을 알아내고 싶으세요?**\n"
-                "가능한 한 구체적인 질문으로 표현해주세요. 처음 던진 토픽보다 _한 단계 더 좁힌_ 질문이면 더 좋습니다.\n"
+                "**Q1 / 6 — PRD 개요: 무엇을 만들거나 검증하려는 아이디어인가요?**\n"
+                "한 문장 제품 정의와, 이번 리서치가 답해야 할 핵심 질문을 같이 적어주세요. "
+                "처음 던진 토픽보다 _한 단계 더 좁힌_ 질문이면 더 좋습니다.\n"
                 "예시:\n"
                 "- '한국 사과 농가 진단키트 가격 책정(2026 1분기 기준)'\n"
                 "- 'LangGraph vs CrewAI — multi-agent council 구축에 어느 게 더 적합한가'\n"
@@ -155,8 +159,8 @@ def forcing_questions_korean() -> List[Dict[str, str]]:
         {
             "id": "Q2_purpose",
             "question": (
-                "**Q2 / 6 — 답을 얻으면 무엇을 하실 거예요?**\n"
-                "리서치 결과를 어디에 쓰시나요? 목적에 따라 결과 깊이/형태가 달라집니다.\n"
+                "**Q2 / 6 — 핵심 가치: 사용자가 얻는 변화는 무엇인가요?**\n"
+                "어떤 문제를 어떤 방식으로 해결하고, 답을 얻은 뒤 무엇을 결정할지 알려주세요.\n"
                 "- 의사결정 (예: 어떤 도구 도입할지)\n"
                 "- 글/문서 작성 (블로그, 보고서, 발표 자료)\n"
                 "- 학습 / 이해 (개념·맥락 파악)\n"
@@ -167,8 +171,8 @@ def forcing_questions_korean() -> List[Dict[str, str]]:
         {
             "id": "Q3_context",
             "question": (
-                "**Q3 / 6 — 어느 맥락 / 도메인이에요?**\n"
-                "관련 도메인을 알려주시면 페르소나·평가 기준이 그쪽에 grounded됩니다.\n"
+                "**Q3 / 6 — 타겟 및 시나리오: 누가 어떤 상황에서 쓰나요?**\n"
+                "핵심 사용자, 실제 사용 흐름, 시장/도메인 범위를 알려주시면 페르소나·평가 기준이 그쪽에 grounded됩니다.\n"
                 "- NeoBio / AgTech / 한국 농업\n"
                 "- AI / ML / 에이전트 시스템\n"
                 "- Business strategy / 시장 분석\n"
@@ -180,31 +184,34 @@ def forcing_questions_korean() -> List[Dict[str, str]]:
         {
             "id": "Q4_known",
             "question": (
-                "**Q4 / 6 — 이미 알고 계신 것은?**\n"
-                "출발점을 알면 중복 검색을 피하고 새로운 인사이트에 집중할 수 있어요.\n"
+                "**Q4 / 6 — 배경·제약: 이미 알고 있거나 피해야 할 것은?**\n"
+                "출발점과 제약을 알면 중복 검색을 피하고 새 인사이트에 집중할 수 있어요.\n"
                 "- 들어본 키워드 / 읽은 자료\n"
                 "- 알고 있는 경쟁사 / 기술 / 솔루션\n"
                 "- 이미 검토한 옵션 / 폐기한 가설\n"
+                "- 법무·예산·일정·데이터 제약\n"
                 "없으셔도 OK — '거의 모름'이라고만 답해도 됩니다."
             ),
         },
         {
             "id": "Q5_deliverable",
             "question": (
-                "**Q5 / 6 — 어떤 형태의 답을 원하세요?**\n"
-                "결과물 형식이 명확할수록 council 산출물이 사용자 의도와 맞아요.\n"
+                "**Q5 / 6 — 기능명세 seed: 요구사항→기능→상세기능으로 쪼개면?**\n"
+                "결과물 형식과 최소 기능 단위를 같이 적어주세요. 명확할수록 council 산출물이 사용자 의도와 맞아요.\n"
                 "- 한 줄 요약 + 핵심 포인트 3-5개\n"
                 "- 비교표 (옵션 A vs B vs C)\n"
                 "- 정량 수치 + 출처 (시장 규모 / 가격 / 비율)\n"
                 "- 시간순 흐름 / 단계별 가이드\n"
                 "- 권고 / 의사결정 옵션\n"
-                "- 인사이트 정리 (학습용)"
+                "- 인사이트 정리 (학습용)\n"
+                "가능하면 '요구사항 / 기능 / 상세 기능' 형태로 적어주세요."
             ),
         },
         {
             "id": "Q6_quality",
             "question": (
-                "**Q6 / 6 — 품질·범위 기준은?**\n"
+                "**Q6 / 6 — 성공 지표·검증 기준은?**\n"
+                "성공을 판단할 KPI, 리스크, 오픈 이슈, 근거 품질 기준을 정해주세요.\n"
                 "- **출처**: 학술 논문 우선 / 실무 블로그 OK / 모두 OK\n"
                 "- **깊이**: 개요(5분 읽기) / 보통(15분) / 심층(전체 디테일)\n"
                 "- **시점**: 최신만 / 최근 6개월 / 1년 / 무관\n"
@@ -562,13 +569,15 @@ def build_question_options(
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q5 deliverable: 산출 형태
+    # Q5 deliverable: 산출 형태 + 기능명세 seed
     if dim_id == "Q5_deliverable":
         return [
-            {"label": "1페이지 결정서",
-             "description": "핵심 숫자 + 권고 (의사결정용)"},
+            {"label": "Requirement → Feature → Spec 트리",
+             "description": "요구사항, 기능, 상세기능을 바로 만들 때"},
+            {"label": "1페이지 PRD 결정서",
+             "description": "핵심 숫자 + 권고 + 수용 기준"},
             {"label": "10-20p 리서치 리포트",
-             "description": "상세 분석 + 다이어그램"},
+             "description": "상세 분석 + 기능/플로우 근거"},
             {"label": "Slide deck",
              "description": "발표/IR/보고용"},
             {"label": "Obsidian vault 누적",
@@ -576,9 +585,11 @@ def build_question_options(
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q2 purpose: 사용 목적
+    # Q2 purpose: 핵심 가치 / 사용 목적
     if dim_id == "Q2_purpose":
         return [
+            {"label": "사용자 문제 해결",
+             "description": "문제, 해결 방식, 차별점 중심"},
             {"label": "내부 의사결정",
              "description": "다음 액션 선택 (도구/방향/투자)"},
             {"label": "외부 보고",
@@ -624,17 +635,17 @@ def build_question_options(
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q1 research_question: 무엇을 알아내고 싶은가
+    # Q1 research_question: PRD 개요 / 무엇을 알아내고 싶은가
     if dim_id == "Q1_research_question":
         return [
+            {"label": "한 문장 제품 정의",
+             "description": "PRD 개요의 one-line definition"},
             {"label": "단일 결정·숫자",
              "description": "1개 답 (예: 적정 가격)"},
             {"label": "옵션 비교",
              "description": "A vs B vs C 비교표"},
             {"label": "구축 가능성·설계도",
              "description": "feasibility + 아키텍처"},
-            {"label": "벤치마크·SOTA 매핑",
-             "description": "현재 최고 사례 정리"},
             {"label": "Other", "description": "직접 입력"},
         ]
 

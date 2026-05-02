@@ -486,12 +486,14 @@ export default function RunProgress() {
       if (event.event === "final_report" && runId) {
         const markdown = (event.markdown as string) || "";
         const reportPath = (event.report_path as string) || "";
+        const vaultPath = (event.vault_path as string) || "";
         const chapterCount = (event.chapter_count as number) || 0;
         finalReportReceivedRef.current = true;
         chunkKeysRef.current.clear();
         try {
           if (markdown) localStorage.setItem(`run:${runId}:report`, markdown);
           localStorage.setItem(`run:${runId}:report_path`, reportPath);
+          if (vaultPath) localStorage.setItem(`run:${runId}:vault_path`, vaultPath);
           localStorage.setItem(`run:${runId}:chapter_count`, String(chapterCount));
         } catch {
           /* ignore */
