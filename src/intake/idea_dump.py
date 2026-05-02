@@ -56,10 +56,13 @@ class IdeaDump:
         empty as the C31 mock did.
         """
         from src.interview.brief import ResearchBrief
-        from src.interview.product_planning import build_product_planning_projection
+        from src.interview.product_planning import (
+            build_product_planning_projection,
+            default_research_question,
+        )
 
         design = self.reframe()
-        question = design.pain_root or self.raw_text
+        question = default_research_question(self.raw_text, design_doc=design)
         context = design.contrary_framing
         known_facts = list(design.implicit_capabilities)
         constraints = list(design.challenged_premises)

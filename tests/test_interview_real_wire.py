@@ -124,10 +124,12 @@ def test_idea_dump_to_research_brief_e2e_via_office_hours():
         quality_bar="evidence-backed",
         coverage_score=0.8,
     )
-    # OfficeHours.reframe() should populate research_question / context /
-    # constraints from the design doc, not leave them as the raw idea text.
+    # OfficeHours.reframe() should populate context / constraints from the
+    # design doc, while the visible research question stays user-facing.
     assert brief.raw_idea == "LangGraph vs CrewAI — 한국 SaaS 의사결정 비교 분석"
-    assert brief.research_question  # populated from pain_root
+    assert brief.research_question.startswith("LangGraph vs CrewAI")
+    assert "입력 텍스트에서" not in brief.research_question
+    assert "실제 pain은" not in brief.research_question
     assert brief.context  # populated from contrary_framing
     assert isinstance(brief.known_facts, list)
     # The Q3 implicit-capabilities heuristic should fire on '비교'.

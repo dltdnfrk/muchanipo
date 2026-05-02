@@ -29,7 +29,7 @@ def build_product_planning_projection(
     research_question = _answer(
         answers,
         "research_question",
-        default=_clean(getattr(design_doc, "pain_root", "")) or raw,
+        default=default_research_question(raw_idea, design_doc=design_doc),
     )
     purpose = _answer(
         answers,
@@ -139,8 +139,79 @@ def _answer(answers: Mapping[str, str], key: str, *, default: str) -> str:
     return value or default
 
 
+def default_research_question(raw_idea: str, *, design_doc: Any | None = None) -> str:
+    """Choose a user-facing research question when the user did not answer Q1.
+
+    ``DesignDoc.pain_root`` is an OfficeHours diagnostic. It is valuable
+    context for interview forcing questions, but it should not become the
+    visible report title when the user only typed a topic.
+    """
+    raw = _clean(_extract_user_topic(raw_idea))
+    if raw:
+        return _topic_as_research_question(raw)
+
+    fallback = _clean(getattr(design_doc, "pain_root", ""))
+    if fallback and not _looks_like_office_hours_diagnostic(fallback):
+        return fallback
+    return "검증할 아이디어"
+
+
 def _clean(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def _extract_user_topic(raw_idea: str) -> str:
+    lines: list[str] = []
+    for line in str(raw_idea or "").splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        request_match = re.match(r"^\[원 요청\]\s*(.*)$", cleaned)
+        if request_match:
+            value = request_match.group(1).strip()
+            if value:
+                return value
+        if re.match(r"^\[Q[1-6]_[^\]]+\]", cleaned):
+            continue
+        lines.append(cleaned)
+    return " ".join(lines)
+
+
+def _topic_as_research_question(topic: str) -> str:
+    if topic.endswith("?") or topic.endswith("？"):
+        return topic
+    lower = topic.lower()
+    english_question_starts = (
+        "how ",
+        "what ",
+        "which ",
+        "can ",
+        "should ",
+        "why ",
+        "is ",
+        "are ",
+    )
+    if lower.startswith(english_question_starts):
+        return topic
+    if re.search(r"[가-힣]", topic):
+        research_like_terms = (
+            "검증",
+            "분석",
+            "조사",
+            "비교",
+            "시장성",
+            "가능성",
+            "구매",
+            "가격",
+            "수요",
+        )
+        return topic if any(term in topic for term in research_like_terms) else f"{topic} 검증"
+    return topic if "validation" in lower or "analysis" in lower else f"{topic} validation"
+
+
+def _looks_like_office_hours_diagnostic(value: str) -> bool:
+    markers = ("입력 텍스트에서", "핵심 객체로 보임", "실제 pain은", "트리거:")
+    return any(marker in value for marker in markers)
 
 
 def split_planning_items(value: str) -> list[str]:

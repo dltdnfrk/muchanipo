@@ -8,7 +8,11 @@ import pytest
 from src.council.persona_generator import FinalPersona
 from src.evidence.artifact import EvidenceRef, Finding
 from src.hitl.plannotator_adapter import HITLAdapter
-from src.pipeline.idea_to_council import IdeaToCouncilPipeline
+from src.pipeline.idea_to_council import (
+    IdeaToCouncilPipeline,
+    _append_claim_grounding_matrix,
+    _claim_with_evidence,
+)
 from src.intake.idea_dump import IdeaDump
 from src.intent.office_hours import OfficeHours
 from src.interview.session import InterviewSession
@@ -60,6 +64,25 @@ def test_pipeline_brief_uses_jsonline_interview_answers():
     assert show_prd["show_prd_source_commit"] == "7b22b070a685115a8687ea95fb95d398e4daf043"
     assert show_prd["show_prd_runtime_mode"] == "user_interview"
     assert "PRD/01_PRD.md" in show_prd["show_prd_document_outputs"]
+
+
+def test_mock_evidence_is_labeled_as_not_source_backed():
+    claim = _claim_with_evidence(
+        "offline claim",
+        ["mock-evidence-1"],
+        {"mock-evidence-1": "mock"},
+    )
+    assert "Mock evidence, not source-backed" in claim
+    assert "(Evidence: `mock-evidence-1`)" not in claim
+
+    lines: list[str] = []
+    _append_claim_grounding_matrix(
+        lines,
+        [(1, "offline claim", ["mock-evidence-1"])],
+        {"mock-evidence-1": "mock"},
+    )
+    matrix = "\n".join(lines)
+    assert "mock-only, not source-backed: `mock-evidence-1`" in matrix
 
 
 class RecordingReferenceRunner:
@@ -202,7 +225,10 @@ def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pip
     assert "PRD/04_PROJECT_SPEC.md" in event["artifacts"]["show_prd_document_outputs"]
     assert "Q1_research_question" in event["artifacts"]["interview_question_order"]
     assert "Q4_known" in event["artifacts"]["interview_question_order"]
-    assert result.brief.research_question == result.design_doc.pain_root
+    assert result.brief.research_question == result.brief.raw_idea
+    assert "입력 텍스트에서" not in result.brief.research_question
+    assert "실제 pain은" not in result.brief.research_question
+    assert result.brief.research_question != result.design_doc.pain_root
     assert result.brief.purpose == result.design_doc.demand_reality
     assert result.brief.context == result.design_doc.contrary_framing
     assert result.brief.known_facts == result.design_doc.implicit_capabilities
@@ -320,6 +346,7 @@ def test_step6_report_vault_agents_done_record_learning_outputs(reference_pipeli
     assert "Provenance: openalex" in result.report_md
     assert "## Claim Grounding Matrix" in result.report_md
     assert "(Evidence: `ref-" in result.report_md
+    assert "mock-evidence-" not in result.report_md
     assert "## Chapter 1:" in result.report_md
     assert "## Chapter 6:" in result.report_md
     assert "## ReACT Executed Sections" in result.report_md

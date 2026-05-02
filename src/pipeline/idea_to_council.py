@@ -32,7 +32,7 @@ from src.intent.office_hours import DesignDoc, OfficeHours
 from src.intent.plan_review import ConsensusPlan, PlanReview
 from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
-from src.interview.product_planning import build_product_planning_projection
+from src.interview.product_planning import build_product_planning_projection, default_research_question
 from src.interview.session import InterviewSession
 from src.interview.show_me_the_prd_port import show_me_the_prd_artifacts
 from src.research.autoresearch_runtime import runtime_contract_for_profile
@@ -550,7 +550,8 @@ class IdeaToCouncilPipeline:
         embedded_answers = _extract_embedded_interview_answers(raw_text)
         user_answer_count = len([value for value in embedded_answers.values() if str(value).strip()])
         answer_bank = {
-            "research_question": embedded_answers.get("research_question") or design_doc.pain_root or raw_text,
+            "research_question": embedded_answers.get("research_question")
+            or default_research_question(raw_text, design_doc=design_doc),
             "purpose": embedded_answers.get("purpose") or design_doc.demand_reality or "decide next action",
             "context": embedded_answers.get("context") or design_doc.contrary_framing or design_doc.status_quo,
             "known": embedded_answers.get("known")
@@ -763,6 +764,7 @@ def _compose_six_chapter_report(
     digests = _round_digests(council, report.evidence_refs, require_live=require_live)
     chapters = PyramidFormatter().reorder_all(ChapterMapper().map(digests))
     chapter_evidence = _chapter_evidence_map(digests, report.evidence_refs)
+    evidence_kind_by_id = _evidence_kind_by_id(report.evidence_refs)
     grounding_rows: list[tuple[int, str, list[str]]] = []
     lines = [
         f"# {report.title}",
@@ -789,7 +791,7 @@ def _compose_six_chapter_report(
 
     for chapter in chapters:
         evidence_ids = chapter_evidence.get(chapter.chapter_no, [])
-        lead_claim = _claim_with_evidence(chapter.lead_claim, evidence_ids)
+        lead_claim = _claim_with_evidence(chapter.lead_claim, evidence_ids, evidence_kind_by_id)
         grounding_rows.append((chapter.chapter_no, chapter.lead_claim, evidence_ids))
         lines.extend([
             f"## Chapter {chapter.chapter_no}: {chapter.title}",
@@ -798,10 +800,10 @@ def _compose_six_chapter_report(
             "",
         ])
         for claim in chapter.body_claims:
-            lines.append(f"- {_claim_with_evidence(claim, evidence_ids)}")
+            lines.append(f"- {_claim_with_evidence(claim, evidence_ids, evidence_kind_by_id)}")
             grounding_rows.append((chapter.chapter_no, claim, evidence_ids))
         lines.append("")
-    _append_claim_grounding_matrix(lines, grounding_rows)
+    _append_claim_grounding_matrix(lines, grounding_rows, evidence_kind_by_id)
     if reference_runtime_artifacts:
         _append_react_plan(lines, reference_runtime_artifacts.get("react", {}))
         _append_gbrain_snapshot(lines, reference_runtime_artifacts.get("gbrain", {}))
@@ -814,16 +816,28 @@ def _chapter_evidence_map(
 ) -> dict[int, list[str]]:
     mapper = ChapterMapper()
     fallback_ids = [ref.id for ref in evidence_refs]
+    known_ids = set(fallback_ids)
     out: dict[int, list[str]] = {}
     for digest in digests:
         chapter = mapper.layer_to_chapter.get(digest.layer_id.split("_", 1)[0])
         if chapter is None:
             continue
-        ids = [evidence_id for evidence_id in digest.evidence_ref_ids if evidence_id]
+        ids = [evidence_id for evidence_id in digest.evidence_ref_ids if evidence_id in known_ids]
         out.setdefault(chapter, [])
         out[chapter].extend(ids or fallback_ids)
     for chapter, ids in list(out.items()):
         out[chapter] = _dedupe_strings(ids)
+    return out
+
+
+def _evidence_kind_by_id(evidence_refs: list[EvidenceRef]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for ref in evidence_refs:
+        provenance = ref.provenance or {}
+        kind = str(provenance.get("kind") or "").strip().lower()
+        if not kind and ref.id.startswith("mock-"):
+            kind = "mock"
+        out[ref.id] = kind
     return out
 
 
@@ -877,20 +891,29 @@ def _snippet(value: str, *, limit: int) -> str:
     return compact[: limit - 1].rstrip() + "..."
 
 
-def _claim_with_evidence(claim: str, evidence_ids: list[str]) -> str:
+def _claim_with_evidence(
+    claim: str,
+    evidence_ids: list[str],
+    evidence_kind_by_id: dict[str, str] | None = None,
+) -> str:
     cleaned = claim.strip()
     if not cleaned:
         cleaned = "추가 검증이 필요한 빈 주장"
     if not evidence_ids:
         return f"{cleaned} (Evidence: none)"
+    evidence_kind_by_id = evidence_kind_by_id or {}
     refs = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids)
+    if _mock_only_evidence(evidence_ids, evidence_kind_by_id):
+        return f"{cleaned} (Mock evidence, not source-backed: {refs})"
     return f"{cleaned} (Evidence: {refs})"
 
 
 def _append_claim_grounding_matrix(
     lines: list[str],
     grounding_rows: list[tuple[int, str, list[str]]],
+    evidence_kind_by_id: dict[str, str] | None = None,
 ) -> None:
+    evidence_kind_by_id = evidence_kind_by_id or {}
     lines.extend([
         "## Claim Grounding Matrix",
         "",
@@ -898,9 +921,22 @@ def _append_claim_grounding_matrix(
         "| --- | --- | --- |",
     ])
     for chapter_no, claim, evidence_ids in grounding_rows:
-        evidence = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids) if evidence_ids else "none"
+        evidence = _evidence_cell(evidence_ids, evidence_kind_by_id)
         lines.append(f"| {chapter_no} | {_table_cell(claim)} | {evidence} |")
     lines.append("")
+
+
+def _evidence_cell(evidence_ids: list[str], evidence_kind_by_id: dict[str, str]) -> str:
+    if not evidence_ids:
+        return "none"
+    refs = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids)
+    if _mock_only_evidence(evidence_ids, evidence_kind_by_id):
+        return f"mock-only, not source-backed: {refs}"
+    return refs
+
+
+def _mock_only_evidence(evidence_ids: list[str], evidence_kind_by_id: dict[str, str]) -> bool:
+    return bool(evidence_ids) and all(evidence_kind_by_id.get(evidence_id) == "mock" for evidence_id in evidence_ids)
 
 
 def _table_cell(value: str) -> str:
