@@ -941,10 +941,14 @@ def serve_full(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(final_md, encoding="utf-8")
 
+    vault_path_value = pipeline_result.get("vault_path")
+    vault_path_str = str(vault_path_value) if vault_path_value else None
+
     emit(
         "final_report",
         stream=stdout,
         report_path=str(report_path),
+        vault_path=vault_path_str,
         chapter_count=len(chapters),
         markdown=final_md,
     )
@@ -952,6 +956,7 @@ def serve_full(
         "done",
         stream=stdout,
         report_path=str(report_path),
+        vault_path=vault_path_str,
         pipeline="full",
         depth=depth,
         council_persona_pool_size=int(pipeline_result.get("council_persona_pool_size") or 0),

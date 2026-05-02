@@ -289,6 +289,7 @@ fn is_allowed_renderer_env(key: &str) -> bool {
             | "OPENCODE_GO_API_KEY"
             | "OPENALEX_EMAIL"
             | "PLANNOTATOR_API_KEY"
+            | "MUCHANIPO_VAULT_ROOT"
     )
 }
 

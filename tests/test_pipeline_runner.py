@@ -329,3 +329,19 @@ def test_run_pipeline_enforces_budget_for_each_depth(depth_name):
     else:
         assert artifacts["autoresearch_execution_mode"] == "inline_local"
         assert artifacts["autoresearch_async_background"] == "disabled"
+
+
+def test_run_pipeline_honors_muchanipo_vault_root_env(tmp_path, monkeypatch):
+    """When MUCHANIPO_VAULT_ROOT is set, the report is written under that root."""
+    vault_root = tmp_path / "vault-root"
+    monkeypatch.setenv("MUCHANIPO_VAULT_ROOT", str(vault_root))
+
+    result = run_pipeline("딸기 진단키트 시장성", offline=True)
+
+    vault_path = Path(result["vault_path"])
+    assert vault_path.exists()
+    assert vault_path.is_file()
+    # The vault file must live under the configured root, not under the
+    # default temp scratch directory.
+    assert str(vault_path).startswith(str(vault_root))
+    assert vault_path.read_text(encoding="utf-8").strip()
