@@ -11,6 +11,12 @@ import {
   type ResearchDepth,
 } from "../lib/tauriClient";
 import { deleteRun, listRuns, markRunDone, markRunFailed, markRunRunning } from "../lib/runsIndex";
+import {
+  PlannotatorPlanEditor,
+  normalizePlanReviewEditState,
+  planReviewAnnotations,
+  type PlanReviewEditState,
+} from "../components/PlannotatorPlanEditor";
 
 type BackendMode = "offline" | "cli" | "api";
 
@@ -40,7 +46,8 @@ function readEnvsFromSettings(): Record<string, string> {
     carry("kimi_api_key", "KIMI_API_KEY");
     carry("openai_api_key", "OPENAI_API_KEY");
     carry("opencode_api_key", "OPENCODE_API_KEY");
-    carry("openalex_email", "OPENALEX_EMAIL");
+    carry("openalex_email", "MUCHANIPO_CONTACT_EMAIL");
+    carry("openalex_email", "UNPAYWALL_EMAIL");
     carry("plannotator_key", "PLANNOTATOR_API_KEY");
   }
   const visualizer = localStorage.getItem("council_visualizer");
@@ -130,6 +137,7 @@ interface HitlPrompt {
   prompt: string;
   preview?: string;
   options: { key: string; label: string; value: string; description?: string }[];
+  payload?: Record<string, unknown>;
 }
 
 interface InterviewClarity {
@@ -145,6 +153,22 @@ interface InterviewClarity {
   focusQuestion?: string;
   round?: number;
   total?: number;
+}
+
+interface DeepInterviewDocumentArtifact {
+  path: string;
+  title: string;
+  chars: number;
+  preview: string;
+}
+
+interface DeepInterviewArtifacts {
+  workflow: string;
+  commit: string;
+  documentCount: number;
+  outputs: string[];
+  evidenceMarkers: string[];
+  manifest: DeepInterviewDocumentArtifact[];
 }
 
 interface RuntimeEvidence {
@@ -299,6 +323,43 @@ function normalizeDeepInterviewProgress(event: BackendEvent): InterviewClarity {
   return normalizeInterviewClarity(event as Record<string, unknown>);
 }
 
+function normalizeDeepInterviewArtifacts(event: BackendEvent): DeepInterviewArtifacts | null {
+  const data =
+    event.data && typeof event.data === "object"
+      ? (event.data as Record<string, unknown>)
+      : {};
+  const rawManifest = Array.isArray(data.document_manifest) ? data.document_manifest : [];
+  const manifest = rawManifest
+    .map((raw): DeepInterviewDocumentArtifact | null => {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Record<string, unknown>;
+      const path = String(item.path ?? "").trim();
+      if (!path) return null;
+      return {
+        path,
+        title: String(item.title ?? path),
+        chars: Number(item.chars ?? 0) || 0,
+        preview: String(item.preview ?? "").trim(),
+      };
+    })
+    .filter((item): item is DeepInterviewDocumentArtifact => item !== null);
+  const outputs = Array.isArray(event.document_outputs)
+    ? event.document_outputs.map((item) => String(item)).filter(Boolean)
+    : manifest.map((item) => item.path);
+  const evidenceMarkers = Array.isArray(event.evidence_markers)
+    ? event.evidence_markers.map((item) => String(item)).filter(Boolean)
+    : [];
+  if (outputs.length === 0 && manifest.length === 0) return null;
+  return {
+    workflow: String(event.workflow ?? data.workflow ?? "show-me-the-prd"),
+    commit: String(event.workflow_commit ?? data.commit ?? ""),
+    documentCount: Number(event.document_count ?? outputs.length) || outputs.length,
+    outputs,
+    evidenceMarkers,
+    manifest,
+  };
+}
+
 function normalizeHitlPrompt(event: BackendEvent): HitlPrompt | null {
   const data =
     event.data && typeof event.data === "object"
@@ -314,6 +375,10 @@ function normalizeHitlPrompt(event: BackendEvent): HitlPrompt | null {
     : Array.isArray(data.options)
     ? data.options
     : [];
+  const payload =
+    data.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
+      ? (data.payload as Record<string, unknown>)
+      : undefined;
   const options = rawOptions.map((raw, idx) => {
     if (raw && typeof raw === "object") {
       const item = raw as Record<string, unknown>;
@@ -331,6 +396,7 @@ function normalizeHitlPrompt(event: BackendEvent): HitlPrompt | null {
     title,
     prompt,
     preview: preview || undefined,
+    payload,
     options:
       options.length > 0
         ? options
@@ -401,11 +467,13 @@ export default function RunProgress() {
   const [reportPreview, setReportPreview] = useState("");
   const [interviewPrompt, setInterviewPrompt] = useState<InterviewPrompt | null>(null);
   const [interviewClarity, setInterviewClarity] = useState<InterviewClarity | null>(null);
+  const [interviewArtifacts, setInterviewArtifacts] = useState<DeepInterviewArtifacts | null>(null);
   const [interviewAnswer, setInterviewAnswer] = useState("");
   const [interviewSelections, setInterviewSelections] = useState<string[]>([]);
   const [interviewSubmitting, setInterviewSubmitting] = useState(false);
   const [interviewError, setInterviewError] = useState<string | null>(null);
   const [hitlPrompt, setHitlPrompt] = useState<HitlPrompt | null>(null);
+  const [planReviewEdits, setPlanReviewEdits] = useState<PlanReviewEditState | null>(null);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [hitlError, setHitlError] = useState<string | null>(null);
   const [runtimeEvidence, setRuntimeEvidence] = useState<RuntimeEvidence | null>(null);
@@ -414,6 +482,7 @@ export default function RunProgress() {
   const chunkKeysRef = useRef<Set<string>>(new Set());
   const finalReportReceivedRef = useRef(false);
   const autoRecoveredRunsRef = useRef<Set<string>>(new Set());
+  const planReviewEditCount = planReviewAnnotations(planReviewEdits).length;
 
   const failRun = useCallback(
     (message: string) => {
@@ -579,6 +648,12 @@ export default function RunProgress() {
         return;
       }
 
+      if (event.event === "deep_interview_artifacts") {
+        const artifacts = normalizeDeepInterviewArtifacts(event);
+        if (artifacts) setInterviewArtifacts(artifacts);
+        return;
+      }
+
       if (event.event === "interview_question") {
         const prompt = normalizeInterviewPrompt(event);
         if (prompt) {
@@ -596,6 +671,7 @@ export default function RunProgress() {
         const prompt = normalizeHitlPrompt(event);
         if (prompt) {
           setHitlPrompt(prompt);
+          setPlanReviewEdits(normalizePlanReviewEditState(prompt));
           setHitlError(null);
           setHitlSubmitting(false);
         }
@@ -610,6 +686,7 @@ export default function RunProgress() {
           setInterviewSubmitting(false);
         }
         setHitlPrompt(null);
+        setPlanReviewEdits(null);
         setHitlSubmitting(false);
         setStages((prev) => {
           const next = { ...prev };
@@ -1018,11 +1095,18 @@ export default function RunProgress() {
     if (!hitlPrompt || hitlSubmitting) return;
     setHitlSubmitting(true);
     setHitlError(null);
+    const annotations =
+      hitlPrompt.gate === "plan" ? planReviewAnnotations(planReviewEdits) : [];
     try {
       await sendAction({
         action: "hitl_decision",
         gate: hitlPrompt.gate,
         status,
+        annotations,
+        comment:
+          annotations.length > 0
+            ? `inline plan review edits: ${annotations.length}`
+            : undefined,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1192,6 +1276,14 @@ export default function RunProgress() {
               </pre>
             )}
 
+            {hitlPrompt.gate === "plan" && planReviewEdits && (
+              <PlannotatorPlanEditor
+                state={planReviewEdits}
+                onChange={setPlanReviewEdits}
+                editCount={planReviewEditCount}
+              />
+            )}
+
             <div className="grid grid-cols-1 gap-2 sm:ml-auto sm:inline-grid sm:max-w-full sm:grid-cols-[max-content_max-content]">
               <button
                 type="button"
@@ -1207,11 +1299,65 @@ export default function RunProgress() {
                 onClick={() => submitHitlDecision("approved")}
                 className="min-h-10 min-w-0 max-w-full whitespace-nowrap rounded-full bg-white px-4 py-2 text-center text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {hitlSubmitting ? "승인 중" : "승인하고 계속"}
+                {hitlSubmitting
+                  ? "승인 중"
+                  : planReviewEditCount > 0
+                  ? "수정 반영 후 계속"
+                  : "승인하고 계속"}
               </button>
             </div>
 
             {hitlError && <p className="mt-2 break-all text-xs text-red-300">{hitlError}</p>}
+          </div>
+        )}
+
+        {interviewArtifacts && (
+          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                  Deep Interview Artifacts
+                </p>
+                <h2 className="mt-1 break-words text-sm font-medium text-white">
+                  {interviewArtifacts.workflow} · {interviewArtifacts.documentCount} documents
+                </h2>
+              </div>
+              {interviewArtifacts.commit && (
+                <span className="max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-1 font-mono text-[10px] text-secondary">
+                  {interviewArtifacts.commit.slice(0, 12)}
+                </span>
+              )}
+            </div>
+            {interviewArtifacts.evidenceMarkers.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {interviewArtifacts.evidenceMarkers.slice(0, 8).map((marker) => (
+                  <span
+                    key={marker}
+                    className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] text-tertiary"
+                  >
+                    {marker}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="grid gap-2 md:grid-cols-2">
+              {interviewArtifacts.manifest.map((doc) => (
+                <div key={doc.path} className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-mono text-[11px] text-secondary">
+                      {doc.path}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-tertiary">{doc.chars} chars</span>
+                  </div>
+                  <p className="truncate text-xs font-medium text-white">{doc.title}</p>
+                  {doc.preview && (
+                    <p className="mt-1 max-h-12 overflow-hidden break-words text-[11px] leading-relaxed text-tertiary">
+                      {doc.preview}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

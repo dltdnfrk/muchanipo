@@ -22,7 +22,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Callable, List
 
 from src.research.academic import sync_search as academic_sync_search
 
@@ -522,6 +522,7 @@ def execute_react_section(
     report: dict[str, Any],
     prompt_plan: dict[str, Any],
     previous_sections: list[str] | None = None,
+    llm_responder: Callable[[str, str, list[dict[str, Any]]], str] | None = None,
 ) -> dict[str, Any]:
     """Execute a deterministic offline ReACT loop for one section.
 
@@ -530,6 +531,15 @@ def execute_react_section(
     parsing them through ``parse_tool_calls``, collecting observations from the
     report evidence payload, and writing the section from those observations.
     """
+    if llm_responder is not None:
+        return _execute_llm_react_section(
+            section=section,
+            report=report,
+            prompt_plan=prompt_plan,
+            previous_sections=previous_sections or [],
+            llm_responder=llm_responder,
+        )
+
     config = prompt_plan.get("react_config") or {}
     available_tools = list(config.get("available_tools") or sorted(ALL_TOOLS))
     min_calls = int(config.get("min_tool_calls") or MIN_TOOL_CALLS)
@@ -554,7 +564,73 @@ def execute_react_section(
         "final_answer": final_answer,
         "section_markdown": final_answer,
         "react_config": config,
+        "execution_mode": "deterministic_tool_loop",
+        "llm_response_count": 0,
     }
+
+
+def _execute_llm_react_section(
+    *,
+    section: dict[str, Any],
+    report: dict[str, Any],
+    prompt_plan: dict[str, Any],
+    previous_sections: list[str],
+    llm_responder: Callable[[str, str, list[dict[str, Any]]], str],
+) -> dict[str, Any]:
+    config = prompt_plan.get("react_config") or {}
+    min_calls = int(config.get("min_tool_calls") or MIN_TOOL_CALLS)
+    max_calls = int(config.get("max_tool_calls") or MAX_TOOL_CALLS_PER_SECTION)
+    max_iterations = int(config.get("max_iterations") or MAX_ITERATIONS)
+    system_prompt = str(prompt_plan.get("system_prompt") or "")
+    user_prompt = str(prompt_plan.get("user_prompt") or "")
+    tool_calls: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    responses: list[str] = []
+
+    for _ in range(max(1, max_iterations)):
+        response = str(llm_responder(system_prompt, user_prompt, observations))
+        responses.append(response)
+        calls = parse_tool_calls(response)
+        if calls and len(tool_calls) < max_calls:
+            for call in calls[: max_calls - len(tool_calls)]:
+                tool_calls.append(call)
+                observations.append(_run_react_tool(call, report))
+            continue
+        final = _extract_final_answer(response)
+        if final and len(tool_calls) >= min_calls:
+            return {
+                "section_title": str(section.get("title") or ""),
+                "section_type": str(section.get("type") or ""),
+                "tool_calls": tool_calls,
+                "observations": observations,
+                "final_answer": final,
+                "section_markdown": final,
+                "react_config": config,
+                "execution_mode": "llm_react_loop",
+                "llm_response_count": len(responses),
+            }
+        if len(tool_calls) >= max_calls:
+            break
+
+    final_answer = _build_final_answer(section, observations, previous_sections)
+    return {
+        "section_title": str(section.get("title") or ""),
+        "section_type": str(section.get("type") or ""),
+        "tool_calls": tool_calls,
+        "observations": observations,
+        "final_answer": final_answer,
+        "section_markdown": final_answer,
+        "react_config": config,
+        "execution_mode": "llm_react_fallback",
+        "llm_response_count": len(responses),
+    }
+
+
+def _extract_final_answer(response: str) -> str:
+    marker = "Final Answer:"
+    if marker not in response:
+        return ""
+    return response.split(marker, 1)[1].strip()
 
 
 def _planned_react_tools(available_tools: list[str], min_calls: int, max_calls: int) -> list[str]:

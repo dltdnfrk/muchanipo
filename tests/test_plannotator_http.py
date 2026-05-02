@@ -91,6 +91,7 @@ def test_client_polls_pending_to_approved_and_fetches_annotations(monkeypatch):
             {
                 "type": "edit",
                 "target": "report.summary",
+                "source": "plannotator-http",
                 "instruction": "Tighten summary.",
                 "extra": "preserved",
             }

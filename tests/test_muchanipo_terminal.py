@@ -1122,13 +1122,24 @@ def test_main_references_json_and_human_output(capsys):
     assert report["schema_version"] == 1
     assert report["command"] == "muchanipo references"
     assert [stage["step"] for stage in report["stages"]] == [1, 2, 3, 4, 5, 6]
+    assert all(stage["ready"] for stage in report["stages"])
+    assert all(stage["product_standard_ready"] for stage in report["stages"])
+    assert report["not_stage_contract_covered_references"] == []
     assert any(item["name"] == "MiroFish" for item in report["license_warnings"])
-    assert any(item["name"] == "MemPalace" for item in report["gaps"])
-    assert any(item["name"] == "MemPalace" for item in report["not_ready_references"])
+    assert any(item["name"] == "Codex Skills / Awesome Codex Skills" for item in report["gaps"])
+    assert not any(item["name"] == "OASIS / CAMEL-AI" for item in report["gaps"])
+    assert not any(item["name"].startswith("GBrain") for item in report["gaps"])
+    assert [item["name"] for item in report["gaps"]] == ["Codex Skills / Awesome Codex Skills"]
+    assert not any(item["name"] == "ReACT 보고서 작성 패턴" for item in report["gaps"])
+    assert any(
+        item["name"] == "Codex Skills / Awesome Codex Skills"
+        for item in report["not_ready_references"]
+    )
 
     assert server_mod.main(["references"]) == 0
     text = capsys.readouterr().out
     assert "Reference runtime readiness" in text
+    assert "product-standard covered" in text
     assert "License warnings" in text
     assert "Known gaps" in text
 

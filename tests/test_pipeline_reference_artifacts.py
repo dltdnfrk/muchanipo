@@ -56,6 +56,10 @@ def test_pipeline_brief_uses_jsonline_interview_answers():
     assert getattr(brief, "interview_user_answer_count") == 6
     assert getattr(brief, "interview_office_hours_fill_count") == 0
     assert all(item["source"] == "user" for item in getattr(brief, "interview_trace"))
+    show_prd = getattr(brief, "show_me_the_prd_artifacts")
+    assert show_prd["show_prd_source_commit"] == "7b22b070a685115a8687ea95fb95d398e4daf043"
+    assert show_prd["show_prd_runtime_mode"] == "user_interview"
+    assert "PRD/01_PRD.md" in show_prd["show_prd_document_outputs"]
 
 
 class RecordingReferenceRunner:
@@ -191,6 +195,11 @@ def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pip
     assert int(event["artifacts"]["interview_reconstructed_question_count"]) >= 5
     assert int(event["artifacts"]["interview_question_count"]) >= 5
     assert event["artifacts"]["interview_effective_answer_count"] == event["artifacts"]["interview_question_count"]
+    assert event["artifacts"]["show_prd_source_commit"] == "7b22b070a685115a8687ea95fb95d398e4daf043"
+    assert event["artifacts"]["show_prd_license"] == "MIT"
+    assert event["artifacts"]["show_prd_runtime_mode"] == "synthetic_office_hours_fill"
+    assert "research_batch_before_feature_choice" in event["artifacts"]["show_prd_evidence_markers"]
+    assert "PRD/04_PROJECT_SPEC.md" in event["artifacts"]["show_prd_document_outputs"]
     assert "Q1_research_question" in event["artifacts"]["interview_question_order"]
     assert "Q4_known" in event["artifacts"]["interview_question_order"]
     assert result.brief.research_question == result.design_doc.pain_root
@@ -264,7 +273,18 @@ def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run
     assert event["artifacts"]["persona_validation_framework"] == "HACHIMI"
     assert event["artifacts"]["persona_diversity_framework"] == "MAP-Elites"
     assert event["artifacts"]["council_protocol"] == "OASIS / CAMEL-AI"
+    assert event["artifacts"]["council_protocol_runtime"] == "clean-room local social simulation protocol"
+    assert event["artifacts"]["council_protocol_phase_count"] == "3"
     assert event["artifacts"]["council_id"] == result.report.id
+    assert event["artifacts"]["mirofish_runtime_valid"] == "true"
+    assert event["artifacts"]["mirofish_workflow_phases"] == (
+        "graph_building,environment_setup,simulation,report_generation,deep_interaction"
+    )
+    assert int(event["artifacts"]["mirofish_world_node_count"]) >= 2
+    assert int(event["artifacts"]["mirofish_world_edge_count"]) >= 1
+    assert int(event["artifacts"]["mirofish_simulation_event_count"]) == len(result.council.turn_transcript)
+    assert event["artifacts"]["mirofish_report_agent_ready"] == "true"
+    assert event["artifacts"]["mirofish_deep_interaction_ready"] == "true"
     assert int(event["artifacts"]["persona_pool_size"]) >= int(event["artifacts"]["active_persona_count"])
     assert event["artifacts"]["persona_pool_target_size"] == result.state.artifacts["council_persona_pool_size"]
     assert event["artifacts"]["active_persona_count"] == result.state.artifacts["active_council_persona_count"]
@@ -309,6 +329,17 @@ def test_step6_report_vault_agents_done_record_learning_outputs(reference_pipeli
     assert int(report_event["artifacts"]["react_tool_call_count"]) >= 3
     assert "## GBrain Compiled Truth + Timeline" in result.report_md
     assert "### Evidence Summary" in result.report_md
+    assert "### Raw/Wiki Governance" in result.report_md
+    assert "### GBrain Runtime Record" in result.report_md
+    assert report_event["artifacts"]["wiki_raw_path"].startswith("raw/")
+    assert report_event["artifacts"]["wiki_compiled_path"].startswith("wiki/")
+    assert report_event["artifacts"]["wiki_dual_path_enforced"] == "true"
+    assert report_event["artifacts"]["gbrain_runtime_valid"] == "true"
+    assert int(report_event["artifacts"]["gbrain_event_count"]) >= 3
+    assert int(report_event["artifacts"]["gbrain_typed_link_count"]) >= 4
+    assert report_event["artifacts"]["gbrain_brain_first_route"] == "search,query,get_page,external_after_empty"
+    assert report_event["artifacts"]["gbrain_search_mode"] == "keyword_graph_hybrid"
+    assert report_event["artifacts"]["gbrain_license"] == "MIT"
     assert vault_event["artifacts"]["vault_path"] == str(result.vault_path)
     assert done_event["artifacts"]["learning_count"] == str(len(result.retrospective.learnings))
     first_learning = json.loads((tmp_path / "learnings.jsonl").read_text(encoding="utf-8").splitlines()[0])

@@ -23,6 +23,10 @@ from src.interview.product_planning import (
     build_product_planning_projection,
     split_planning_items,
 )
+from src.interview.show_me_the_prd_port import (
+    ShowMeThePrdPlan,
+    build_show_me_the_prd_plan,
+)
 
 from .brief import ResearchBrief
 from .rubric import (
@@ -39,13 +43,20 @@ class InterviewSession:
     answers: Dict[str, str] = field(default_factory=dict)
     plan: Optional[InterviewPlan] = None
     rubric: Optional[InterviewRubric] = None
+    show_me_the_prd_plan: Optional[ShowMeThePrdPlan] = None
 
     @classmethod
     def from_idea(cls, idea: IdeaDump) -> "InterviewSession":
         idea.validate()
         plan = assess(idea.raw_text)
         rubric = InterviewRubric(topic=idea.raw_text[:80])
-        return cls(raw_idea=idea.raw_text, plan=plan, rubric=rubric)
+        show_prd_plan = build_show_me_the_prd_plan(idea.raw_text)
+        return cls(
+            raw_idea=idea.raw_text,
+            plan=plan,
+            rubric=rubric,
+            show_me_the_prd_plan=show_prd_plan,
+        )
 
     def answer(self, dimension: str, text: str) -> None:
         cleaned = text.strip()

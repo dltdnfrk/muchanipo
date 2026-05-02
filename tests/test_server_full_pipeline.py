@@ -208,6 +208,8 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     question_events = [e for e in events if e["event"] == "interview_question"]
     clarity_events = [e for e in events if e["event"] == "deep_interview_progress"]
+    artifact_events = [e for e in events if e["event"] == "deep_interview_artifacts"]
+    phase_events = [e for e in events if e["event"] == "phase_change" and e.get("phase") == "INTERVIEW"]
     first_pipeline_index = next(
         i
         for i, e in enumerate(events)
@@ -219,6 +221,15 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     assert rc == 0
     assert len(question_events) == 6
     assert clarity_events
+    assert artifact_events
+    assert phase_events[0]["data"]["workflow"] == "show-me-the-prd"
+    assert phase_events[0]["data"]["workflow_document_outputs"] == [
+        "PRD/01_PRD.md",
+        "PRD/02_DATA_MODEL.md",
+        "PRD/03_PHASES.md",
+        "PRD/04_PROJECT_SPEC.md",
+    ]
+    assert phase_events[0]["data"]["workflow_research_batches"][0]["queries"]
     assert first_clarity_index < first_question_index
     assert clarity_events[0]["phase"] == "idea_dump"
     assert clarity_events[0]["stage"] == "intake"
@@ -230,6 +241,19 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     assert question_events[0]["data"]["deep_interview"]["phase"] == "question"
     assert "PRD overview" in question_events[0]["preview"]
     assert question_events[0]["options"][0]["description"]
+    assert any(event["phase"] == "research_batch" for event in clarity_events)
+    artifact = artifact_events[0]
+    assert artifact["workflow"] == "show-me-the-prd"
+    assert artifact["document_count"] == 4
+    assert artifact["document_outputs"] == [
+        "PRD/01_PRD.md",
+        "PRD/02_DATA_MODEL.md",
+        "PRD/03_PHASES.md",
+        "PRD/04_PROJECT_SPEC.md",
+    ]
+    assert "# Product Requirements Document" in artifact["data"]["documents"]["PRD/01_PRD.md"]
+    assert "answer 2" in artifact["data"]["documents"]["PRD/01_PRD.md"]
+    assert artifact["data"]["document_manifest"][0]["chars"] > 100
     assert first_question_index < first_pipeline_index
     assert calls and "answer 1" in calls[0]
 
@@ -291,6 +315,45 @@ def test_jsonline_report_hitl_gate_uses_compact_payload():
     assert payload["report_md_chars"] == len(report_md)
     assert "report_md" not in payload
     assert len(json.dumps(event, ensure_ascii=False)) < 6000
+
+
+def test_jsonline_plan_gate_accepts_inline_annotations():
+    action = {
+        "action": "hitl_decision",
+        "gate": "plan",
+        "status": "approved",
+        "annotations": [
+            {
+                "type": "edit",
+                "target": "planning_prd.overview.one_line",
+                "replacement": "edited plan",
+            }
+        ],
+        "comment": "inline plan review edits: 1",
+    }
+    stdin = io.StringIO(json.dumps(action) + "\n")
+    stdout = io.StringIO()
+
+    result = JSONLineHITLAdapter(stdout=stdout, stdin=stdin).gate(
+        "plan",
+        {
+            "design_doc": {"pain_root": "raw"},
+            "consensus_plan": {"consensus_score": 0.9, "gate_passed": True},
+            "gate_reason": "ok",
+            "editable_plan": {
+                "editable_summary": {
+                    "research_question": "raw",
+                    "purpose": "decision",
+                }
+            },
+        },
+    )
+
+    event = json.loads(stdout.getvalue().splitlines()[0])
+    assert result.status == "approved"
+    assert result.annotations == action["annotations"]
+    assert event["data"]["payload"]["editable_plan"]["editable_summary"]["purpose"] == "decision"
+    assert "Inline edit" in event["preview"]
 
 
 def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkeypatch):

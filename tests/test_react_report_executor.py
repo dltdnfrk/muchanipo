@@ -64,6 +64,61 @@ def test_execute_react_section_calls_local_insight_and_mempalace_backends(tmp_pa
     }
     assert {"insight_forge", "mempalace_search"}.issubset(backend_tools)
     assert "react backend evidence" in result["section_markdown"]
+    assert result["execution_mode"] == "deterministic_tool_loop"
+
+
+def test_execute_react_section_supports_llm_driven_react_loop(tmp_path, monkeypatch):
+    fixture = tmp_path / "insight.json"
+    fixture.write_text(
+        json.dumps({"__default__": [{"text": "llm react evidence", "source": "vault/llm.md", "score": 0.9}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("INSIGHT_FORGE_STUB_DATA", str(fixture))
+    monkeypatch.setenv("MUCHANIPO_OFFLINE", "1")
+    calls = [
+        '<tool_call>{"name":"insight_forge","parameters":{"query":"llm react evidence"}}</tool_call>',
+        '<tool_call>{"name":"mempalace_search","parameters":{"query":"llm react evidence"}}</tool_call>',
+        '<tool_call>{"name":"web_search","parameters":{"query":"llm react evidence"}}</tool_call>',
+        "Final Answer: LLM이 도구 관찰을 바탕으로 작성한 섹션입니다.",
+    ]
+
+    def responder(system_prompt, user_prompt, observations):
+        assert "도구 호출 형식" in system_prompt
+        assert "현재 작업" in user_prompt
+        return calls.pop(0)
+
+    result = react_report.execute_react_section(
+        section={
+            "title": "LLM ReACT",
+            "type": "finding",
+            "source_text": "llm react evidence",
+        },
+        report={
+            "topic": "llm react evidence",
+            "evidence": [{"source_url": "local", "quote": "llm react evidence", "source_title": "Local"}],
+        },
+        prompt_plan={
+            "system_prompt": "도구 호출 형식",
+            "user_prompt": "현재 작업",
+            "react_config": {
+                "available_tools": ["insight_forge", "mempalace_search", "web_search"],
+                "min_tool_calls": 3,
+                "max_tool_calls": 3,
+                "max_iterations": 4,
+            },
+        },
+        previous_sections=[],
+        llm_responder=responder,
+    )
+
+    assert result["execution_mode"] == "llm_react_loop"
+    assert result["llm_response_count"] == 4
+    assert [call["name"] for call in result["tool_calls"]] == [
+        "insight_forge",
+        "mempalace_search",
+        "web_search",
+    ]
+    assert result["section_markdown"] == "LLM이 도구 관찰을 바탕으로 작성한 섹션입니다."
 
 
 def test_execute_react_section_wires_web_search_to_academic_backend(monkeypatch):

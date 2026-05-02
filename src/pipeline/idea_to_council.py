@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict
 from uuid import uuid4
 
 from src.agents.generator import DebateAgentGenerator, DebateAgentSpec
-from src.agents.mirofish import debate_agent_to_council_persona
+from src.agents.mirofish import build_mirofish_runtime_record, debate_agent_to_council_persona
 from src.council.diversity_mapper import DiversityMap
 from src.council.parsers import RoundResult
 from src.council.persona_generator import Draft, PersonaGenerator
@@ -34,6 +34,7 @@ from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
 from src.interview.product_planning import build_product_planning_projection
 from src.interview.session import InterviewSession
+from src.interview.show_me_the_prd_port import show_me_the_prd_artifacts
 from src.research.autoresearch_runtime import runtime_contract_for_profile
 from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
 from src.research.planner import ResearchPlanner
@@ -216,6 +217,8 @@ class IdeaToCouncilPipeline:
             "interview_question_order",
             ",".join(item["dimension_id"] for item in getattr(brief, "interview_trace", []) or []),
         )
+        for key, value in (getattr(brief, "show_me_the_prd_artifacts", {}) or {}).items():
+            state.record_artifact(key, value)
         self._emit(state, Stage.INTERVIEW)
 
         consensus_plan = PlanReview().autoplan(design_doc)
@@ -232,10 +235,31 @@ class IdeaToCouncilPipeline:
                 "design_doc": design_doc.to_brief(),
                 "consensus_plan": consensus_plan.to_ontology(),
                 "gate_reason": consensus_plan.gate_reason,
+                "editable_plan": _editable_plan_payload(brief),
+                "plannotator_edit_contract": {
+                    "mode": "inline_plan_annotation",
+                    "upstream_commit": "6324a0c859f06030b47d71c02b7c6fed09fa0b92",
+                    "runtime": "tauri_embedded_port",
+                    "editable_targets": [
+                        "planning_prd.overview.one_line",
+                        "planning_prd.core_value.resolution",
+                        "planning_prd.target_scenarios.0.scenario",
+                        "planning_prd.target_scenarios.0.user_group",
+                        "feature_hierarchy.0.features.0.name",
+                        "planning_prd.success_metrics",
+                        "user_flow.nodes.start.label",
+                        "user_flow.nodes.questionnaire.label",
+                        "user_flow.nodes.output.label",
+                    ],
+                },
             },
         )
         self._record_hitl_gate(state, "plan", hitl_results["plan"])
         self._require_approved_gate("plan", hitl_results["plan"])
+        plan_annotations = list(hitl_results["plan"].annotations or [])
+        plan_edit_count = _apply_plan_review_annotations(brief, plan_annotations)
+        if plan_edit_count:
+            state.record_artifact("plan_review_inline_edit_count", str(plan_edit_count))
 
         hitl_results["brief"] = self.hitl_adapter.gate_brief(brief)
         self._record_hitl_gate(state, "brief", hitl_results["brief"])
@@ -250,6 +274,10 @@ class IdeaToCouncilPipeline:
                     f"coverage={brief.coverage_score:.2f}, "
                     f"missing={','.join(interview.missing_dimensions)}"
                 )
+            reapplied_plan_edit_count = _apply_plan_review_annotations(brief, plan_annotations)
+            if reapplied_plan_edit_count:
+                state.record_artifact("plan_review_inline_edit_count", str(reapplied_plan_edit_count))
+                state.record_artifact("plan_review_inline_reapplied_after_brief_gate", "true")
 
         state.advance(Stage.TARGETING)
         targeting_map = build_targeting_map(brief)
@@ -340,14 +368,44 @@ class IdeaToCouncilPipeline:
             progress_callback=self.progress_callback,
         )
         council.run_all()
+        mirofish_runtime = build_mirofish_runtime_record(report=report, council=council)
         state.record_artifact("council_id", report.id)
         state.record_artifact("council_turn_count", str(len(council.turn_transcript)))
+        state.record_artifact(
+            "mirofish_runtime_valid",
+            "true" if mirofish_runtime.get("valid") else "false",
+        )
+        state.record_artifact(
+            "mirofish_workflow_phases",
+            ",".join(mirofish_runtime.get("workflow_phases", []) or []),
+        )
+        graph_building = mirofish_runtime.get("graph_building") or {}
+        simulation = mirofish_runtime.get("simulation") or {}
+        report_generation = mirofish_runtime.get("report_generation") or {}
+        deep_interaction = mirofish_runtime.get("deep_interaction") or {}
+        state.record_artifact("mirofish_world_node_count", str(graph_building.get("world_node_count", 0)))
+        state.record_artifact("mirofish_world_edge_count", str(graph_building.get("world_edge_count", 0)))
+        state.record_artifact("mirofish_simulation_event_count", str(len(simulation.get("events") or [])))
+        state.record_artifact(
+            "mirofish_report_agent_ready",
+            "true" if report_generation.get("report_agent_ready") else "false",
+        )
+        state.record_artifact(
+            "mirofish_deep_interaction_ready",
+            "true" if deep_interaction.get("ready") else "false",
+        )
+        protocol_trace = next(iter(getattr(council, "protocol_traces_by_round", {}).values()), {})
+        if isinstance(protocol_trace, dict):
+            state.record_artifact("council_protocol_runtime", str(protocol_trace.get("runtime", "")))
+            state.record_artifact("council_protocol_phase_count", str(protocol_trace.get("phase_count", "")))
         self._emit(state, Stage.COUNCIL)
 
         reference_runtime_artifacts = build_reference_runtime_artifacts(
             report=report,
             council=council,
             evidence_summary=evidence_summary,
+            gateway=self.gateway_v2,
+            require_live=self.require_live,
         )
         state.record_artifact(
             "react_section_count",
@@ -366,9 +424,53 @@ class IdeaToCouncilPipeline:
             str(reference_runtime_artifacts["react"].get("backend_tool_calls", 0)),
         )
         state.record_artifact(
+            "react_gateway_llm_enabled",
+            "true" if reference_runtime_artifacts["react"].get("gateway_llm_enabled") else "false",
+        )
+        state.record_artifact(
+            "react_execution_modes",
+            ",".join(reference_runtime_artifacts["react"].get("execution_modes", []) or []),
+        )
+        state.record_artifact(
+            "react_llm_response_count",
+            str(reference_runtime_artifacts["react"].get("llm_response_count", 0)),
+        )
+        state.record_artifact(
             "gbrain_content_hash",
             str(reference_runtime_artifacts["gbrain"]["content_hash"]),
         )
+        state.record_artifact(
+            "gbrain_runtime_valid",
+            "true" if reference_runtime_artifacts["gbrain"].get("gbrain_runtime_valid") else "false",
+        )
+        state.record_artifact(
+            "gbrain_event_count",
+            str(reference_runtime_artifacts["gbrain"].get("gbrain_event_count", 0)),
+        )
+        state.record_artifact(
+            "gbrain_typed_link_count",
+            str(reference_runtime_artifacts["gbrain"].get("gbrain_typed_link_count", 0)),
+        )
+        state.record_artifact(
+            "gbrain_brain_first_route",
+            ",".join(reference_runtime_artifacts["gbrain"].get("gbrain_brain_first_route", []) or []),
+        )
+        state.record_artifact(
+            "gbrain_search_mode",
+            str(reference_runtime_artifacts["gbrain"].get("gbrain_search_mode", "")),
+        )
+        state.record_artifact(
+            "gbrain_license",
+            str(reference_runtime_artifacts["gbrain"].get("gbrain_license", "")),
+        )
+        wiki_governance = reference_runtime_artifacts["gbrain"].get("wiki_governance", {})
+        if isinstance(wiki_governance, dict):
+            state.record_artifact("wiki_raw_path", str(wiki_governance.get("raw_path", "")))
+            state.record_artifact("wiki_compiled_path", str(wiki_governance.get("wiki_path", "")))
+            state.record_artifact(
+                "wiki_dual_path_enforced",
+                "true" if wiki_governance.get("separate_paths") else "false",
+            )
 
         state.advance(Stage.REPORT)
         report_md = _compose_six_chapter_report(
@@ -492,6 +594,18 @@ class IdeaToCouncilPipeline:
         setattr(brief, "interview_effective_answer_count", user_answer_count or len(trace))
         setattr(brief, "interview_user_answer_count", user_answer_count)
         setattr(brief, "interview_office_hours_fill_count", office_hours_fill_count)
+        show_prd_plan = interview.show_me_the_prd_plan
+        if show_prd_plan is not None:
+            setattr(brief, "show_me_the_prd_plan", show_prd_plan)
+            setattr(
+                brief,
+                "show_me_the_prd_artifacts",
+                show_me_the_prd_artifacts(
+                    show_prd_plan,
+                    user_answer_count=user_answer_count,
+                    office_hours_fill_count=office_hours_fill_count,
+                ),
+            )
         brief.known_facts = list(design_doc.implicit_capabilities)
         if embedded_answers.get("known"):
             brief.known_facts = _split_interview_list(embedded_answers["known"])
@@ -868,6 +982,34 @@ def _append_gbrain_snapshot(lines: list[str], gbrain: dict[str, Any]) -> None:
         str(gbrain.get("compiled_truth", "")).strip(),
         "",
     ])
+    governance = gbrain.get("wiki_governance") or {}
+    if isinstance(governance, dict):
+        lines.extend([
+            "### Raw/Wiki Governance",
+            "",
+            f"- Raw path: `{governance.get('raw_path', '')}`",
+            f"- Wiki path: `{governance.get('wiki_path', '')}`",
+            f"- Raw SHA-256: `{governance.get('raw_sha256', '')}`",
+            f"- Wiki SHA-256: `{governance.get('wiki_sha256', '')}`",
+            f"- Separate paths: {governance.get('separate_paths', False)}",
+            "",
+        ])
+    runtime = gbrain.get("gbrain_runtime") or {}
+    if isinstance(runtime, dict):
+        page = runtime.get("page") or {}
+        source = runtime.get("source_attribution") or {}
+        lines.extend([
+            "### GBrain Runtime Record",
+            "",
+            f"- Runtime valid: {runtime.get('valid', False)}",
+            f"- Page slug: `{page.get('slug', '')}`",
+            f"- Event ledger entries: {len(runtime.get('event_ledger') or [])}",
+            f"- Typed links: {len(runtime.get('typed_links') or [])}",
+            f"- Brain-first route: {', '.join(runtime.get('brain_first_route') or [])}",
+            f"- Search mode: `{(runtime.get('search_index') or {}).get('mode', '')}`",
+            f"- Source IDs: {len(source.get('source_ids') or [])}",
+            "",
+        ])
 
 
 def _round_digests(
@@ -975,6 +1117,28 @@ _EMBEDDED_INTERVIEW_LABELS = {
 }
 
 
+PLAN_REVIEW_EDIT_TARGETS: frozenset[str] = frozenset(
+    {
+        "planning_prd.overview.one_line",
+        "planning_prd.core_value.resolution",
+        "planning_prd.target_scenarios.0.scenario",
+        "planning_prd.target_scenarios.0.user_group",
+        "feature_hierarchy.0.features.0.name",
+        "planning_prd.success_metrics",
+        "user_flow.nodes.start.label",
+        "user_flow.nodes.questionnaire.label",
+        "user_flow.nodes.output.label",
+    }
+)
+PLAN_REVIEW_EDIT_SOURCES: frozenset[str] = frozenset(
+    {
+        "plannotator-inline-port",
+        "plannotator-http",
+        "plannotator",
+    }
+)
+
+
 def _extract_embedded_interview_answers(raw_text: str) -> dict[str, str]:
     """Parse serve-mode interview answers merged into the pipeline topic.
 
@@ -1006,6 +1170,117 @@ def _split_interview_list(value: str) -> list[str]:
         for part in re.split(r"[;\n]+|,\s*(?=[가-힣A-Za-z0-9])", value or "")
     ]
     return [part for part in parts if part]
+
+
+def _editable_plan_payload(brief: ResearchBrief) -> dict[str, Any]:
+    return {
+        "planning_prd": brief.planning_prd,
+        "feature_hierarchy": brief.feature_hierarchy,
+        "user_flow": brief.user_flow,
+        "editable_summary": {
+            "research_question": brief.research_question,
+            "purpose": brief.purpose,
+            "context": brief.context,
+            "deliverable_type": brief.deliverable_type,
+            "quality_bar": brief.quality_bar,
+        },
+    }
+
+
+def _apply_plan_review_annotations(brief: ResearchBrief, annotations: list[dict[str, Any]]) -> int:
+    edits: dict[str, str] = {}
+    for item in annotations or []:
+        edit = _plan_review_edit_from_annotation(item)
+        if edit is not None:
+            target, cleaned = edit
+            edits[target] = cleaned
+    if not edits:
+        return 0
+
+    if "planning_prd.overview.one_line" in edits:
+        brief.research_question = edits["planning_prd.overview.one_line"]
+    if "planning_prd.core_value.resolution" in edits:
+        brief.purpose = edits["planning_prd.core_value.resolution"]
+    if "planning_prd.target_scenarios.0.scenario" in edits:
+        brief.context = edits["planning_prd.target_scenarios.0.scenario"]
+    target_user = edits.get("planning_prd.target_scenarios.0.user_group", "")
+    if "feature_hierarchy.0.features.0.name" in edits:
+        brief.deliverable_type = edits["feature_hierarchy.0.features.0.name"]
+    if "planning_prd.success_metrics" in edits:
+        metrics = _split_interview_list(edits["planning_prd.success_metrics"])
+        if metrics:
+            brief.success_criteria = metrics
+            brief.quality_bar = metrics[0]
+
+    planning = build_product_planning_projection(
+        brief.raw_idea,
+        {
+            "research_question": brief.research_question,
+            "purpose": brief.purpose,
+            "context": brief.context,
+            "known": "; ".join(brief.known_facts),
+            "deliverable_type": brief.deliverable_type,
+            "quality_bar": brief.quality_bar,
+        },
+    )
+    brief.planning_prd = planning["planning_prd"]
+    brief.feature_hierarchy = planning["feature_hierarchy"]
+    brief.user_flow = planning["user_flow"]
+    if target_user:
+        scenarios = brief.planning_prd.get("target_scenarios")
+        if isinstance(scenarios, list) and scenarios and isinstance(scenarios[0], dict):
+            scenarios[0]["user_group"] = target_user
+        if brief.feature_hierarchy and isinstance(brief.feature_hierarchy[0], dict):
+            features = brief.feature_hierarchy[0].get("features")
+            if isinstance(features, list) and features and isinstance(features[0], dict):
+                features[0]["user_role"] = target_user
+    _apply_user_flow_label_edits(brief.user_flow, edits)
+    brief.planning_review_policy = {
+        **planning["planning_review_policy"],
+        "mode": "plannotator_inline_edit",
+        "applied_edit_count": len(edits),
+    }
+    return len(edits)
+
+
+def _plan_review_edit_from_annotation(item: Any) -> tuple[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+    if str(item.get("type") or "").strip().lower() != "edit":
+        return None
+    source = str(item.get("source") or "").strip()
+    if source not in PLAN_REVIEW_EDIT_SOURCES:
+        return None
+    target = str(item.get("target") or "").strip()
+    if target not in PLAN_REVIEW_EDIT_TARGETS:
+        return None
+    for value_key in ("replacement", "value", "text"):
+        value = item.get(value_key)
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if cleaned:
+            return target, cleaned
+    return None
+
+
+def _apply_user_flow_label_edits(user_flow: dict[str, Any], edits: dict[str, str]) -> None:
+    target_to_node_id = {
+        "user_flow.nodes.start.label": "start",
+        "user_flow.nodes.questionnaire.label": "questionnaire",
+        "user_flow.nodes.output.label": "output",
+    }
+    nodes = user_flow.get("nodes") if isinstance(user_flow, dict) else None
+    if not isinstance(nodes, list):
+        return
+    for target, node_id in target_to_node_id.items():
+        label = edits.get(target)
+        if not label:
+            continue
+        for node in nodes:
+            if isinstance(node, dict) and node.get("id") == node_id:
+                node["label"] = label
+                break
 
 
 def _targeting_academic_sources(targeting_map: TargetingMap) -> list[str]:

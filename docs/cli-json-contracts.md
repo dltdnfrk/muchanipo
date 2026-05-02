@@ -68,7 +68,11 @@ Required top-level keys:
 - `license_warnings`
 
 Purpose: inspect six-stage reference-project readiness, local runtime-backed
-modules, known gaps, and license-sensitive boundaries.
+modules, known gaps, gap types, and license-sensitive boundaries. Additive
+fields include `product_standard_covered`, `product_standard_reason`,
+`product_standard_ready`, and `not_stage_contract_covered_references` so
+consumers can distinguish strict runtime parity from explicitly blocked license
+boundaries.
 
 ## `muchanipo orchestrate --json`
 

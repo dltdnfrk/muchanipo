@@ -537,6 +537,7 @@ class JSONLineHITLAdapter:
                 status = "pending"
             return HITLResult(
                 status=status,
+                annotations=_coerce_jsonline_annotations(action.fields.get("annotations")),
                 comments=[str(action.fields.get("comment") or f"jsonline decision: {status}")],
                 gate_id=f"{gate_name}-jsonline",
                 synthetic=False,
@@ -557,6 +558,12 @@ def _jsonable_payload(payload: Any) -> Any:
         return json.loads(json.dumps(payload, ensure_ascii=False, default=_json_default))
     except TypeError:
         return str(payload)
+
+
+def _coerce_jsonline_annotations(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _hitl_gate_data(gate_name: str, payload: dict) -> dict[str, Any]:
@@ -609,15 +616,25 @@ def _hitl_gate_preview(gate_name: str, payload: dict) -> str:
     if gate_name == "plan" and isinstance(payload, dict):
         plan = payload.get("consensus_plan") or {}
         design_doc = payload.get("design_doc") or {}
+        editable_plan = payload.get("editable_plan") or {}
+        editable_summary = (
+            editable_plan.get("editable_summary", {})
+            if isinstance(editable_plan, dict)
+            else {}
+        )
         return "\n".join(
             line
             for line in [
                 f"Gate reason: {payload.get('gate_reason', '')}",
                 f"Consensus score: {plan.get('consensus_score', '') if isinstance(plan, dict) else ''}",
                 f"Gate passed: {plan.get('gate_passed', '') if isinstance(plan, dict) else ''}",
+                "Inline edit: planning_prd, feature_hierarchy, and user_flow can be revised before approval.",
+                "",
+                "Editable summary:",
+                _compact_preview(editable_summary, limit=800),
                 "",
                 "Design brief:",
-                _compact_preview(design_doc, limit=1400),
+                _compact_preview(design_doc, limit=900),
             ]
             if line is not None
         ).strip()
@@ -656,11 +673,18 @@ def _collect_serve_interview_answers(
     """Run a show-me-the-prd style intake over the JSON-line serve protocol."""
     from src.intake.idea_dump import IdeaDump
     from src.intent.interview_prompts import merge_answers_to_text
-    from src.interview.product_planning import planning_question_contract
+    from src.interview.product_planning import build_product_planning_projection, planning_question_contract
     from src.intent.office_hours import reframe_with_context
     from src.interview.session import InterviewSession
+    from src.interview.show_me_the_prd_port import (
+        build_show_me_the_prd_plan,
+        render_show_me_the_prd_documents,
+        show_me_the_prd_artifacts,
+        show_me_the_prd_document_manifest,
+    )
 
     session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
+    show_prd_plan = build_show_me_the_prd_plan(topic)
     question_contract = planning_question_contract()
     total_questions = 6
     emit(
@@ -682,6 +706,17 @@ def _collect_serve_interview_answers(
         stream=stdout,
         data={
             "workflow": "show-me-the-prd",
+            "workflow_commit": show_prd_plan.source.commit,
+            "workflow_document_outputs": list(show_prd_plan.document_paths),
+            "workflow_evidence_markers": list(show_prd_plan.evidence_markers),
+            "workflow_research_batches": [
+                {
+                    "after_turn": batch.after_turn,
+                    "destination_turn": batch.destination_turn,
+                    "queries": list(batch.queries),
+                }
+                for batch in show_prd_plan.research_batches
+            ],
             "planning_schema": "prd_feature_user_flow",
             "question_contract": question_contract,
             "question_count": total_questions,
@@ -694,6 +729,32 @@ def _collect_serve_interview_answers(
         item = session.next_question()
         if item is None:
             break
+        for batch in show_prd_plan.research_batches:
+            if batch.after_turn == idx - 1:
+                emit(
+                    "deep_interview_progress",
+                    stream=stdout,
+                    stage="interview",
+                    phase="research_batch",
+                    mode=getattr(session.plan, "mode", "deep"),
+                    research_type=getattr(session.plan, "research_type", "exploratory"),
+                    rationale=f"show-me-the-prd research batch before turn {idx}",
+                    round=idx,
+                    total=total_questions,
+                    focus_dimension=f"research_batch_after_turn_{batch.after_turn}",
+                    focus_label="Research batch",
+                    focus_question=" | ".join(batch.queries),
+                    coverage_score=round(float(session.coverage_score), 3),
+                    ambiguity_score=round(1.0 - float(session.coverage_score), 3),
+                    missing_dimensions=list(session.missing_dimensions),
+                    planning_schema="prd_feature_user_flow",
+                    data={
+                        "workflow": "show-me-the-prd",
+                        "after_turn": batch.after_turn,
+                        "destination_turn": batch.destination_turn,
+                        "queries": list(batch.queries),
+                    },
+                )
         framed = reframe_with_context(item.dimension_id, topic, session.answers)
         qid = item.dimension_id
         question = str(framed.get("question") or item.research_question or qid).strip()
@@ -772,6 +833,41 @@ def _collect_serve_interview_answers(
 
     if not qa_pairs:
         return ServeInterviewResult(status="ok", topic=topic)
+    answer_count = len(qa_pairs)
+    show_prd_plan = build_show_me_the_prd_plan(topic, answers=session.answers)
+    planning = build_product_planning_projection(topic, session.answers)
+    documents = render_show_me_the_prd_documents(
+        show_prd_plan,
+        answers=session.answers,
+        planning=planning,
+    )
+    artifacts = show_me_the_prd_artifacts(
+        show_prd_plan,
+        user_answer_count=answer_count,
+        office_hours_fill_count=0,
+    )
+    emit(
+        "deep_interview_artifacts",
+        stream=stdout,
+        stage="interview",
+        workflow="show-me-the-prd",
+        workflow_commit=show_prd_plan.source.commit,
+        document_count=len(documents),
+        document_outputs=list(documents),
+        evidence_markers=list(show_prd_plan.evidence_markers),
+        data={
+            "workflow": "show-me-the-prd",
+            "source": show_prd_plan.source.repository,
+            "commit": show_prd_plan.source.commit,
+            "license": show_prd_plan.source.license,
+            "artifacts": artifacts,
+            "documents": documents,
+            "document_manifest": show_me_the_prd_document_manifest(documents),
+            "planning_prd": planning["planning_prd"],
+            "feature_hierarchy": planning["feature_hierarchy"],
+            "user_flow": planning["user_flow"],
+        },
+    )
     return ServeInterviewResult(status="ok", topic=merge_answers_to_text(topic, qa_pairs))
 
 

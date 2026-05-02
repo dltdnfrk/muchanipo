@@ -18,6 +18,8 @@ wiki/*.md
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
+uv.lock
 .venv/
 mp-env/
 
@@ -32,6 +34,7 @@ mp-env/
 # OMC state
 .omc/state/
 .omx/
+.playwright-mcp/
 autoresearch/
 .claude/
 .omc/

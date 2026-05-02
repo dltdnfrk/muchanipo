@@ -172,5 +172,6 @@ def _normalize_annotation(annotation: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(annotation)
     normalized["type"] = str(normalized.get("type") or "comment")
     normalized["target"] = normalized.get("target") or ""
+    normalized["source"] = str(normalized.get("source") or "plannotator-http")
     normalized["instruction"] = str(normalized.get("instruction") or "")
     return normalized

@@ -48,6 +48,12 @@ export interface BackendEvent {
   focus_dimension?: string;
   focus_label?: string;
   focus_question?: string;
+  // deep_interview_artifacts
+  workflow?: string;
+  workflow_commit?: string;
+  document_count?: number;
+  document_outputs?: string[];
+  evidence_markers?: string[];
   // research_progress
   status?: string;
   run_id?: string;
@@ -96,6 +102,7 @@ export type BackendAction =
       gate: string;
       status: "approved" | "changes_requested";
       comment?: string;
+      annotations?: Record<string, unknown>[];
     }
   | { action: "approve_designdoc" }
   | { action: "abort" };

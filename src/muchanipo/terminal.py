@@ -846,8 +846,11 @@ def render_references(*, stdout: IO[str] | None = None) -> dict[str, Any]:
         out.write(
             f"{stage['step']}. {stage['name']}: "
             f"{stage['ready_count']}/{stage['reference_count']} ready, "
+            f"{stage['product_standard_covered_count']}/{stage['reference_count']} product-standard covered, "
             f"{stage['implemented_count']}/{stage['reference_count']} runtime-backed"
         )
+        if stage["license_blocked_count"]:
+            out.write(f", {stage['license_blocked_count']} license boundary")
         if stage["gap_count"]:
             out.write(f", {stage['gap_count']} gap(s)")
         out.write("\n")

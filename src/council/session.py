@@ -13,6 +13,7 @@ from src.council.karpathy_prompts import (
     build_individual_prompt,
     build_peer_review_prompt,
 )
+from src.council.oasis_camel_runtime import build_protocol_trace
 from src.council.parsers import RoundResult, parse_council_response
 from src.council.round_layers import RoundLayer
 from src.execution.gateway_v2 import GatewayV2
@@ -95,6 +96,7 @@ class Session:
         self.rounds: list[RoundResult] = []
         self.turn_transcript: list[dict[str, Any]] = []
         self.active_persona_ids_by_round: dict[int, list[str]] = {}
+        self.protocol_traces_by_round: dict[int, dict[str, Any]] = {}
         self.stopped = False
         self.stop_reason: str | None = None
         self.progress_callback = progress_callback
@@ -111,6 +113,12 @@ class Session:
             _persona_id(persona, idx)
             for idx, persona in enumerate(active_personas, start=1)
         ]
+        protocol_trace = build_protocol_trace(
+            round_no=round_no,
+            layer_id=layer.layer_id,
+            active_persona_ids=list(self.active_persona_ids_by_round[round_no]),
+        )
+        self.protocol_traces_by_round[round_no] = protocol_trace
         self._emit_progress(
             {
                 "event": "council_round_start",
@@ -120,6 +128,9 @@ class Session:
                 "layer": layer.layer_id,
                 "active_persona_count": len(active_personas),
                 "active_persona_ids": list(self.active_persona_ids_by_round[round_no]),
+                "protocol_runtime": protocol_trace["runtime"],
+                "protocol_phase_count": protocol_trace["phase_count"],
+                "protocol_trace": protocol_trace,
             }
         )
         individuals = self._individual_stage(layer, active_personas, round_no)

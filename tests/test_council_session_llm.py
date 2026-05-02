@@ -5,6 +5,7 @@ import json
 from src.council.parsers import parse_council_response
 from src.council.persona_generator import FinalPersona
 from src.council.prompts import build_round_prompt
+from src.council.oasis_camel_runtime import validate_protocol_trace
 from src.council.round_layers import DEFAULT_LAYERS
 from src.council.session import PlateauDetector, Session
 from src.execution.gateway_v2 import GatewayV2
@@ -101,6 +102,13 @@ def test_session_emits_council_progress_while_round_runs():
 
     assert events[0]["event"] == "council_round_start"
     assert events[0]["round"] == 1
+    assert events[0]["protocol_runtime"] == "clean-room local social simulation protocol"
+    assert events[0]["protocol_phase_count"] == 3
+    assert validate_protocol_trace(events[0]["protocol_trace"])
+    assert validate_protocol_trace(session.protocol_traces_by_round[1])
+    assert events[0]["protocol_trace"]["world_state"]["peer_review_graph"] == "round_robin_blinded"
+    assert events[0]["protocol_trace"]["agent_states"][0]["memory"]
+    assert events[0]["protocol_trace"]["interaction_events"]
     turns = [event for event in events if event["event"] == "council_turn"]
     tokens = [event for event in events if event["event"] == "council_persona_token"]
     assert [event["stage"] for event in turns] == [

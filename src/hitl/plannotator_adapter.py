@@ -34,7 +34,8 @@ class HITLAdapter:
     ``markdown`` mode writes a queue item and returns pending unless the file
     is approved within the configured timeout. ``auto_approve`` is for tests
     and local mock-first pipelines. ``plannotator`` delegates to the HTTP
-    client, which falls back to an offline mock when no API key is configured.
+    client. That client fails closed when no API key is configured unless
+    `PLANNOTATOR_OFFLINE=1` explicitly requests a synthetic offline result.
     """
 
     def __init__(

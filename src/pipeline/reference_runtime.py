@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 from functools import lru_cache
 from pathlib import Path
+import os
 from typing import Any
 
 from src.evidence.artifact import EvidenceRef
@@ -34,10 +35,16 @@ def build_reference_runtime_artifacts(
     report: ResearchReport,
     council: Any,
     evidence_summary: dict[str, Any],
+    gateway: Any | None = None,
+    require_live: bool = False,
 ) -> dict[str, Any]:
     """Build ReACT and GBrain artifacts from the actual reference ports."""
     council_payload = _council_payload(report, council)
-    react_artifacts = _build_react_artifacts(council_payload)
+    react_artifacts = _build_react_artifacts(
+        council_payload,
+        gateway=gateway,
+        require_live=require_live,
+    )
     gbrain_artifacts = _build_gbrain_artifacts(
         council_payload=council_payload,
         report=report,
@@ -49,7 +56,12 @@ def build_reference_runtime_artifacts(
     }
 
 
-def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
+def _build_react_artifacts(
+    council_payload: dict[str, Any],
+    *,
+    gateway: Any | None,
+    require_live: bool,
+) -> dict[str, Any]:
     react_mod = _load_module(
         "muchanipo_react_report",
         str(_src_path("search", "react-report.py")),
@@ -58,6 +70,11 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
     plans: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     previous_sections: list[str] = []
+    llm_responder = (
+        _gateway_react_responder(gateway, require_live=require_live)
+        if gateway is not None and _should_use_gateway_react(require_live=require_live)
+        else None
+    )
     for section in sections:
         plan = react_mod.run_react_loop_plan(
             section=section,
@@ -71,6 +88,7 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
             report=council_payload,
             prompt_plan=plan,
             previous_sections=previous_sections,
+            llm_responder=llm_responder,
         )
         plans.append(plan)
         executions.append(execution)
@@ -93,6 +111,7 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
                 "write": str((section.get("react") or {}).get("write") or ""),
                 "final_answer": str(execution.get("final_answer") or ""),
                 "section_markdown": str(execution.get("section_markdown") or ""),
+                "execution_mode": str(execution.get("execution_mode") or ""),
                 "tool_call_count": len(execution.get("tool_calls") or []),
                 "observation_count": len(execution.get("observations") or []),
             }
@@ -101,9 +120,45 @@ def _build_react_artifacts(council_payload: dict[str, Any]) -> dict[str, Any]:
         "executed_section_count": len(executions),
         "total_tool_calls": sum(len(execution.get("tool_calls") or []) for execution in executions),
         "backend_tool_calls": backend_tool_calls,
+        "gateway_llm_enabled": bool(llm_responder),
+        "execution_modes": sorted(
+            {
+                str(execution.get("execution_mode") or "")
+                for execution in executions
+                if execution.get("execution_mode")
+            }
+        ),
+        "llm_response_count": sum(int(execution.get("llm_response_count") or 0) for execution in executions),
         "min_tool_calls": int(plans[0]["react_config"]["min_tool_calls"]) if plans else 0,
         "available_tools": list(plans[0]["react_config"]["available_tools"]) if plans else [],
     }
+
+
+def _should_use_gateway_react(*, require_live: bool) -> bool:
+    if require_live:
+        return True
+    return os.environ.get("MUCHANIPO_REACT_LIVE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _gateway_react_responder(gateway: Any, *, require_live: bool):
+    def responder(system_prompt: str, user_prompt: str, observations: list[dict[str, Any]]) -> str:
+        prompt = "\n\n".join(
+            [
+                system_prompt,
+                user_prompt,
+                "=== Observations JSON ===",
+                str(observations),
+            ]
+        )
+        result = gateway.call("report", prompt, require_live=require_live)
+        return str(getattr(result, "text", result))
+
+    return responder
 
 
 def _build_gbrain_artifacts(
@@ -116,6 +171,14 @@ def _build_gbrain_artifacts(
         "muchanipo_vault_router",
         str(_src_path("hitl", "vault-router.py")),
     )
+    governance_mod = _load_module(
+        "muchanipo_wiki_governance",
+        str(_src_path("wiki", "governance.py")),
+    )
+    gbrain_mod = _load_module(
+        "muchanipo_gbrain_runtime",
+        str(_src_path("wiki", "gbrain_runtime.py")),
+    )
     eval_result = {
         "verdict": "PASS" if evidence_summary.get("unsupported_finding_count", 0) == 0 else "UNCERTAIN",
         "total": int(round(float(report.confidence or 0.0) * 100)),
@@ -127,12 +190,34 @@ def _build_gbrain_artifacts(
     }
     compiled_truth = vault_mod.build_compiled_truth(council_payload, eval_result)
     content_hash = vault_mod.compute_content_hash(compiled_truth)
+    governance = governance_mod.build_dual_path_governance(
+        artifact_id=report.id,
+        raw_source=council_payload,
+        wiki_markdown=compiled_truth,
+    )
+    runtime_record = gbrain_mod.build_gbrain_runtime_record(
+        artifact_id=report.id,
+        topic=str(council_payload.get("topic") or report.title),
+        compiled_truth=compiled_truth,
+        raw_source=council_payload,
+        evidence_summary=evidence_summary,
+        content_hash=content_hash,
+        timeline_entry=vault_mod.build_timeline_entry(eval_result, report.id).strip(),
+    )
     return {
         "slug": vault_mod.topic_to_slug(str(council_payload.get("topic") or report.title)),
         "content_hash": content_hash,
         "compiled_truth": compiled_truth,
         "timeline_entry": vault_mod.build_timeline_entry(eval_result, report.id).strip(),
         "evidence_summary": dict(evidence_summary),
+        "wiki_governance": governance,
+        "gbrain_runtime": runtime_record,
+        "gbrain_runtime_valid": bool(runtime_record.get("valid")),
+        "gbrain_event_count": len(runtime_record.get("event_ledger") or []),
+        "gbrain_typed_link_count": len(runtime_record.get("typed_links") or []),
+        "gbrain_brain_first_route": list(runtime_record.get("brain_first_route") or []),
+        "gbrain_search_mode": str((runtime_record.get("search_index") or {}).get("mode") or ""),
+        "gbrain_license": str((runtime_record.get("upstream") or {}).get("license") or ""),
     }
 
 

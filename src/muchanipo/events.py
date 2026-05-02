@@ -19,6 +19,7 @@ KNOWN_EVENTS = frozenset(
         "run_started",
         "pipeline_heartbeat",
         "deep_interview_progress",
+        "deep_interview_artifacts",
         "interview_question",
         "research_progress",
         "council_round_start",
