@@ -6,6 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.council.karpathy_prompts import build_chairman_prompt, build_individual_prompt
+from src.council.parsers import parse_council_response
+from src.council.persona_generator import Draft
+from src.council.persona_prompts import build_persona_deep_validate_prompt, parse_persona_validation_response
+from src.council.round_layers import DEFAULT_LAYERS
 from src.execution.providers.anthropic import (
     AnthropicProvider,
     _estimate_cost,
@@ -96,6 +101,64 @@ class TestAnthropicProviderOffline:
         assert result.provider == "anthropic"
         assert "[mock-anthropic/test]" in result.text
         assert result.cost_usd == 0.0
+
+    def test_offline_council_returns_structured_json(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        provider = AnthropicProvider(offline=True, prefer_cli=False)
+        layer = DEFAULT_LAYERS[0]
+        prompt = build_individual_prompt({"persona_id": "p1", "role": "market_researcher"}, layer)
+
+        result = provider.call("council", prompt, council_stage="individual", layer_id=layer.layer_id)
+        parsed = parse_council_response(result.text, layer)
+
+        assert parsed.layer_id == layer.layer_id
+        assert "mock-anthropic" not in parsed.key_claim
+        assert parsed.body_claims
+        assert parsed.evidence_ref_ids[:2] == ["mock-evidence-1", "mock-evidence-2"]
+        assert parsed.framework_output["offline_mock"] is True
+
+    def test_offline_chairman_mock_keeps_report_claims_readable(self):
+        provider = AnthropicProvider(offline=True, prefer_cli=False)
+        layer = DEFAULT_LAYERS[1]
+        prompt = build_chairman_prompt({}, {}, layer)
+
+        result = provider.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
+        parsed = parse_council_response(result.text, layer)
+
+        assert parsed.key_claim.startswith("조건부 권고")
+        assert "offline 실행" in parsed.body_claims[0]
+        assert parsed.framework == "Porter 5 Forces"
+
+    def test_offline_hachimi_validation_mock_preserves_entity_personas(self):
+        provider = AnthropicProvider(offline=True, prefer_cli=False)
+        draft = Draft(
+            persona_id="mirofish-entity-001",
+            name="Entity Reviewer",
+            role="ontology_reviewer",
+            intent="Evaluate ontology-grounded evidence.",
+            allowed_tools=["model_gateway"],
+            required_outputs=["council_round_response"],
+            value_axes={
+                "time_horizon": "mid",
+                "risk_tolerance": 0.35,
+                "stakeholder_priority": ["primary"],
+                "innovation_orientation": 0.55,
+            },
+            manifest={"mirofish_source": "generate_persona_from_entity"},
+        )
+        prompt = build_persona_deep_validate_prompt(
+            draft,
+            {"roles": ["ontology_reviewer"], "allowed_tools": ["model_gateway"]},
+            "MiroFish validation smoke",
+        )
+
+        result = provider.call("council", prompt)
+        score, reason, issues = parse_persona_validation_response(result.text)
+
+        assert score >= 0.8
+        assert "ontology-grounded personas" in reason
+        assert issues == []
 
     def test_offline_override(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
