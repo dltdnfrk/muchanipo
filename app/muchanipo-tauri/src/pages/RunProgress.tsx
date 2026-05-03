@@ -17,6 +17,7 @@ import {
   planReviewAnnotations,
   type PlanReviewEditState,
 } from "../components/PlannotatorPlanEditor";
+import { clearPendingRun, getPendingRunAutostartDecision } from "../lib/pendingRun";
 
 type BackendMode = "offline" | "cli" | "api";
 
@@ -481,7 +482,6 @@ export default function RunProgress() {
   const unlistenRef = useRef<(() => void) | null>(null);
   const chunkKeysRef = useRef<Set<string>>(new Set());
   const finalReportReceivedRef = useRef(false);
-  const autoRecoveredRunsRef = useRef<Set<string>>(new Set());
   const planReviewEditCount = planReviewAnnotations(planReviewEdits).length;
 
   const failRun = useCallback(
@@ -531,9 +531,10 @@ export default function RunProgress() {
         setHitlSubmitting(false);
         setRuntimeEvidence(null);
         try {
-          for (const suffix of ["report", "report_path", "chapter_count", "pending"]) {
+          for (const suffix of ["report", "report_path", "chapter_count", "pending", "pending_at"]) {
             localStorage.removeItem(`run:${runId}:${suffix}`);
           }
+          sessionStorage.removeItem(`run:${runId}:pending_session`);
           markRunRunning(runId);
         } catch {
           /* ignore */
@@ -920,10 +921,18 @@ export default function RunProgress() {
       // mount owns the run kick-off (pending flag is set by IdeaSubmit).
       if (!runId) return;
       try {
-        const pending = localStorage.getItem(`run:${runId}:pending`);
+        const pendingDecision = getPendingRunAutostartDecision(runId);
         const topic = localStorage.getItem(`run:${runId}:topic`) || "";
-        if (pending === "1") {
-          localStorage.removeItem(`run:${runId}:pending`);
+        if (pendingDecision.pending) {
+          clearPendingRun(runId);
+          if (!pendingDecision.canStart) {
+            const message =
+              pendingDecision.reason === "stale"
+                ? "이전 세션의 미완료 실행은 오래되어 자동 시작하지 않았습니다. 다시 시작을 눌러주세요."
+                : "이전 세션의 미완료 실행은 안전을 위해 자동 시작하지 않았습니다. 다시 시작을 눌러주세요.";
+            failRun(message);
+            return;
+          }
           await startRunFromTopic(topic);
           return;
         }
@@ -956,15 +965,10 @@ export default function RunProgress() {
         const shouldRecoverStaleRun =
           !hasRuntimeEvidence &&
           isRunningEntry &&
-          topic.trim() &&
-          !autoRecoveredRunsRef.current.has(runId);
+          topic.trim();
 
         if (shouldRecoverStaleRun) {
-          autoRecoveredRunsRef.current.add(runId);
-          await startRunFromTopic(topic, {
-            clearArtifacts: true,
-            warning: "이전 실행의 백엔드가 종료되어 자동으로 다시 시작했습니다.",
-          });
+          failRun("이전 실행의 백엔드가 종료되었습니다. 자동 재시작하지 않았으니 다시 시작을 눌러주세요.");
         } else if (isRunningEntry && !hasRuntimeEvidence && !report) {
           failRun("이전 실행의 백엔드가 종료되어 실행을 계속할 수 없습니다. 다시 시작하세요.");
         }

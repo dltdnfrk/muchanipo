@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import logoUrl from "../assets/neobio-logo-white.svg";
+import { markPendingRun } from "../lib/pendingRun";
 import { pushRun } from "../lib/runsIndex";
 
 function newRunId(): string {
@@ -52,7 +53,7 @@ export default function IdeaSubmit() {
         // it here (before listener) caused the listener to miss events when
         // the pipeline finished faster than the page transition.
         localStorage.setItem(`run:${runId}:topic`, trimmed);
-        localStorage.setItem(`run:${runId}:pending`, "1");
+        markPendingRun(runId);
         pushRun(runId, trimmed);
       } catch {
         /* ignore */

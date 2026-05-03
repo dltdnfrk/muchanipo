@@ -78,12 +78,17 @@ export function markRunRunning(runId: string): void {
 export function deleteRun(runId: string): void {
   writeRuns(listRuns().filter((e) => e.runId !== runId));
   // Best-effort cleanup of associated keys.
-  for (const suffix of ["topic", "report", "report_path", "chapter_count", "pending"]) {
+  for (const suffix of ["topic", "report", "report_path", "chapter_count", "pending", "pending_at"]) {
     try {
       localStorage.removeItem(`run:${runId}:${suffix}`);
     } catch {
       /* ignore */
     }
+  }
+  try {
+    sessionStorage.removeItem(`run:${runId}:pending_session`);
+  } catch {
+    /* ignore */
   }
 }
 
