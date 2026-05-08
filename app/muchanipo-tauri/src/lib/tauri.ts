@@ -5,7 +5,11 @@ export type BackendEventName =
   | "phase_change"
   | "run_started"
   | "pipeline_heartbeat"
+  | "stage_started"
+  | "stage_completed"
   | "deep_interview_progress"
+  | "deep_interview_artifacts"
+  | "interview_ontology_delta"
   | "interview_question"
   | "research_progress"
   | "council_round_start"
@@ -25,8 +29,8 @@ export interface BackendEvent {
 }
 
 export interface BackendAction {
-  action?: "interview_answer" | "approve_designdoc" | "abort";
-  type?: "interview_answer" | "approve_designdoc" | "cancel" | "abort";
+  action?: "interview_answer" | "approve_designdoc" | "hitl_decision" | "abort";
+  type?: "interview_answer" | "approve_designdoc" | "hitl_decision" | "cancel" | "abort";
   q_id?: string;
   question_id?: string;
   answer?: string;

@@ -6,6 +6,7 @@ import type {
   InterviewQuestionEvent,
   UserAction,
 } from "../lib/types";
+import { backendEventName } from "../lib/types";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -25,6 +26,63 @@ interface InterviewQuestionProps {
 
 async function defaultSendAction(action: UserAction) {
   await invoke("send_action", { action });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function booleanField(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(normalized)) return true;
+    if (["0", "false", "no"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeOption(
+  option: unknown,
+  index: number,
+): InterviewQuestionEvent["options"][number] | null {
+  if (typeof option === "string") {
+    const match = option.match(/^\s*([A-Za-z])[\).\s-]*(.*)$/);
+    return {
+      key: (match?.[1] || String.fromCharCode(65 + index)).toUpperCase(),
+      label: (match?.[2] || option).trim(),
+    };
+  }
+  if (!isRecord(option)) return null;
+  const key = stringField(option.key, option.value, option.id) || String.fromCharCode(65 + index);
+  const label = stringField(option.label, option.text, option.description, option.value, option.key);
+  if (!label) return null;
+  return { key, label };
+}
+
+function normalizeInterviewQuestionEvent(payload: BackendEvent): InterviewQuestionEvent {
+  const data = isRecord(payload.data) ? payload.data : {};
+  const rawOptions = Array.isArray(payload.options)
+    ? payload.options
+    : Array.isArray(data.options)
+      ? data.options
+      : [];
+  return {
+    ...payload,
+    type: "interview_question",
+    event: "interview_question",
+    question_id: stringField(payload.question_id, payload.q_id, data.question_id, data.q_id),
+    prompt: stringField(payload.prompt, payload.text, data.prompt, data.text),
+    options: rawOptions.map(normalizeOption).filter((option): option is NonNullable<typeof option> => Boolean(option)),
+    allow_other: booleanField(payload.allow_other ?? payload.allowOther ?? data.allow_other ?? data.allowOther, true),
+  };
 }
 
 export function InterviewQuestion({
@@ -48,8 +106,8 @@ export function InterviewQuestion({
     let unlisten: (() => void) | undefined;
     void listen<BackendEvent>("backend_event", (event) => {
       const payload = event.payload as BackendEvent;
-      if (payload.type === "interview_question") {
-        setStreamedQuestion(payload);
+      if (backendEventName(payload) === "interview_question") {
+        setStreamedQuestion(normalizeInterviewQuestionEvent(payload));
         setSelected(undefined);
         setOtherText("");
         setError(null);

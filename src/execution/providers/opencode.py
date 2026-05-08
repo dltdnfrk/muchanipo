@@ -28,9 +28,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-_DEFAULT_MODEL = os.environ.get("MUCHANIPO_OPENCODE_MODEL", "opencode-go/kimi-k2.6")
+_DEFAULT_OPENCODE_GO_MODEL = "opencode/kimi-k2.6"
+_DEFAULT_MODEL = os.environ.get("MUCHANIPO_OPENCODE_MODEL", _DEFAULT_OPENCODE_GO_MODEL)
 _HTTP_TIMEOUT_SEC = _env_int("MUCHANIPO_OPENCODE_TIMEOUT_SEC", 30)
 _CLI_TIMEOUT_SEC = _env_int("MUCHANIPO_OPENCODE_CLI_TIMEOUT_SEC", 600)
+_OPENCODE_API_USER_AGENT = os.environ.get(
+    "MUCHANIPO_OPENCODE_USER_AGENT",
+    "OpenCode/1.2.26 Muchanipo/1.0",
+)
+
 
 
 def _cli_enabled() -> bool:
@@ -45,7 +51,34 @@ def _resolve_opencode_bin() -> str | None:
 
 
 def _resolve_api_key() -> str | None:
-    return os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENCODE_GO_API_KEY")
+    for name in ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _mimo_opencode_only_requested() -> bool:
+    raw = (
+        os.environ.get("MUCHANIPO_VERIFICATION_ROUTING")
+        or os.environ.get("MUCHANIPO_LIVE_VERIFICATION_ROUTING")
+        or os.environ.get("MUCHANIPO_MODEL_ROUTING")
+        or os.environ.get("MUCHANIPO_API_ROUTING")
+        or os.environ.get("MUCHANIPO_EXTERNAL_MODEL_ROUTING")
+        or os.environ.get("MUCHANIPO_PROVIDER_ROUTING")
+        or ""
+    )
+    normalized = raw.strip().casefold().replace("-", "_").replace(",", "_")
+    return normalized in {
+        "mimo_opencode_only",
+        "mimo_opencode_go_only",
+        "mimo_opencode",
+        "mimo_opencodego",
+    }
+
+
+def _opencode_go_model(model: str) -> str:
+    return model if model.startswith(("opencode/", "opencode-go/")) else _DEFAULT_OPENCODE_GO_MODEL
 
 
 class OpenCodeProvider:
@@ -61,17 +94,25 @@ class OpenCodeProvider:
         prefer_cli: bool | None = None,
         opencode_bin: str | None = None,
     ) -> None:
-        self.model = model
+        self.model = _opencode_go_model(model) if _mimo_opencode_only_requested() else model
         self.api_key = api_key or _resolve_api_key()
         self.endpoint = endpoint or os.environ.get(
             "OPENCODE_ENDPOINT",
             "https://opencode.ai/zen/go/v1/chat/completions",
         )
         self.opencode_bin = opencode_bin or _resolve_opencode_bin()
+        policy_requires_opencode_go = _mimo_opencode_only_requested()
         if prefer_cli is None:
             prefer_cli = prefer_cli_default()
         if use_cli is None:
-            use_cli = bool(self.opencode_bin) and (_cli_enabled() or prefer_cli or not self.api_key)
+            if policy_requires_opencode_go:
+                # Verification policy means the network path must be OpenCode Go API,
+                # not the local opencode/Bun CLI.  If no Go API key is configured,
+                # mark the provider offline so live routing fails closed instead of
+                # silently invoking a non-API local CLI.
+                use_cli = False
+            else:
+                use_cli = bool(self.opencode_bin) and (_cli_enabled() or prefer_cli or not self.api_key)
         self.use_cli = use_cli
         if offline is None:
             offline = bool(os.environ.get("OPENCODE_OFFLINE")) or (
@@ -111,6 +152,7 @@ class OpenCodeProvider:
             proc = subprocess.run(
                 args,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 timeout=timeout,
             )
@@ -131,7 +173,7 @@ class OpenCodeProvider:
             raise RuntimeError("OpenCode API key is not configured")
         import urllib.request
 
-        api_model = model[len("opencode-go/") :] if model.startswith("opencode-go/") else model
+        api_model = model.split("/", 1)[1] if model.startswith(("opencode-go/", "opencode/")) else model
         body = json.dumps({
             "model": api_model,
             "messages": [{"role": "user", "content": prompt}],
@@ -143,7 +185,9 @@ class OpenCodeProvider:
             data=body,
             headers={
                 "Content-Type": "application/json",
+                "Accept": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": _OPENCODE_API_USER_AGENT,
             },
             method="POST",
         )

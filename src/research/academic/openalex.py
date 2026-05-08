@@ -66,6 +66,8 @@ class OpenAlexClient:
         doi = normalize_doi(item.get("doi"))
         abstract = _abstract_from_inverted_index(item.get("abstract_inverted_index"))
         quote = compact_text([abstract, item.get("publication_year")])
+        oa = item.get("open_access") or {}
+        access_status = _access_status_from_openalex(oa, bool(abstract))
         return evidence_ref(
             source="openalex",
             paper_id=paper_id,
@@ -77,6 +79,7 @@ class OpenAlexClient:
             doi=doi,
             journal=_journal_name(item),
             institution=_institution_name(item),
+            access_status=access_status,
         )
 
 
@@ -227,6 +230,17 @@ def _targeting_name(item: dict[str, Any], *, field: str) -> str:
     if field == "doi_or_title":
         return str(normalize_doi(item.get("doi")) or item.get("display_name") or "").strip()
     return str(item.get(field) or "").strip()
+
+
+def _access_status_from_openalex(oa: dict[str, Any], has_abstract: bool) -> str | None:
+    """Map OpenAlex open_access metadata to deterministic access_status."""
+    if oa.get("is_oa"):
+        return "oa_copy_found"
+    if oa.get("oa_url"):
+        return "oa_copy_found"
+    if has_abstract:
+        return "abstract_only"
+    return "blocked"
 
 
 def _skip_live_targeting() -> bool:

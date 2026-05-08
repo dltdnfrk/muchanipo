@@ -23,6 +23,7 @@ class TestOpenCodeProviderCli:
         )
 
         provider = OpenCodeProvider(
+            model="opencode/kimi-k2.6",
             offline=False,
             use_cli=True,
             opencode_bin="/usr/local/bin/opencode",
@@ -36,7 +37,7 @@ class TestOpenCodeProviderCli:
             "run",
             "--pure",
             "--model",
-            "opencode-go/kimi-k2.6",
+            "opencode/kimi-k2.6",
             "--format",
             "json",
         ]
@@ -45,6 +46,7 @@ class TestOpenCodeProviderCli:
         assert "--dangerously-skip-permissions" not in args
         assert prompt not in args
         assert mock_run.call_args.kwargs["timeout"] == 12
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
     @patch("subprocess.run")
     def test_cli_nonzero_without_api_key_raises(self, mock_run, monkeypatch):
@@ -89,6 +91,7 @@ class TestOpenCodeProviderCli:
         mock_resp.read.return_value = b'{"choices":[{"message":{"content":"api ok"}}],"usage":{}}'
         mock_urlopen.return_value.__enter__.return_value = mock_resp
         provider = OpenCodeProvider(
+            model="opencode/kimi-k2.6",
             api_key="oc-test",
             offline=False,
             use_cli=True,
@@ -100,6 +103,9 @@ class TestOpenCodeProviderCli:
         assert result.text == "api ok"
         request_body = mock_request.call_args.kwargs["data"].decode("utf-8")
         assert '"model": "kimi-k2.6"' in request_body
+        headers = mock_request.call_args.kwargs["headers"]
+        assert headers["Accept"] == "application/json"
+        assert headers["User-Agent"] == "OpenCode/1.2.26 Muchanipo/1.0"
 
 
 def test_extract_opencode_text_from_json_lines():
@@ -119,3 +125,66 @@ def test_extract_opencode_text_from_part_text_event():
 
 def test_extract_opencode_text_falls_back_to_raw_text():
     assert _extract_opencode_text("plain answer") == "plain answer"
+
+
+def test_mimo_opencode_only_policy_forces_opencode_go_model(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+
+    provider = OpenCodeProvider(
+        model="anthropic/claude-sonnet",
+        offline=True,
+        prefer_cli=False,
+        use_cli=False,
+    )
+
+    assert provider.model == "opencode/kimi-k2.6"
+
+
+def test_mimo_opencode_only_policy_uses_go_api_not_cli_when_key_exists(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "oc-test")
+    monkeypatch.setenv("OPENCODE_USE_CLI", "1")
+    monkeypatch.setenv("MUCHANIPO_USE_CLI", "1")
+
+    provider = OpenCodeProvider(
+        model="anthropic/claude-sonnet",
+        offline=False,
+        prefer_cli=True,
+        opencode_bin="/usr/local/bin/opencode",
+    )
+
+    assert provider.model == "opencode/kimi-k2.6"
+    assert provider.use_cli is False
+
+
+def test_mimo_opencode_only_policy_disables_cli_when_key_is_absent(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCODE_USE_CLI", "1")
+    monkeypatch.setenv("MUCHANIPO_USE_CLI", "1")
+
+    provider = OpenCodeProvider(
+        prefer_cli=True,
+        opencode_bin="/usr/local/bin/opencode",
+    )
+
+    assert provider.model == "opencode/kimi-k2.6"
+    assert provider.use_cli is False
+    assert provider.offline is True
+
+
+def test_blank_opencode_go_key_counts_as_absent_in_mimo_opencode_policy(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.setenv("OPENCODE_API_KEY", " ")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_USE_CLI", "1")
+    monkeypatch.setenv("MUCHANIPO_USE_CLI", "1")
+
+    provider = OpenCodeProvider(
+        prefer_cli=True,
+        opencode_bin="/usr/local/bin/opencode",
+    )
+
+    assert provider.use_cli is False
+    assert provider.offline is True

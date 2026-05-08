@@ -1,6 +1,54 @@
 import json
 
-from src.council.persona_sampler import KoreaPersonaSampler, NEMOTRON_KOREA_FIELDS
+from src.council.persona_sampler import (
+    KoreaPersonaSampler,
+    NEMOTRON_KOREA_FIELDS,
+    nemotron_korea_dataset_metadata,
+)
+
+
+def test_dataset_metadata_preserves_ngc_and_hf_boundaries_without_download():
+    metadata = nemotron_korea_dataset_metadata()
+
+    assert metadata["ngc"]["resource"] == "nemotron-personas-dataset-ko_kr"
+    assert metadata["ngc"]["version"] == "0.0.1"
+    assert metadata["ngc"]["license"] == "NVIDIA Dataset License Agreement"
+    assert metadata["huggingface"]["dataset_id"] == "nvidia/Nemotron-Personas-Korea"
+    assert metadata["huggingface"]["license"] == "cc-by-4.0"
+    assert metadata["access"]["download_required"] is False
+    assert metadata["access"]["large_dataset_bytes"] > 1_000_000_000
+    assert metadata["schema"]["hf_feature_count"] == 26
+    assert metadata["schema"]["ngc_extended_documented_field_count"] == 51
+    assert metadata["integration_boundary"] == "metadata_adapter_only_no_dataset_download"
+
+
+def test_sample_normalizes_public_hf_schema_without_vertical_defaults():
+    sampler = KoreaPersonaSampler(
+        records=[
+            {
+                "uuid": "03b4f36a18e6469386d0286dddd513c8",
+                "province": "광주",
+                "district": "광주-서구",
+                "sex": "남자",
+                "age": 74,
+                "occupation": "하역 및 적재 관련 단순 종사원",
+                "education_level": "초등학교",
+                "persona": "광주 서구에서 평생 하역 일을 하며 살아온 70대 가장",
+                "career_goals_and_ambitions": "건강을 유지하며 생활비를 마련하고 싶다",
+            }
+        ]
+    )
+
+    result = sampler.sample(n=1, filter={"province": "광주", "occupation": "하역"})
+
+    assert result[0]["persona_id"] == "03b4f36a18e6469386d0286dddd513c8"
+    assert result[0]["uuid"] == "03b4f36a18e6469386d0286dddd513c8"
+    assert result[0]["sigungu"] == "광주-서구"
+    assert result[0]["gender"] == "남자"
+    assert result[0]["education"] == "초등학교"
+    assert result[0]["goals"] == "건강을 유지하며 생활비를 마련하고 싶다"
+    assert result[0]["industry"] == ""
+    assert result[0]["source"] == "Nemotron-Personas-Korea"
 
 
 def test_sample_filters_records_by_province_and_occupation():

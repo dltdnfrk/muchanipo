@@ -1,6 +1,6 @@
 """Plan Review (PLAN 단계) 테스트."""
 
-from src.intent.office_hours import OfficeHours
+from src.intent.office_hours import Alternative, DesignDoc, OfficeHours
 from src.intent.plan_review import (
     PlanReview, CeoReview, EngReview, DesignReview, DevexReview, ConsensusPlan,
 )
@@ -64,16 +64,51 @@ def test_autoplan_passes_gate_for_normal_input():
     assert "design_doc_brief" in onto
 
 
-def test_autoplan_korean_domain_adds_agtech_farmer_role():
+def test_autoplan_vertical_topic_uses_generic_research_roles():
     pr = PlanReview()
     doc = _doc("한국 AgTech 농가 대상 진단키트 가격은 얼마가 적정한가?")
     plan = pr.autoplan(doc)
-    assert "agtech_farmer" in plan.ontology_seed["roles"]
+    assert "agtech_farmer" not in plan.ontology_seed["roles"]
+    assert "topic_owner" in plan.ontology_seed["roles"]
+    assert "evidence_reviewer" in plan.ontology_seed["roles"]
 
 
 def test_autoplan_comparison_question_adds_comparison_judge():
     pr = PlanReview()
     doc = _doc("LangGraph vs CrewAI 뭐가 좋아?")
+    plan = pr.autoplan(doc)
+    assert "comparison_judge" in plan.ontology_seed["roles"]
+
+
+def test_autoplan_ordinary_officehours_scope_alternatives_do_not_add_comparison_judge():
+    pr = PlanReview()
+    doc = _doc("한국 AgTech 농가 대상 진단키트 가격은 얼마가 적정한가?")
+    assert len(doc.alternatives) >= 2  # OfficeHours always offers scope-control choices.
+    plan = pr.autoplan(doc)
+    assert "comparison_judge" not in plan.ontology_seed["roles"]
+
+
+def test_autoplan_comparison_judge_uses_raw_intent_not_pain_root_korean_keyword():
+    pr = PlanReview()
+    doc = DesignDoc(
+        raw_input="Discuss glossary wording, not an option choice.",
+        pain_root="이 문서는 비교 라는 단어의 번역 뉘앙스를 설명하지만 선택 상황은 아니다.",
+        alternatives=[],
+    )
+    plan = pr.autoplan(doc)
+    assert "comparison_judge" not in plan.ontology_seed["roles"]
+
+
+def test_autoplan_structural_alternatives_add_comparison_judge_without_keyword():
+    pr = PlanReview()
+    doc = DesignDoc(
+        raw_input="Choose deployment approach",
+        pain_root="Select the best rollout approach for the research workflow.",
+        alternatives=[
+            Alternative("local", "local first", "S", "low"),
+            Alternative("cloud", "cloud first", "M", "med"),
+        ],
+    )
     plan = pr.autoplan(doc)
     assert "comparison_judge" in plan.ontology_seed["roles"]
 

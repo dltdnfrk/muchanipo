@@ -5,8 +5,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 LOG_DIR="$ROOT/.omc/autoresearch/logs"
 mkdir -p "$LOG_DIR"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+CARGO_CMD="${CARGO_CMD:-cargo +stable}"
 
-START_TS=$(python3 - <<'PY'
+START_TS=$("$PYTHON_BIN" - <<'PY'
 import time
 print(time.time())
 PY
@@ -18,6 +20,7 @@ frontend_build=0
 rust_tests=0
 python_tests=0
 depth_contract=0
+product_guard=0
 
 run_step() {
   local name="$1"
@@ -41,7 +44,17 @@ run_step() {
 
 cd "$ROOT"
 
-run_step python_tests python_tests 35 python3 -m pytest \
+PRODUCT_GUARD_MIN_ITERATIONS=${PRODUCT_GUARD_MIN_ITERATIONS:-3}
+PRODUCT_GUARD_MAX_ITERATIONS=${PRODUCT_GUARD_MAX_ITERATIONS:-5}
+
+run_step product_guard product_guard 0 "$PYTHON_BIN" -m src.muchanipo.server guard \
+  --json \
+  --iterate \
+  --strict \
+  --min-iterations "$PRODUCT_GUARD_MIN_ITERATIONS" \
+  --max-iterations "$PRODUCT_GUARD_MAX_ITERATIONS"
+
+run_step python_tests python_tests 35 "$PYTHON_BIN" -m pytest \
   tests/test_pipeline_runner.py \
   tests/test_e2e_tauri_smoke.py \
   tests/test_execution_real_wire.py \
@@ -51,21 +64,21 @@ run_step python_tests python_tests 35 python3 -m pytest \
   tests/test_provider_kimi.py \
   -q
 
-run_step depth_contract depth_contract 5 python3 -m pytest \
+run_step depth_contract depth_contract 5 "$PYTHON_BIN" -m pytest \
   tests/test_pipeline_runner.py::test_run_pipeline_shallow_depth_reduces_internal_autoresearch_budget \
   tests/test_muchanipo_terminal.py::test_main_direct_topic_shortcut_accepts_depth_flag \
   tests/test_muchanipo_terminal.py::test_subprocess_demo_command_completes_offline \
   -q
 
 run_step frontend_build frontend_build 30 npm --prefix app/muchanipo-tauri run build
-run_step rust_tests rust_tests 30 bash -lc 'cd app/muchanipo-tauri && cargo test && cargo fmt --check'
+run_step rust_tests rust_tests 30 bash -lc 'cd app/muchanipo-tauri && ${CARGO_CMD:-cargo +stable} test && ${CARGO_CMD:-cargo +stable} fmt --check'
 
-END_TS=$(python3 - <<'PY'
+END_TS=$("$PYTHON_BIN" - <<'PY'
 import time
 print(time.time())
 PY
 )
-DURATION=$(python3 - "$START_TS" "$END_TS" <<'PY'
+DURATION=$("$PYTHON_BIN" - "$START_TS" "$END_TS" <<'PY'
 import sys
 start = float(sys.argv[1])
 end = float(sys.argv[2])
@@ -80,6 +93,7 @@ printf 'METRIC python_tests=%s\n' "$python_tests"
 printf 'METRIC depth_contract=%s\n' "$depth_contract"
 printf 'METRIC frontend_build=%s\n' "$frontend_build"
 printf 'METRIC rust_tests=%s\n' "$rust_tests"
+printf 'METRIC product_guard=%s\n' "$product_guard"
 
 if [[ "$failures" -ne 0 ]]; then
   exit 1

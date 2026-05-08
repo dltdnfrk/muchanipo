@@ -6,7 +6,13 @@ from typing import Any, Mapping, Sequence
 from src.council.round_layers import RoundLayer, layer_prompt_block
 
 
-def build_individual_prompt(persona: Any, layer: RoundLayer, prev_summary: str = "") -> str:
+def build_individual_prompt(
+    persona: Any,
+    layer: RoundLayer,
+    prev_summary: str = "",
+    *,
+    evidence_refs: Sequence[Any] | None = None,
+) -> str:
     """Prompt one persona for independent analysis without seeing peers."""
     identity = _persona_label(persona)
     return "\n".join(
@@ -18,6 +24,7 @@ def build_individual_prompt(persona: Any, layer: RoundLayer, prev_summary: str =
             f"Persona: {identity}",
             "",
             layer_prompt_block(layer),
+            _evidence_context_block(evidence_refs or []),
             "",
             "Previous round summary:",
             prev_summary or "(none)",
@@ -31,6 +38,8 @@ def build_peer_review_prompt(
     persona: Any,
     blinded_opinions: Sequence[Mapping[str, Any]],
     layer: RoundLayer,
+    *,
+    evidence_refs: Sequence[Any] | None = None,
 ) -> str:
     """Prompt one persona to review anonymous peer opinions."""
     identity = _persona_label(persona)
@@ -43,6 +52,7 @@ def build_peer_review_prompt(
         f"Reviewer persona: {identity}",
         "",
         layer_prompt_block(layer),
+        _evidence_context_block(evidence_refs or []),
         "",
         "Anonymous opinions:",
     ]
@@ -70,6 +80,8 @@ def build_chairman_prompt(
     individuals: Mapping[str, Any],
     peer_reviews: Mapping[str, Sequence[Any]],
     layer: RoundLayer,
+    *,
+    evidence_refs: Sequence[Any] | None = None,
 ) -> str:
     """Prompt the chairman to synthesize consensus and disagreements."""
     lines = [
@@ -79,6 +91,7 @@ def build_chairman_prompt(
         "Explicitly state consensus and disagreements. Do not hide unresolved assumptions.",
         "",
         layer_prompt_block(layer),
+        _evidence_context_block(evidence_refs or []),
         "",
         "Independent opinions:",
     ]
@@ -126,3 +139,36 @@ def _persona_label(persona: Any) -> str:
         for key in ("persona_id", "name", "role")
         if getattr(persona, key, "")
     )
+
+
+def _evidence_context_block(evidence_refs: Sequence[Any], *, limit: int = 8) -> str:
+    if not evidence_refs:
+        return ""
+    lines = [
+        "",
+        "## Evidence Context",
+        "Use these source-backed evidence records. Cite only Evidence ID values that support the claim.",
+    ]
+    for ref in list(evidence_refs)[:limit]:
+        ref_id = str(getattr(ref, "id", "") or "").strip()
+        if not ref_id:
+            continue
+        provenance = getattr(ref, "provenance", {}) or {}
+        kind = str(provenance.get("kind") or "").strip()
+        provenance_source = str(provenance.get("source") or provenance.get("url") or "").strip()
+        source_url = str(getattr(ref, "source_url", "") or provenance_source or "").strip()
+        title = str(getattr(ref, "source_title", "") or source_url or "untitled source").strip()
+        quote = _compact(str(getattr(ref, "quote", "") or ""), limit=320)
+        source_bits = " · ".join(bit for bit in (kind, source_url) if bit)
+        lines.append(f"- Evidence ID: `{ref_id}`")
+        lines.append(f"  - Source: {title}{f' ({source_bits})' if source_bits else ''}")
+        if quote:
+            lines.append(f"  - Quote: {quote}")
+    return "\n".join(lines)
+
+
+def _compact(value: str, *, limit: int) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"

@@ -62,6 +62,7 @@ class SemanticScholarClient:
         external_ids = item.get("externalIds") or {}
         doi = normalize_doi(external_ids.get("DOI"))
         quote = compact_text([item.get("abstract"), item.get("year"), f"citations={item.get('citationCount')}"])
+        access_status = _access_status_from_semantic_scholar(item)
         return evidence_ref(
             source="semantic_scholar",
             paper_id=paper_id,
@@ -71,7 +72,19 @@ class SemanticScholarClient:
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
             doi=doi,
+            access_status=access_status,
         )
+
+
+def _access_status_from_semantic_scholar(item: dict[str, Any]) -> str | None:
+    """Map Semantic Scholar metadata to deterministic access_status."""
+    if item.get("openAccessPdf") and item.get("openAccessPdf").get("url"):
+        return "full_text_available"
+    if item.get("isOpenAccess"):
+        return "oa_copy_found"
+    if item.get("abstract"):
+        return "abstract_only"
+    return "blocked"
 
 
 async def search(query: str, limit: int = 10, **kwargs: Any) -> list[EvidenceRef]:

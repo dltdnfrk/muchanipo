@@ -11,10 +11,16 @@ from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
-from src.research.depth import depth_profile, normalize_depth
+from src.pipeline.reference_contracts import contract_for_stage
+from src.pipeline.stages import Stage
+from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
 from src.research.runner import build_runner
 from src.report.chapter_mapper import RoundDigest
-from src.runtime.live_mode import live_requested_from_env
+from src.runtime.live_mode import (
+    assert_mimo_opencode_policy_credentials,
+    live_requested_from_env,
+    source_research_requested_from_env,
+)
 
 
 ProgressCallback = Callable[[Dict[str, Any]], None]
@@ -57,6 +63,19 @@ PROGRESS_STAGE_ORDER: tuple[str, ...] = (
     "agents",
     "finalize",
 )
+
+PROGRESS_TO_CANONICAL_STAGE: dict[str, Stage] = {
+    "intake": Stage.IDEA_DUMP,
+    "interview": Stage.INTERVIEW,
+    "targeting": Stage.TARGETING,
+    "research": Stage.RESEARCH,
+    "evidence": Stage.EVIDENCE,
+    "council": Stage.COUNCIL,
+    "report": Stage.REPORT,
+    "vault": Stage.VAULT,
+    "agents": Stage.AGENTS,
+    "finalize": Stage.DONE,
+}
 
 
 def round_result_to_digest(
@@ -103,6 +122,21 @@ def round_result_to_digest(
     )
 
 
+def _reference_fields_for_progress_stage(stage: str) -> dict[str, Any]:
+    canonical = PROGRESS_TO_CANONICAL_STAGE.get(stage)
+    if canonical is None:
+        return {}
+    contract = contract_for_stage(canonical)
+    if contract is None:
+        return {}
+    return {
+        "reference_step": contract.step,
+        "reference_stage_name": contract.name,
+        "reference_projects": list(contract.references),
+        "reference_notes": list(contract.notes),
+    }
+
+
 def run_pipeline(
     topic: str,
     *,
@@ -124,6 +158,7 @@ def run_pipeline(
     normalized_depth = normalize_depth(depth)
     profile = depth_profile(normalized_depth)
     live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
+    source_research = source_research_requested_from_env()
     scratch = Path(tempfile.mkdtemp(prefix="muchanipo-pipeline-"))
     vault_root_env = os.environ.get("MUCHANIPO_VAULT_ROOT", "").strip()
     vault_dir = (
@@ -142,6 +177,13 @@ def run_pipeline(
         if event:
             payload.update({key: value for key, value in event.items() if key != "stage"})
             payload["stage"] = stage
+        payload.update(
+            {
+                key: value
+                for key, value in _reference_fields_for_progress_stage(stage).items()
+                if key not in payload
+            }
+        )
         progress_callback({"event": "stage_started", **payload})
 
     def next_progress_stage(stage: str) -> str | None:
@@ -172,30 +214,37 @@ def run_pipeline(
             if next_stage is not None:
                 emit_stage_started(next_stage, {"run_id": event.get("run_id")})
 
-    gateway = default_gateway(force_offline=offline, require_live_default=live_required)
-    if live_required and hasattr(gateway, "assert_live_provider_candidates"):
-        gateway.assert_live_provider_candidates(
-            ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
-        )
-    pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=hitl_adapter
-        or HITLAdapter(
-            mode=_hitl_mode_from_env(live_required=live_required),
-            timeout_seconds=_hitl_timeout_from_env(),
-        ),
-        research_runner=build_runner(use_real=(live_required or not offline)),
-        model_gateway=gateway,
-        vault_dir=vault_dir,
-        council_log_dir=scratch / "council",
-        progress_callback=handle_progress,
-        require_live=live_required,
-        depth=normalized_depth,
-    )
-    emit_stage_started("intake", {"topic": topic})
-    with _academic_targeting_policy(live_enabled=bool(live_required or not offline)), _offline_runtime_policy(
-        offline=bool(offline)
+    with _bounded_source_research_policy(
+        source_research=source_research,
+        live_required=live_required,
+        profile=profile,
     ):
-        result = pipeline.run(topic)
+        if live_required:
+            assert_mimo_opencode_policy_credentials()
+        gateway = default_gateway(force_offline=offline, require_live_default=live_required)
+        if live_required and hasattr(gateway, "assert_live_provider_candidates"):
+            gateway.assert_live_provider_candidates(
+                ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
+            )
+        pipeline = IdeaToCouncilPipeline(
+            hitl_adapter=hitl_adapter
+            or HITLAdapter(
+                mode=_hitl_mode_from_env(live_required=live_required),
+                timeout_seconds=_hitl_timeout_from_env(),
+            ),
+            research_runner=build_runner(use_real=(live_required or not offline or source_research)),
+            model_gateway=gateway,
+            vault_dir=vault_dir,
+            council_log_dir=scratch / "council",
+            progress_callback=handle_progress,
+            require_live=live_required,
+            depth=normalized_depth,
+        )
+        emit_stage_started("intake", {"topic": topic})
+        with _academic_targeting_policy(live_enabled=bool(live_required or not offline or source_research)), _offline_runtime_policy(
+            offline=bool(offline and not source_research)
+        ):
+            result = pipeline.run(topic)
 
     rounds = _digests_from_result(result)
     return {
@@ -209,7 +258,7 @@ def run_pipeline(
         "depth_profile": profile,
         "executed_council_round_count": len(result.council.rounds),
         "council_persona_pool_size": len(result.council.personas),
-        "active_council_persona_count": profile.active_persona_count,
+        "active_council_persona_count": int(result.state.artifacts.get("active_council_persona_count") or profile.active_persona_count),
         "council_turn_transcript": list(result.council.turn_transcript),
     }
 
@@ -248,7 +297,50 @@ def _offline_runtime_policy(*, offline: bool) -> Iterator[None]:
             os.environ["MUCHANIPO_OFFLINE"] = previous
 
 
+@contextmanager
+def _bounded_source_research_policy(
+    *,
+    source_research: bool,
+    live_required: bool,
+    profile: ResearchDepthProfile,
+) -> Iterator[None]:
+    """Keep live source-research inside the interactive verification budget.
+
+    Explicit operator env values win. Defaults are only applied for live runs,
+    where a killed verifier would otherwise leave no final_report/done evidence.
+    """
+
+    if not source_research or not live_required:
+        yield
+        return
+
+    previous: dict[str, str | None] = {}
+
+    def default_env(name: str, value: str) -> None:
+        previous[name] = os.environ.get(name)
+        if not os.environ.get(name, "").strip():
+            os.environ[name] = value
+
+    default_env("MUCHANIPO_PUBLIC_WEB_TIMEOUT_SECONDS", "4.0")
+    default_env("MUCHANIPO_ACADEMIC_HTTP_TIMEOUT_SECONDS", "4.0")
+    default_env("MUCHANIPO_ACADEMIC_HTTP_MAX_RETRIES", "1")
+    if profile.name == "shallow":
+        default_env("MUCHANIPO_AUTORESEARCH_ITERATIONS", "1")
+
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def _hitl_mode_from_env(*, live_required: bool) -> str:
+    env_mode = os.environ.get("MUCHANIPO_HITL_MODE", "").strip().lower()
+    if env_mode in {"auto_approve", "plannotator", "markdown"}:
+        return env_mode
     if os.environ.get("PLANNOTATOR_API_KEY") or os.environ.get("PLANNOTATOR_OFFLINE", "").lower() in {
         "1",
         "true",

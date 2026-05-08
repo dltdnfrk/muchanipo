@@ -87,7 +87,7 @@ def test_terminal_run_writes_report_events_and_summary(tmp_path: Path, monkeypat
     assert summary["target_runtime_seconds"] == 900
     assert summary["executed_council_round_count"] == 10
     assert summary["council_persona_pool_size"] == 80
-    assert summary["active_council_persona_count"] == 10
+    assert summary["active_council_persona_count"] == 6
     assert summary["council_turn_count"] == 1
     events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
     assert events[0]["event"] == "terminal_run_started"
@@ -148,8 +148,14 @@ def test_terminal_run_jsonl_prints_machine_events(tmp_path: Path, monkeypatch):
         "stage_completed",
         "stage_started",
         "stage_completed",
+        "final_report",
+        "done",
         "terminal_run_done",
     ]
+    assert printed[-3]["report_path"].endswith("REPORT.md")
+    assert printed[-3]["chapter_count"] == 1
+    assert printed[-2]["pipeline"] == "terminal"
+    assert printed[-2]["status"] == "completed"
 
 
 def test_conduct_interview_merges_show_prd_answers_into_pipeline_input():
@@ -193,7 +199,15 @@ def test_terminal_run_failure_saves_summary_and_error_event(tmp_path: Path, monk
     events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert summary["status"] == "failed"
     assert summary["error_type"] == "RuntimeError"
-    assert events[-1]["event"] == "terminal_run_error"
+    assert events[-2]["event"] == "terminal_run_error"
+    assert events[-1] == {
+        "event": "done",
+        "pipeline": "terminal",
+        "run_id": events[-2]["run_id"],
+        "aborted": True,
+        "status": "failed",
+        "error_type": "RuntimeError",
+    }
     assert "Partial artifacts were saved." in stdout.getvalue()
 
 
@@ -225,7 +239,11 @@ def test_run_online_live_violation_fails_closed_and_persists_failure_artifacts(t
     assert summary["offline"] is False
     assert summary["require_live"] is True
     assert summary["error_type"] == "LiveModeViolation"
-    assert events[-1]["event"] == "terminal_run_error"
+    assert events[-2]["event"] == "terminal_run_error"
+    assert events[-1]["event"] == "done"
+    assert events[-1]["aborted"] is True
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["error_type"] == "LiveModeViolation"
 
 
 def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Path, monkeypatch):
@@ -242,7 +260,10 @@ def test_terminal_run_keyboard_interrupt_saves_interrupted_summary(tmp_path: Pat
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert summary["status"] == "interrupted"
-    assert events[-1]["event"] == "terminal_run_interrupted"
+    assert events[-2]["event"] == "terminal_run_interrupted"
+    assert events[-1]["event"] == "done"
+    assert events[-1]["aborted"] is True
+    assert events[-1]["status"] == "interrupted"
     assert "INTERRUPTED" in stdout.getvalue()
 
 
@@ -1025,6 +1046,7 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
         "muchanipo status",
         "muchanipo runs",
         "muchanipo references",
+        "muchanipo guard",
         "muchanipo orchestrate",
     }
     assert contracts["muchanipo doctor"]["required_top_level_keys"] == [
@@ -1057,6 +1079,17 @@ def test_main_contracts_json_documents_cli_json_contracts(capsys):
         "panes",
         "operators",
         "warnings",
+    ]
+    assert contracts["muchanipo guard"]["required_top_level_keys"] == [
+        "schema_version",
+        "command",
+        "status",
+        "passed",
+        "summary",
+        "autoresearch",
+        "checks",
+        "warnings",
+        "blockers",
     ]
 
 

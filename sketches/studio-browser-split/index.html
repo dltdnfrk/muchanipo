@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Muchanipo Studio / Browser Split Sketch</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0c0d;color:#f3f0e8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;-webkit-font-smoothing:antialiased}button{font:inherit}.app{display:grid;grid-template-columns:258px 1fr;height:100vh}.side{border-right:1px solid #242626;background:#111213;padding:18px}.brand{font-weight:760;letter-spacing:-.04em;font-size:22px}.sub{margin-top:4px;color:#777;font-size:12px}.mode{margin:22px 0;padding:5px;background:#17191a;border:1px solid #2a2d2e;border-radius:14px;display:grid;grid-template-columns:1fr 1fr;gap:5px}.mode button{border:0;border-radius:10px;padding:9px;color:#a7aaad;background:transparent}.mode button.active{background:#f97316;color:#160b03;font-weight:760}.nav h4{color:#74797c;text-transform:uppercase;font-size:10px;letter-spacing:.14em;margin:22px 0 9px}.nav div{display:flex;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:10px;color:#c3c6c8;font-size:13px}.nav div.on{background:#1d1f20;color:#fff}.nav small{color:#6f7477}.main{display:grid;grid-template-rows:58px 1fr;background:radial-gradient(circle at 28% 0%,#1b1d1f,#0b0c0d 48%)}.top{border-bottom:1px solid #242626;display:flex;align-items:center;justify-content:space-between;padding:0 24px}.pill{font-size:12px;border:1px solid #33383a;padding:6px 10px;border-radius:999px;color:#b7bbbe;background:#111314}.grid{padding:22px;display:grid;grid-template-columns:minmax(480px,1.02fr) minmax(360px,.86fr);grid-template-rows:1fr 214px;gap:18px;min-height:0}.panel{background:rgba(20,22,23,.9);border:1px solid #2b2e2f;border-radius:22px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.24);overflow:hidden}.panel h2{margin:0 0 8px;font-size:21px;letter-spacing:-.035em}.muted{color:#90969a;font-size:13px;line-height:1.55}.question{margin-top:20px;padding:18px;border-radius:18px;background:#0f1011;border:1px solid #343637}.tag{display:inline-flex;padding:6px 9px;border-radius:9px;background:#25190f;color:#f59e0b;font-size:12px;font-weight:700}.q{font-size:24px;line-height:1.36;letter-spacing:-.04em;margin:15px 0}.textarea{height:112px;border:1px solid #33383a;border-radius:16px;background:#090a0b;color:#858b8f;padding:16px;margin-top:14px}.actions{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.primary{border:1px solid #f97316;background:transparent;color:#fb923c;border-radius:10px;padding:9px 12px}.right{display:grid;grid-template-rows:auto 1fr;gap:14px}.unknown{display:flex;align-items:center;justify-content:space-between;border:1px solid #303335;background:#111314;border-radius:14px;padding:12px;margin-top:10px}.unknown.active{border-color:#f97316;background:rgba(249,115,22,.07)}.score{color:#fbbf24;font-variant-numeric:tabular-nums}.map{position:relative;height:130px;margin-top:14px;border:1px solid #2b2e2f;border-radius:16px;background:#0d0e0f;overflow:hidden}.node{position:absolute;padding:7px 9px;border:1px solid #3a3e40;border-radius:999px;background:#161819;font-size:12px}.n1{left:18px;top:24px}.n2{left:170px;top:62px}.n3{right:18px;top:28px}.line{position:absolute;height:1px;background:#454b4e;transform-origin:left}.l1{left:112px;top:47px;width:88px;transform:rotate(18deg)}.l2{left:250px;top:72px;width:92px;transform:rotate(-19deg)}.browserPreview{border:1px solid #303335;border-radius:18px;background:#101112;padding:14px}.browserPreview h3{margin:0 0 8px;font-size:15px}.runRow{display:grid;grid-template-columns:92px 1fr;gap:10px;margin-top:10px;font-size:12px}.runRow span:first-child{color:#777}.runRow span:last-child{color:#c9ccce}.timeline{grid-column:1/3;display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.step{border:1px solid #2b2e2f;border-radius:16px;background:#111314;padding:14px;min-width:0}.step strong{display:block;font-size:14px}.step span{display:block;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.step.live{border-color:#f97316;background:rgba(249,115,22,.08)}.step.next{border-color:#3f4650;background:rgba(255,255,255,.035)}@media(max-width:980px){.app{grid-template-columns:1fr}.side{display:none}.grid{grid-template-columns:1fr;grid-template-rows:auto auto auto}.timeline{grid-column:auto;grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">Muchanipo</div>
+    <div class="sub">Goal workspace</div>
+    <div class="mode"><button class="active">Studio</button><button>Browser</button></div>
+    <div class="nav">
+      <h4>Studio</h4>
+      <div class="on">Deep Interview <small>now</small></div>
+      <div>정리 항목 <small>3</small></div>
+      <div>Ontology Map <small>draft</small></div>
+      <div>Graph <small>readying</small></div>
+      <h4>Browser</h4>
+      <div>Live Run <small>queued</small></div>
+      <div>Evidence <small>0</small></div>
+      <div>Council <small>대기</small></div>
+      <div>Report <small>—</small></div>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="top">
+      <span class="pill">Studio · 개념 정리</span>
+      <span class="pill">Browser 실행 전</span>
+    </div>
+    <section class="grid">
+      <div class="panel">
+        <h2>Deep Interview</h2>
+        <p class="muted">Browser 실행 전에 애매한 범위를 먼저 정리합니다. 답변은 새 기록으로 남고, 기존 문장은 유지됩니다.</p>
+        <div class="question">
+          <span class="tag">정리 항목 · 재택의료의 범위</span>
+          <div class="q">여기서 “재택의료 SaaS”는 방문진료, 원격 모니터링, 복약관리, 응급감지, 돌봄 조정 중 어디까지 포함하나요?</div>
+          <p class="muted">이 경계가 정해지면 구매자, 규제, 경쟁군, 필요한 근거가 함께 좁혀집니다.</p>
+          <div class="textarea">답변을 입력하세요…</div>
+          <div class="actions"><span class="muted">⌘ + Enter · 새 기록으로 추가</span><button class="primary">답변 기록</button></div>
+        </div>
+      </div>
+      <div class="right">
+        <div class="panel">
+          <h2>Unknowns</h2>
+          <p class="muted">가장 먼저 정해야 할 항목만 위로 올립니다.</p>
+          <div class="unknown active"><div><b>범위가 불명확한 용어</b><br><span class="muted">재택의료 범위</span></div><span class="score">불확실성 0.92</span></div>
+          <div class="unknown"><div><b>주체가 빠진 항목</b><br><span class="muted">도입/결제 주체</span></div><span class="score">불확실성 0.81</span></div>
+          <div class="unknown"><div><b>근거가 부족한 항목</b><br><span class="muted">보험·지자체 근거</span></div><span class="score">불확실성 0.74</span></div>
+          <div class="map"><div class="line l1"></div><div class="line l2"></div><div class="node n1">고령 1인 가구</div><div class="node n2">위험 신호</div><div class="node n3">진료/돌봄</div></div>
+        </div>
+        <div class="browserPreview">
+          <h3>Browser 미리보기</h3>
+          <p class="muted">Browser는 아직 실행되지 않았습니다. 정리 항목이 해결되면 Graph를 기반으로 검색과 근거 검토를 시작합니다.</p>
+          <div class="runRow"><span>상태</span><span>Studio 정리 필요</span></div>
+          <div class="runRow"><span>다음 실행</span><span>출처 검색 → 근거 수집 → Council 검토</span></div>
+          <div class="runRow"><span>잠금 조건</span><span>정리 항목 3개 해결 필요</span></div>
+        </div>
+      </div>
+      <div class="timeline">
+        <div class="step live"><strong>Studio</strong><span class="muted">질문 진행</span></div>
+        <div class="step next"><strong>Ontology</strong><span class="muted">변경 대기</span></div>
+        <div class="step"><strong>Graph</strong><span class="muted">미리보기</span></div>
+        <div class="step"><strong>Browser</strong><span class="muted">잠김</span></div>
+        <div class="step"><strong>Evidence</strong><span class="muted">대기</span></div>
+        <div class="step"><strong>Report</strong><span class="muted">대기</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

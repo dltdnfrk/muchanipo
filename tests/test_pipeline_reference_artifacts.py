@@ -6,12 +6,16 @@ from pathlib import Path
 import pytest
 
 from src.council.persona_generator import FinalPersona
+from src.council.parsers import RoundResult
 from src.evidence.artifact import EvidenceRef, Finding
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import (
     IdeaToCouncilPipeline,
     _append_claim_grounding_matrix,
     _claim_with_evidence,
+    _fallback_executive_digest,
+    _round_digests,
+    _source_backed_open_questions,
 )
 from src.intake.idea_dump import IdeaDump
 from src.intent.office_hours import OfficeHours
@@ -66,6 +70,24 @@ def test_pipeline_brief_uses_jsonline_interview_answers():
     assert "PRD/01_PRD.md" in show_prd["show_prd_document_outputs"]
 
 
+def test_ontology_fallback_templates_do_not_inject_product_market_language():
+    digest = _fallback_executive_digest([], ["mock-evidence-1"])
+    text = "\n".join([digest.key_claim, *digest.body_claims])
+    open_questions = "\n".join(_source_backed_open_questions("데이터 사이언스 분야에서의 온톨로지"))
+    forbidden = [
+        "TAM/SAM/SOM",
+        "농가",
+        "현장 PCR",
+        "제품화 go/no-go",
+        "경쟁 제품 가격",
+        "시장성 결론",
+    ]
+    for phrase in forbidden:
+        assert phrase not in text
+        assert phrase not in open_questions
+    assert "데이터 사이언스 분야에서의 온톨로지" in open_questions
+
+
 def test_mock_evidence_is_labeled_as_not_source_backed():
     claim = _claim_with_evidence(
         "offline claim",
@@ -83,6 +105,42 @@ def test_mock_evidence_is_labeled_as_not_source_backed():
     )
     matrix = "\n".join(lines)
     assert "mock-only, not source-backed: `mock-evidence-1`" in matrix
+
+
+def test_report_digests_do_not_invent_missing_council_rounds():
+    evidence = [
+        EvidenceRef(
+            id="ref-market",
+            source_url="https://doi.org/10.1234/market",
+            source_title="Plant diagnostics market source",
+            quote="plant diagnostics market source",
+            source_grade="A",
+            provenance={"kind": "openalex"},
+        )
+    ]
+    council = type(
+        "CouncilStub",
+        (),
+        {
+            "rounds": [
+                RoundResult(
+                    layer_id="L1_market_sizing",
+                    chapter_title="시장 규모 + 컨텍스트",
+                    key_claim="시장 규모는 직접 출처 범위 안에서만 판단한다.",
+                    body_claims=["성공 기준은 내부 체크리스트 문장이라 본문에 노출하지 않는다."],
+                    evidence_ref_ids=["ref-market"],
+                    confidence_score=0.7,
+                )
+            ]
+        },
+    )()
+
+    digests = _round_digests(council, evidence)
+
+    assert all("Round " not in digest.key_claim for digest in digests)
+    assert not any("성공 기준은" in claim for digest in digests for claim in digest.body_claims)
+    assert any(digest.layer_id == "L10_executive_synthesis" for digest in digests)
+    assert not any(digest.layer_id.startswith("L7") for digest in digests)
 
 
 class RecordingReferenceRunner:
@@ -251,7 +309,7 @@ def test_step2_targeting_records_plan_review_and_academic_outputs(reference_pipe
     assert result.targeting_map.seed_papers == ["doi:10.1234/strawberry-kit"]
     assert event["artifacts"]["targeting_academic_sources"] == "openalex"
     assert event["artifacts"]["plan_gate_mode"] == "auto_approve"
-    assert event["artifacts"]["plan_gate_synthetic"] == "true"
+    assert event["artifacts"]["plan_gate_synthetic"] == "false"
 
 
 def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_run):
@@ -284,7 +342,7 @@ def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipel
     assert result.evidence_summary["trusted"] == 4
     assert result.evidence_summary["verified_claim_ratio"] == 1.0
     assert event["artifacts"]["evidence_gate_status"] == result.hitl_results["evidence"].status == "approved"
-    assert event["artifacts"]["evidence_gate_synthetic"] == "true"
+    assert event["artifacts"]["evidence_gate_synthetic"] == "false"
 
 
 def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run):

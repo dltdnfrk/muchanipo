@@ -57,6 +57,7 @@ export interface BackendEvent {
   // research_progress
   status?: string;
   run_id?: string;
+  app_run_id?: string;
   started_at?: string;
   python_pid?: number;
   python_executable?: string;
@@ -70,6 +71,16 @@ export interface BackendEvent {
   source_title?: string | null;
   source_url?: string | null;
   source_grade?: string | null;
+  source_kind?: string | null;
+  access_status?: string | null;
+  accepted?: boolean;
+  facet_ids?: string[];
+  relevance_score?: number;
+  reason?: string;
+  facet_id?: string;
+  accepted_count?: number;
+  min_accepted_sources?: number;
+  gap_count?: number;
   // council progress
   active_persona_count?: number;
   active_persona_ids?: string[];
@@ -155,6 +166,7 @@ export interface PipelineRuntimeStatus {
   child_tracked?: boolean;
   buffered_event_count?: number;
   child_pid?: number | null;
+  app_run_id?: string | null;
   runtime_age_ms?: number | null;
   last_event_elapsed_ms?: number | null;
   app_binary_path?: string | null;
@@ -170,9 +182,10 @@ export async function submitIdea(
   pipeline: PipelineMode = "full",
   depth: ResearchDepth = "deep",
   envs?: Record<string, string>,
+  appRunId?: string,
 ): Promise<void> {
   if (!isTauriRuntime()) throw tauriOnlyError("리서치 실행");
-  return invoke("start_pipeline", { topic, pipeline, depth, envs });
+  return invoke("start_pipeline", { topic, pipeline, depth, envs, appRunId });
 }
 
 /**
@@ -181,14 +194,20 @@ export async function submitIdea(
  */
 export async function onBackendEvent(
   handler: (e: BackendEvent) => void,
+  appRunId?: string,
 ): Promise<UnlistenFn> {
   if (!isTauriRuntime()) {
     void handler;
     return () => {};
   }
   return listen<BackendEvent>("backend_event", ({ payload }) => {
+    if (appRunId && !isBackendEventForAppRunId(payload, appRunId)) return;
     handler(payload);
   });
+}
+
+function isBackendEventForAppRunId(event: BackendEvent, appRunId: string): boolean {
+  return String(event.app_run_id ?? "") === appRunId;
 }
 
 /**
@@ -267,13 +286,15 @@ export async function openCliAuth(name: string): Promise<CliAuthLaunch> {
  * is re-mounted (e.g. user navigated away and clicked the run from the
  * sidebar) so the stage list reflects actual pipeline state.
  */
-export async function getBufferedEvents(): Promise<BackendEvent[]> {
+export async function getBufferedEvents(appRunId?: string): Promise<BackendEvent[]> {
   if (!isTauriRuntime()) return [];
-  const lines = await invoke<string[]>("get_buffered_events");
+  const lines = await invoke<string[]>("get_buffered_events", { appRunId });
   const out: BackendEvent[] = [];
   for (const line of lines) {
     try {
-      out.push(JSON.parse(line) as BackendEvent);
+      const event = JSON.parse(line) as BackendEvent;
+      if (appRunId && !isBackendEventForAppRunId(event, appRunId)) continue;
+      out.push(event);
     } catch {
       /* skip malformed lines */
     }

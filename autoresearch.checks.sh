@@ -3,9 +3,11 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
+PYTHON_BIN="${PYTHON_BIN:-python}"
+CARGO_CMD="${CARGO_CMD:-cargo +stable}"
 cd "$ROOT"
 
-python3 -m pytest \
+"$PYTHON_BIN" -m pytest \
   tests/test_pipeline_runner.py \
   tests/test_muchanipo_terminal.py \
   tests/test_e2e_tauri_smoke.py \
@@ -21,6 +23,6 @@ npm --prefix app/muchanipo-tauri run build
 
 (
   cd app/muchanipo-tauri
-  cargo test
-  cargo fmt --check
+  ${CARGO_CMD:-cargo +stable} test
+  ${CARGO_CMD:-cargo +stable} fmt --check
 )

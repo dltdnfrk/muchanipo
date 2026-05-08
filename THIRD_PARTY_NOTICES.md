@@ -84,12 +84,27 @@ license-sensitive in Muchanipo. Pure reference inspiration is tracked in
   dependency audit. The Tauri product uses the constrained port under
   `app/muchanipo-tauri/src/plannotator-port/` instead.
 
-## MIT / Permissive Reference Projects
+## Karpathy Autoresearch
 
-Karpathy Autoresearch is tracked as a permissive or reference-only project in
-the runtime inventory. It should stay there unless source code, prompts,
-schemas, or assets are copied into this repo. If copied, add the exact source
-URL, revision, license, and modification note here.
+- Source: https://github.com/karpathy/autoresearch
+- Pinned revision: `228791fb499afffb54b46200aca536f79142f117`
+- License declaration: MIT as declared by the upstream `README.md`.
+- Local material: `third_party/karpathy-autoresearch/`, including upstream
+  README, `program.md`, `prepare.py`, `train.py`, analysis notebook, project
+  metadata, and lockfile.
+- Runtime use: `src/research/karpathy_autoresearch.py` ports the upstream
+  experiment loop into Muchanipo Stage 3 source research. The local runner
+  writes a `program.md`, `results.tsv`, and per-iteration artifacts, evaluates
+  a fixed lower-is-better source-grounding metric, keeps strict improvements,
+  and discards non-improvements.
+- Modification note: upstream edits `train.py`, runs fixed-time GPU training,
+  and uses git keep/reset around `val_bpb`. Muchanipo adapts the single mutable
+  experiment surface to `ResearchPlan.queries` and uses scratch-run retention
+  instead of resetting the user's repository.
+- Compliance boundary: the pinned upstream tree in this snapshot declares MIT
+  in `README.md` but does not include a standalone `LICENSE` file. Preserve
+  `third_party/karpathy-autoresearch/UPSTREAM.md` with copied material and run
+  release packaging review before external redistribution.
 
 ## License Verification Required
 

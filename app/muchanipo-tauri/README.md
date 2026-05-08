@@ -24,7 +24,7 @@ npm install
 npm run tauri dev
 ```
 
-A native macOS window titled **Muchanipo** opens with a blank React screen.
+A native macOS window titled **Muchanipo** opens to the dark Muchanipo research workspace, with the idea intake composer ready to start a run.
 
 For terminal-first usage without Tauri:
 

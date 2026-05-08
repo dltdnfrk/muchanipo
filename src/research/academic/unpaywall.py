@@ -60,6 +60,7 @@ class UnpaywallClient:
             or (f"https://doi.org/{doi}" if doi else None)
         )
         quote = compact_text([item.get("title"), item.get("journal_name"), item.get("year"), item.get("is_oa")])
+        access_status = _access_status_from_unpaywall(item, oa_location)
         return evidence_ref(
             source="unpaywall",
             paper_id=paper_id,
@@ -70,7 +71,19 @@ class UnpaywallClient:
             source_grade=source_grade_for_paper(doi=doi),
             doi=doi,
             journal=item.get("journal_name"),
+            access_status=access_status,
         )
+
+
+def _access_status_from_unpaywall(item: dict[str, Any], oa_location: dict[str, Any]) -> str | None:
+    """Map Unpaywall metadata to deterministic access_status."""
+    if oa_location.get("url_for_pdf"):
+        return "full_text_available"
+    if item.get("is_oa"):
+        return "oa_copy_found"
+    if oa_location.get("url"):
+        return "oa_copy_found"
+    return "blocked"
 
 
 async def search(query: str, limit: int = 10, **kwargs: Any) -> list[EvidenceRef]:

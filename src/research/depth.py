@@ -48,7 +48,9 @@ DEPTH_PROFILES: dict[str, ResearchDepthProfile] = {
         query_limit=8,
         council_round_budget=10,
         persona_pool_size=80,
-        active_persona_count=10,
+        # Verification evidence (19af shallow PASS at 6, 19an/ao/ap deep FAIL at 10):
+        # serial council execution with 10 personas exceeds feasible time budget.
+        active_persona_count=6,
         target_runtime_seconds=900,
         extended_test_time_compute=False,
         description="Default six-stage Muchanipo research depth.",
@@ -78,3 +80,22 @@ def normalize_depth(depth: str | None) -> str:
 
 def depth_profile(depth: str | None) -> ResearchDepthProfile:
     return DEPTH_PROFILES[normalize_depth(depth)]
+
+
+def effective_query_limit(profile: ResearchDepthProfile, *, source_research: bool = False) -> int:
+    """Return the planner query budget for the current run mode.
+
+    Shallow interactive runs stay intentionally small. When source-backed
+    AutoResearch is explicitly requested, however, the same four slots are too
+    easy to exhaust with only: topic anchor, generic official query, one
+    scientific bridge, and one local-language market probe. Reserve a small
+    extra floor so general source-channel facets (government/statistics/WTP,
+    local adoption/channel/regulatory) can be attempted without changing the
+    public depth profile or hardcoding a product vertical.
+    """
+
+    if not source_research:
+        return profile.query_limit
+    if profile.name == "shallow":
+        return max(profile.query_limit, 9)
+    return profile.query_limit

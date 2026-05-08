@@ -21,6 +21,36 @@ except ImportError:
     from src.intent.office_hours import DesignDoc, Alternative  # type: ignore
 
 
+def _looks_like_scope_control_alternatives(alternatives: Sequence[Alternative]) -> bool:
+    """OfficeHours가 항상 생성하는 scope-control 대안인지 판별한다.
+
+    Hold/Expansion/Reduction은 리서치 범위를 정하는 운영 대안이지, 사용자가
+    비교 판단을 요청한 후보군은 아니다.
+    """
+    titles = " ".join((alt.title or "").lower() for alt in alternatives)
+    return (
+        "hold scope" in titles
+        and "scope expansion" in titles
+        and "reduction" in titles
+    )
+
+
+def _has_comparison_intent(doc: DesignDoc) -> bool:
+    """문자열 vertical dispatch 없이 비교 judge 필요성을 판별한다."""
+    raw = (doc.raw_input or "").lower()
+    textual_comparison = bool(
+        re.search(r"\b(vs\.?|versus|compare|comparison)\b", raw)
+        or " vs " in raw
+        or "차이" in raw
+        or "비교" in raw
+    )
+    explicit_choice_alternatives = (
+        len(doc.alternatives) >= 2
+        and not _looks_like_scope_control_alternatives(doc.alternatives)
+    )
+    return textual_comparison or explicit_choice_alternatives
+
+
 # ---------------------------------------------------------------------------
 # Review dataclasses
 # ---------------------------------------------------------------------------
@@ -227,7 +257,7 @@ class PlanReview:
         fixtures = [
             "tests/fixtures/sample_council_report_v2.json — 기본 PASS 케이스",
             "tests/fixtures/sample_council_report_with_unsupported.json — 강등 케이스",
-            "vault/personas/seeds/korea/agtech-farmers-sample500.jsonl — Korea grounded 500",
+            "tests/fixtures/sample_interview_answers.jsonl — 인터뷰 응답 replay 케이스",
         ]
         return DevexReview(
             friction_points=friction,
@@ -293,11 +323,8 @@ class PlanReview:
             roles += ["topic_owner", "evidence_reviewer", "contrarian"]
         else:
             roles += ["topic_owner", "evidence_reviewer"]
-        # Korean domain 감지 시 농가 페르소나 추가
-        if any("한국" in c or "Nemotron" in c for c in doc.implicit_capabilities):
-            roles.append("agtech_farmer")
-        # 비교 질문이면 두 측면 비교자 추가
-        if "비교" in doc.pain_root or "선택지" in doc.pain_root:
+        # 비교 judge는 vertical 키워드가 아니라 explicit 후보군/비교 의도에서만 추가한다.
+        if _has_comparison_intent(doc):
             roles.append("comparison_judge")
 
         intents = [

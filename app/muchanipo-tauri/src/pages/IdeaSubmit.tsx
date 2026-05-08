@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import logoUrl from "../assets/neobio-logo-white.svg";
 import { markPendingRun } from "../lib/pendingRun";
 import { pushRun } from "../lib/runsIndex";
 
@@ -8,33 +7,46 @@ function newRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const SAMPLES = [
-  "딸기 농가용 저비용 분자진단 키트 시장성",
-  "한국 65세 이상 1인 가구 재택의료 SaaS",
-  "Z세대 친환경 패션 D2C 브랜드",
-  "AI 코딩 어시스턴트 기업용 보안 게이트웨이",
-];
+function newStudioId(): string {
+  return `studio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-const IDEA_SUGGESTIONS = [
-  "현장 농가가 병해를 30분 안에 판별하는 저비용 진단 워크플로우",
-  "소규모 병원이 검사 의뢰부터 결과 공유까지 관리하는 재택의료 협업 SaaS",
-  "기업 개발팀이 AI 코드 변경을 승인 전 검증하는 보안 게이트웨이",
-  "B2B 영업팀이 회의록에서 PRD와 기능명세 초안을 자동 생성하는 도구",
-];
+const STUDIO_STEPS = [
+  ["Goal", "이해할 목표 입력"],
+  ["Unknown", "모호한 개념 확인"],
+  ["Evidence", "근거 경계 설정"],
+  ["Run", "Browser 실행 준비"],
+] as const;
+
+const BROWSER_PREVIEW = [
+  ["Status", "Locked"],
+  ["Input", "Studio graph required"],
+  ["Next", "Evidence · Run · Report"],
+] as const;
 
 export default function IdeaSubmit() {
   const [idea, setIdea] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const navigate = useNavigate();
 
-  function suggestIdea() {
-    const next = IDEA_SUGGESTIONS[suggestionIndex % IDEA_SUGGESTIONS.length];
-    setIdea(next);
-    setSuggestionIndex((idx) => idx + 1);
-    setError("");
-  }
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const autostartTopic = (import.meta.env.VITE_MUCHANIPO_AUTOSTART_TOPIC || "").trim();
+    if (!autostartTopic) return;
+    const sessionKey = `muchanipo:autostart:${autostartTopic}`;
+    if (sessionStorage.getItem(sessionKey)) return;
+    sessionStorage.setItem(sessionKey, "1");
+    const runId = newRunId();
+    try {
+      localStorage.setItem(`run:${runId}:topic`, autostartTopic);
+      markPendingRun(runId);
+      pushRun(runId, autostartTopic);
+    } catch {
+      /* ignore */
+    }
+    navigate(`/browser/${runId}`);
+  }, [navigate]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -46,19 +58,13 @@ export default function IdeaSubmit() {
     }
     setLoading(true);
     try {
-      const runId = newRunId();
+      const studioId = newStudioId();
       try {
-        // Persist topic + pending flag so RunProgress can pick up the run and
-        // start the pipeline AFTER its event listener has registered. Doing
-        // it here (before listener) caused the listener to miss events when
-        // the pipeline finished faster than the page transition.
-        localStorage.setItem(`run:${runId}:topic`, trimmed);
-        markPendingRun(runId);
-        pushRun(runId, trimmed);
+        localStorage.setItem(`studio:${studioId}:goal`, trimmed);
       } catch {
         /* ignore */
       }
-      navigate(`/run/${runId}`);
+      navigate(`/studio/${studioId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "제출 중 오류가 발생했습니다.");
       setLoading(false);
@@ -66,11 +72,11 @@ export default function IdeaSubmit() {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center px-6">
+    <div className="relative flex min-h-screen flex-col items-center justify-center px-6 py-10">
       {/* Top-right settings */}
       <Link
         to="/settings"
-        className="absolute right-4 top-4 rounded-md p-2 text-tertiary transition hover:bg-white/5 hover:text-white"
+        className="absolute right-4 top-4 rounded-md border border-white/10 bg-white/[0.03] p-2 text-tertiary transition hover:bg-white/5 hover:text-white"
         title="설정"
       >
         <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -79,56 +85,63 @@ export default function IdeaSubmit() {
         </svg>
       </Link>
 
-      <div className="fade-in w-full max-w-2xl">
-        {/* Centered hero — ChatGPT empty state style */}
-        <div className="mb-10 flex flex-col items-center text-center">
-          <img src={logoUrl} alt="NeoBio" className="mb-6 h-28 w-auto" />
-          <h1 className="text-2xl font-semibold tracking-tight text-white">
-            오늘 어떤 주제를 리서치할까요?
-          </h1>
+      <div className="fade-in w-full max-w-6xl">
+        <div className="mb-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-end">
+          <div>
+            <p className="atlas-label mb-2">Muchanipo Studio</p>
+            <h1 className="display-serif max-w-3xl text-[40px] font-semibold leading-tight text-white sm:text-[56px]">
+              Start with a Goal.
+            </h1>
+            <p className="mt-4 max-w-2xl text-[15px] leading-7 text-secondary">
+              Describe the Goal in one sentence. Studio will clarify unknowns and evidence boundaries before Browser runs.
+            </p>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.025] px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-tertiary">Browser</span>
+              <span className="min-w-[72px] rounded-full border border-white/10 bg-black/20 px-2 py-1 text-center font-mono text-[10px] uppercase tracking-[0.12em] text-tertiary">
+                Locked
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-secondary">
+              Browser opens after Studio has a graph to run.
+            </p>
+          </div>
         </div>
 
-        {/* Composer (ChatGPT input box style) */}
-        <form onSubmit={handleSubmit}>
-          <div className="surface group rounded-2xl p-2 transition focus-within:border-white/20">
-            <textarea
-              value={idea}
-              onChange={(e) => setIdea(e.target.value)}
-              rows={3}
-              placeholder="예: 딸기 농가용 저비용 분자진단 키트 시장성"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  handleSubmit(e as unknown as React.FormEvent);
-                }
-              }}
-              className="w-full resize-none rounded-xl bg-transparent px-3 py-2.5 text-[15px] leading-relaxed text-white placeholder-tertiary outline-none"
-              disabled={loading}
-            />
-            <div className="flex items-center justify-between px-2 py-1">
-              <p className="text-xs text-tertiary">
-                <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px]">
-                  ⌘
-                </kbd>
-                <kbd className="ml-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px]">
-                  ↵
-                </kbd>
-                <span className="ml-1.5">to send</span>
-              </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={suggestIdea}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <section>
+            <form onSubmit={handleSubmit}>
+              <div className="research-composer group p-2 transition focus-within:border-white/20">
+                <textarea
+                  value={idea}
+                  onChange={(e) => setIdea(e.target.value)}
+                  rows={5}
+                  placeholder="Describe the Goal in one sentence."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      handleSubmit(e as unknown as React.FormEvent);
+                    }
+                  }}
+                  className="w-full resize-none rounded-[20px] bg-transparent px-5 py-5 text-[18px] leading-8 text-white placeholder-tertiary outline-none"
                   disabled={loading}
-                  className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-secondary transition hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  주제 추천
-                </button>
+                />
+                <div className="flex items-center justify-between border-t border-white/10 px-4 py-3">
+                  <p className="text-xs text-tertiary">
+                    <kbd className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px]">
+                      ⌘
+                    </kbd>
+                    <kbd className="ml-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px]">
+                      ↵
+                    </kbd>
+                    <span className="ml-1.5">Studio 시작</span>
+                  </p>
                 <button
                   type="submit"
-                  aria-label="리서치 시작"
-                  title="리서치 시작"
+                  aria-label="Start Studio"
+                  title="Start Studio"
                   disabled={loading || !idea.trim()}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-[#f4efe6] bg-[#f4efe6] text-[#1f1f1d] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   {loading ? (
                     <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -141,7 +154,6 @@ export default function IdeaSubmit() {
                     </svg>
                   )}
                 </button>
-              </div>
             </div>
           </div>
         </form>
@@ -152,18 +164,40 @@ export default function IdeaSubmit() {
           </div>
         )}
 
-        {/* Suggested prompts */}
-        <div className="mt-8 flex flex-wrap justify-center gap-2">
-          {SAMPLES.map((sample) => (
-            <button
-              key={sample}
-              type="button"
-              onClick={() => setIdea(sample)}
-              className="rounded-full border border-white/10 bg-transparent px-3.5 py-1.5 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
-            >
-              {sample}
-            </button>
-          ))}
+            <div className="mt-4 grid gap-2 sm:grid-cols-4">
+              {STUDIO_STEPS.map(([label, description]) => (
+                <div key={label} className="rounded-lg border border-white/10 bg-white/[0.025] px-3 py-3">
+                  <div className="text-sm font-medium text-white">{label}</div>
+                  <div className="mt-1 text-xs leading-5 text-tertiary">{description}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <aside className="rounded-lg border border-white/10 bg-[#111213] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-white">Browser preview</h2>
+                <p className="mt-1 text-xs leading-5 text-tertiary">Execution remains locked until Studio creates a graph.</p>
+              </div>
+              <span className="min-w-[72px] rounded-full border border-white/10 bg-black/30 px-2 py-1 text-center font-mono text-[10px] uppercase tracking-[0.12em] text-tertiary">
+                Locked
+              </span>
+            </div>
+            <div className="mt-4 space-y-2">
+              {BROWSER_PREVIEW.map(([label, value]) => (
+                <div key={label} className="grid grid-cols-[76px_1fr] gap-3 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <span className="font-mono uppercase tracking-[0.08em] text-tertiary">{label}</span>
+                  <span className="truncate text-secondary">{value}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-[11px]">
+              <div className="rounded-md border border-white/10 bg-black/20 px-2 py-2 text-tertiary">Evidence</div>
+              <div className="rounded-md border border-white/10 bg-black/20 px-2 py-2 text-tertiary">Run</div>
+              <div className="rounded-md border border-white/10 bg-black/20 px-2 py-2 text-tertiary">Report</div>
+            </div>
+          </aside>
         </div>
       </div>
     </div>

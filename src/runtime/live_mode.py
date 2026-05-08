@@ -42,6 +42,62 @@ def live_requested_from_env() -> bool:
     )
 
 
+def source_research_requested_from_env() -> bool:
+    """Request real source collection without requiring live LLM providers."""
+
+    return os.environ.get("MUCHANIPO_SOURCE_RESEARCH", "").strip().lower() in _TRUE_VALUES
+
+
+_MIMO_OPENCODE_ROUTING_VALUES = {
+    "mimo_opencode_only",
+    "mimo_opencode_go_only",
+    "mimo_opencode",
+    "mimo_opencodego",
+}
+_MIMO_KEY_ENVS = ("XIAOMI_MIMO_API_KEY", "MIMO_API_KEY")
+_OPENCODE_GO_KEY_ENVS = ("OPENCODE_GO_API_KEY", "OPENCODE_API_KEY")
+
+
+def mimo_opencode_only_requested_from_env() -> bool:
+    """Return whether live verification is constrained to MiMo/OpenCode Go APIs."""
+
+    raw = (
+        os.environ.get("MUCHANIPO_VERIFICATION_ROUTING")
+        or os.environ.get("MUCHANIPO_LIVE_VERIFICATION_ROUTING")
+        or os.environ.get("MUCHANIPO_MODEL_ROUTING")
+        or os.environ.get("MUCHANIPO_API_ROUTING")
+        or os.environ.get("MUCHANIPO_EXTERNAL_MODEL_ROUTING")
+        or os.environ.get("MUCHANIPO_PROVIDER_ROUTING")
+        or ""
+    )
+    normalized = raw.strip().casefold().replace("-", "_").replace(",", "_")
+    return normalized in _MIMO_OPENCODE_ROUTING_VALUES
+
+
+def mimo_opencode_live_credentials_present() -> bool:
+    """Check nonblank MiMo/OpenCode Go API credential presence without exposing values."""
+
+    return any(
+        bool((os.environ.get(name) or "").strip())
+        for name in (*_MIMO_KEY_ENVS, *_OPENCODE_GO_KEY_ENVS)
+    )
+
+
+def assert_mimo_opencode_policy_credentials() -> None:
+    """Fail closed when API-only routing is requested but no approved API key exists."""
+
+    if not mimo_opencode_only_requested_from_env():
+        return
+    if mimo_opencode_live_credentials_present():
+        return
+    allowed = ", ".join((*_MIMO_KEY_ENVS, *_OPENCODE_GO_KEY_ENVS))
+    raise LiveModeViolation(
+        "mimo_opencode_go_only routing requires at least one nonblank approved API credential "
+        f"({allowed}); provider candidates are mimo:missing_credential, opencode:missing_credential; "
+        "local OpenCode CLI and other providers are not allowed for verification"
+    )
+
+
 def assert_live_model_result(stage: str, result: Any) -> None:
     """Reject model results that are clearly mock/demo placeholders."""
     provider = str(getattr(result, "provider", "") or "").lower()

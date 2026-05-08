@@ -57,6 +57,7 @@ class ArxivClient:
             source_title=raw.get("title"),
             quote=quote,
             source_grade="B",
+            access_status="oa_copy_found",
         )
 
 

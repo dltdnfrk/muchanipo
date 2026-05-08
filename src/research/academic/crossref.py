@@ -54,6 +54,7 @@ class CrossRefClient:
         abstract = item.get("abstract")
         published = item.get("published-print") or item.get("published-online") or item.get("created")
         quote = compact_text([abstract, _container_title(item), published])
+        access_status = _access_status_from_crossref(item)
         return evidence_ref(
             source="crossref",
             paper_id=paper_id,
@@ -64,7 +65,20 @@ class CrossRefClient:
             source_grade=source_grade_for_paper(doi=doi),
             doi=doi,
             journal=_container_title(item),
+            access_status=access_status,
         )
+
+
+def _access_status_from_crossref(item: dict[str, Any]) -> str | None:
+    """Map CrossRef metadata to deterministic access_status."""
+    links = item.get("link") or []
+    if isinstance(links, list):
+        for link in links:
+            if isinstance(link, dict) and link.get("content-type") == "application/pdf":
+                return "full_text_available"
+    if item.get("abstract"):
+        return "abstract_only"
+    return "blocked"
 
 
 def _first(value: Any) -> str | None:

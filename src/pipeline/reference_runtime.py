@@ -229,7 +229,7 @@ def _council_payload(report: ResearchReport, council: Any) -> dict[str, Any]:
         "query": report.title,
         "council_id": report.id,
         "consensus": "\n".join(f"- {claim}" for claim in round_claims) if round_claims else report.executive_summary,
-        "dissent": "\n".join(report.open_questions),
+        "dissent": "\n".join(_dissent_items(report)),
         "recommendations": _recommendations(report),
         "evidence": evidence_lines,
         "personas": [
@@ -272,5 +272,11 @@ def _evidence_lines(refs: list[EvidenceRef]) -> list[str]:
 
 def _recommendations(report: ResearchReport) -> list[str]:
     if report.open_questions:
-        return [f"Resolve open question: {item}" for item in report.open_questions]
+        return [str(item).strip() for item in report.open_questions if str(item).strip()]
     return ["Preserve source-backed evidence trail before external use."]
+
+
+def _dissent_items(report: ResearchReport) -> list[str]:
+    if report.open_questions:
+        return [str(item).strip() for item in report.open_questions if str(item).strip()]
+    return ["시장성 주장은 추가 검증 전까지 조건부로 유지한다."]

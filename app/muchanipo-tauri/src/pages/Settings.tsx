@@ -16,7 +16,10 @@ interface KeyForm {
 }
 
 const KEY_CONFIGS: KeyForm[] = [
-  { label: "Anthropic API Key", key: "anthropic_api_key", type: "password", hint: "Council, Interview, Report 단계용" },
+  { label: "MiMo API Key", key: "mimo_api_key", type: "password", hint: "Xiaomi MiMo Token Plan / API 기본 실행 경로" },
+  { label: "MiMo Base URL", key: "mimo_base_url", type: "text", hint: "Token Plan: https://token-plan-sgp.xiaomimimo.com/v1" },
+  { label: "MiMo Model", key: "mimo_model", type: "text", hint: "기본: mimo-v2.5-pro" },
+  { label: "Anthropic API Key", key: "anthropic_api_key", type: "password", hint: "MiMo 장애 시 fallback용" },
   { label: "OpenAI API Key", key: "openai_api_key", type: "password", hint: "Eval / Codex 단계 (CLI 없을 때)" },
   { label: "Gemini API Key", key: "gemini_api_key", type: "password", hint: "Intake, Targeting, Research 단계용" },
   { label: "Kimi API Key", key: "kimi_api_key", type: "password", hint: "Evidence 단계 (Moonshot)" },
@@ -41,18 +44,43 @@ const CLI_STAGE_MAP: Record<string, string> = {
   opencode: "OpenCode Go — Utility / Review / Fallback",
 };
 
-function readSessionCredential(key: string): string {
+const DEFAULT_MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1";
+const DEFAULT_MIMO_MODEL = "mimo-v2.5-pro";
+
+function defaultCredentialValue(key: string): string {
+  if (key === "mimo_base_url") return DEFAULT_MIMO_BASE_URL;
+  if (key === "mimo_model") return DEFAULT_MIMO_MODEL;
+  return "";
+}
+
+function placeholderForKey(cfg: KeyForm): string {
+  if (cfg.key === "mimo_api_key") return "tp-...";
+  if (cfg.key === "mimo_base_url") return DEFAULT_MIMO_BASE_URL;
+  if (cfg.key === "mimo_model") return DEFAULT_MIMO_MODEL;
+  return cfg.type === "password" ? "sk-..." : "";
+}
+
+function readStoredCredential(key: string): string {
   try {
-    return sessionStorage.getItem(key) || "";
+    return (
+      localStorage.getItem(`credential:${key}`) ||
+      sessionStorage.getItem(key) ||
+      defaultCredentialValue(key)
+    );
   } catch {
-    return "";
+    return defaultCredentialValue(key);
   }
 }
 
-function writeSessionCredential(key: string, value: string): void {
+function writeStoredCredential(key: string, value: string): void {
   try {
-    if (value) sessionStorage.setItem(key, value);
-    else sessionStorage.removeItem(key);
+    if (value) {
+      localStorage.setItem(`credential:${key}`, value);
+      sessionStorage.setItem(key, value);
+    } else {
+      localStorage.removeItem(`credential:${key}`);
+      sessionStorage.removeItem(key);
+    }
   } catch {
     /* ignore */
   }
@@ -95,7 +123,7 @@ export default function Settings() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [pipelineMode, setPipelineMode] = useState<"full" | "stub">("full");
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>("deep");
-  const [backendMode, setBackendMode] = useState<BackendMode>("cli");
+  const [backendMode, setBackendMode] = useState<BackendMode>("offline");
   const [councilVisualizer, setCouncilVisualizer] = useState<CouncilVisualizer>("off");
   const [councilVisualizerModel, setCouncilVisualizerModel] = useState("qwen3.6-a3b:latest");
   const [saved, setSaved] = useState(false);
@@ -109,7 +137,7 @@ export default function Settings() {
 
   useEffect(() => {
     const loaded: Record<string, string> = {};
-    for (const cfg of KEY_CONFIGS) loaded[cfg.key] = readSessionCredential(cfg.key);
+    for (const cfg of KEY_CONFIGS) loaded[cfg.key] = readStoredCredential(cfg.key);
     setValues(loaded);
     setPipelineMode((localStorage.getItem("pipeline_mode") as "full" | "stub") || "full");
     const savedDepth = localStorage.getItem("research_depth");
@@ -119,7 +147,7 @@ export default function Settings() {
         : "deep",
     );
     const savedBackendMode = localStorage.getItem("backend_mode");
-    setBackendMode(isBackendMode(savedBackendMode) ? savedBackendMode : "cli");
+    setBackendMode(isBackendMode(savedBackendMode) ? savedBackendMode : "offline");
     const savedCouncilVisualizer = localStorage.getItem("council_visualizer");
     setCouncilVisualizer(
       isCouncilVisualizer(savedCouncilVisualizer) ? savedCouncilVisualizer : "off",
@@ -192,7 +220,7 @@ export default function Settings() {
   }, [backendMode]);
 
   const save = () => {
-    for (const cfg of KEY_CONFIGS) writeSessionCredential(cfg.key, values[cfg.key] || "");
+    for (const cfg of KEY_CONFIGS) writeStoredCredential(cfg.key, values[cfg.key] || "");
     localStorage.setItem("pipeline_mode", pipelineMode);
     localStorage.setItem("research_depth", researchDepth);
     localStorage.setItem("backend_mode", backendMode);
@@ -219,7 +247,10 @@ export default function Settings() {
           </p>
           <div className="flex flex-col gap-2 sm:flex-row">
             <button
-              onClick={() => setBackendMode("cli")}
+              onClick={() => {
+                setBackendMode("cli");
+                localStorage.setItem("backend_mode", "cli");
+              }}
               className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition ${
                 backendMode === "cli"
                   ? "border-white/30 bg-white/10 text-white"
@@ -232,7 +263,10 @@ export default function Settings() {
               </div>
             </button>
             <button
-              onClick={() => setBackendMode("api")}
+              onClick={() => {
+                setBackendMode("api");
+                localStorage.setItem("backend_mode", "api");
+              }}
               className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition ${
                 backendMode === "api"
                   ? "border-white/30 bg-white/10 text-white"
@@ -241,20 +275,23 @@ export default function Settings() {
             >
               <div className="font-medium">API Keys</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
-                직접 키를 발급해 사용 (현재 세션에만 보관)
+                로컬에 저장되어 앱 재실행 후에도 유지됩니다
               </div>
             </button>
             <button
-              onClick={() => setBackendMode("offline")}
+              onClick={() => {
+                setBackendMode("offline");
+                localStorage.setItem("backend_mode", "offline");
+              }}
               className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition ${
                 backendMode === "offline"
                   ? "border-white/30 bg-white/10 text-white"
                   : "border-white/10 bg-white/[0.02] text-secondary hover:border-white/20 hover:text-white"
               }`}
             >
-              <div className="font-medium">오프라인</div>
+              <div className="font-medium">로컬 출처 수집</div>
               <div className="mt-0.5 text-[11px] text-tertiary">
-                API/CLI 없이 로컬 mock provider 사용
+                LLM은 mock, 근거는 로컬 vault/공개 학술 API로 수집
               </div>
             </button>
           </div>
@@ -408,10 +445,12 @@ export default function Settings() {
                     id={cfg.key}
                     type={cfg.type}
                     value={values[cfg.key] || ""}
-                    onChange={(e) =>
-                      setValues((v) => ({ ...v, [cfg.key]: e.target.value }))
-                    }
-                    placeholder={cfg.type === "password" ? "sk-..." : ""}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setValues((v) => ({ ...v, [cfg.key]: value }));
+                      writeStoredCredential(cfg.key, value);
+                    }}
+                    placeholder={placeholderForKey(cfg)}
                     className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white placeholder-tertiary outline-none transition focus:border-white/30 focus:bg-black/30"
                   />
                   {cfg.hint && (

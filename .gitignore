@@ -20,6 +20,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 uv.lock
+!third_party/karpathy-autoresearch/uv.lock
 .venv/
 mp-env/
 

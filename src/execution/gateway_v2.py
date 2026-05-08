@@ -20,12 +20,18 @@ stdlib only.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from src.execution.models import ModelGateway, ModelResult, Provider
 from src.governance.budget import BudgetExceeded, provider_name, resolve_model
-from src.runtime.live_mode import LiveModeViolation, assert_live_model_result, live_requested_from_env
+from src.runtime.live_mode import (
+    LiveModeViolation,
+    assert_live_model_result,
+    live_requested_from_env,
+    mimo_opencode_only_requested_from_env,
+)
 
 
 # ---- Stage → primary provider name (PRD-v2 §8.1) -------------------------
@@ -123,10 +129,12 @@ def build_default_providers(
     from src.execution.providers.codex import CodexProvider
     from src.execution.providers.gemini import GeminiProvider
     from src.execution.providers.kimi import KimiProvider
+    from src.execution.providers.mimo import MiMoProvider
     from src.execution.providers.mock import MockProvider
     from src.execution.providers.opencode import OpenCodeProvider
 
     providers: Dict[str, Provider] = {
+        "mimo": MiMoProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "anthropic": AnthropicProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "gemini": GeminiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
         "kimi": KimiProvider(offline=True if force_offline else None, prefer_cli=prefer_cli),
@@ -135,6 +143,72 @@ def build_default_providers(
         "mock": MockProvider(),
     }
     return providers
+
+
+def _mimo_available(providers: Mapping[str, Provider]) -> bool:
+    provider = providers.get("mimo")
+    return provider is not None and not bool(getattr(provider, "offline", False))
+
+
+def _with_mimo_primary_routes(routes: Mapping[str, str]) -> Dict[str, str]:
+    updated = dict(routes)
+    for stage in (
+        "intake",
+        "interview",
+        "targeting",
+        "research",
+        "evidence",
+        "council",
+        "report",
+        "eval",
+        "consensus",
+        "ingest",
+    ):
+        updated[stage] = "mimo"
+    return updated
+
+
+def _with_mimo_first_chain(fallback_chain: Mapping[str, Sequence[str]]) -> Dict[str, List[str]]:
+    updated: Dict[str, List[str]] = {}
+    for stage, names in fallback_chain.items():
+        chain = [name for name in names if name != "mimo"]
+        if stage not in ("utilities", "implementation_review"):
+            chain.insert(0, "mimo")
+        updated[stage] = chain
+    return updated
+
+
+def _mimo_opencode_only_requested() -> bool:
+    return mimo_opencode_only_requested_from_env()
+
+
+def _requested_provider_chain() -> List[str]:
+    raw = os.environ.get("MUCHANIPO_PROVIDER_CHAIN", "")
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
+
+
+def _with_mimo_opencode_only_routes(routes: Mapping[str, str]) -> Dict[str, str]:
+    requested_chain = _requested_provider_chain()
+    opencode_only = requested_chain == ["opencode"]
+    updated = dict(routes)
+    for stage in tuple(updated):
+        if opencode_only:
+            updated[stage] = "opencode"
+        else:
+            updated[stage] = "opencode" if stage in {"utilities", "implementation_review"} else "mimo"
+    return updated
+
+
+def _with_mimo_opencode_only_chain(fallback_chain: Mapping[str, Sequence[str]]) -> Dict[str, List[str]]:
+    requested_chain = _requested_provider_chain()
+    opencode_only = requested_chain == ["opencode"]
+    updated: Dict[str, List[str]] = {}
+    for stage in fallback_chain:
+        if opencode_only:
+            updated[stage] = ["opencode"]
+        else:
+            updated[stage] = ["opencode"] if stage in {"utilities", "implementation_review"} else ["mimo", "opencode"]
+    return updated
 
 
 def default_gateway(
@@ -153,10 +227,18 @@ def default_gateway(
         force_offline=force_offline,
         prefer_cli=prefer_cli,
     )
+    stage_routes = dict(routes or PRIMARY_ROUTES)
+    chain = {k: list(v) for k, v in dict(fallback_chain or FALLBACK_CHAIN).items()}
+    if _mimo_opencode_only_requested():
+        stage_routes = _with_mimo_opencode_only_routes(stage_routes)
+        chain = _with_mimo_opencode_only_chain(chain)
+    elif _mimo_available(provider_map) and routes is None and fallback_chain is None:
+        stage_routes = _with_mimo_primary_routes(stage_routes)
+        chain = _with_mimo_first_chain(chain)
     return GatewayV2(
         providers=provider_map,
-        stage_routes=dict(routes or PRIMARY_ROUTES),
-        fallback_chain=dict(fallback_chain or FALLBACK_CHAIN),
+        stage_routes=stage_routes,
+        fallback_chain=chain,
         budget=budget,
         audit=audit,
         require_live_default=require_live_default,
@@ -195,6 +277,7 @@ class GatewayV2(ModelGateway):
         }
         self._fallback_events: List[Dict[str, Any]] = []
         self.require_live_default = bool(require_live_default)
+        self._dead_providers: set[str] = set()
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
         require_live = (
@@ -214,11 +297,16 @@ class GatewayV2(ModelGateway):
 
         chain_providers: List[Provider] = []
         for name in chain_names:
+            if name in self._dead_providers:
+                continue
             prov = self.providers.get(name)
             if prov is not None:
                 chain_providers.append(prov)
         if not chain_providers:
-            raise KeyError(f"stage {stage!r} fallback chain has no resolvable providers")
+            dead_detail = f" (dead: {', '.join(sorted(self._dead_providers))})" if self._dead_providers else ""
+            raise KeyError(
+                f"stage {stage!r} fallback chain has no resolvable providers{dead_detail}"
+            )
 
         reservation_id = None
         primary = chain_providers[0]
@@ -251,6 +339,10 @@ class GatewayV2(ModelGateway):
                     last_error = exc
                     self.budget.reconcile(reservation_id, actual_usd=0.0)
                     self._record_fallback(stage, provider, exc)
+                    # Only mark dead when alternatives exist; single-provider
+                    # chains should keep failing with the original error.
+                    if self._is_auth_error(exc) and len(chain_providers) > 1:
+                        self._mark_provider_dead(provider_name(provider), exc)
                     if first_fallback_reason is None:
                         first_fallback_reason = f"primary {primary.name} failed: {exc}"
                     continue
@@ -279,6 +371,14 @@ class GatewayV2(ModelGateway):
         except Exception:
             if reservation_id and self.budget is not None:
                 self.budget.reconcile(reservation_id, actual_usd=0.0)
+            # Mark providers dead from fallback events even in the no-budget path,
+            # but only when alternatives exist.
+            if len(chain_providers) > 1:
+                for ev in self._fallback_events:
+                    if ev.get("stage") == stage and "error" in ev:
+                        err_text = str(ev["error"])
+                        if self._is_auth_error(RuntimeError(err_text)):
+                            self._mark_provider_dead(str(ev.get("provider", "")), RuntimeError(err_text))
             raise
 
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
@@ -342,6 +442,23 @@ class GatewayV2(ModelGateway):
     @property
     def fallback_events(self) -> List[Dict[str, Any]]:
         return list(self._fallback_events)
+
+    @staticmethod
+    def _is_auth_error(exc: Exception) -> bool:
+        """Detect permanent auth failures (401/403) so we can skip the dead provider."""
+        text = str(exc).lower()
+        auth_markers = ("401", "403", "unauthorized", "invalid key", "authentication")
+        return any(marker in text for marker in auth_markers)
+
+    def _mark_provider_dead(self, name: str, exc: Exception) -> None:
+        if name not in self._dead_providers:
+            self._dead_providers.add(name)
+            import warnings
+            warnings.warn(
+                f"Provider '{name}' returned auth error and is marked dead for this session: {exc}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
 
 def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[str, Any]:

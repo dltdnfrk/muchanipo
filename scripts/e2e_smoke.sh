@@ -5,7 +5,14 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN=python
+  else
+    PYTHON_BIN=python3
+  fi
+fi
 TMP="${TMPDIR:-/tmp}"
 REPORT="$TMP/muchanipo_smoke_report.md"
 EVENTS="$TMP/muchanipo_smoke_events.jsonl"

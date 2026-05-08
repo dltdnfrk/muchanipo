@@ -3,10 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/src/assets/neobio-logo-white.svg" />
     <title>Muchanipo</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:24px;color:#f5f2ea;background:#0d0e0e;min-height:100vh;box-sizing:border-box">
+        <strong>Muchanipo is loading…</strong>
+        <p style="color:#80786d">If this stays visible, the frontend bundle did not start.</p>
+      </div>
+    </div>
+    <script>
+      document.documentElement.dataset.muchanipoBoot = 'html-shell';
+      window.addEventListener('error', function (event) {
+        var root = document.getElementById('root');
+        if (!root) return;
+        document.documentElement.dataset.muchanipoBoot = 'window-error';
+        root.innerHTML = '<pre style="white-space:pre-wrap;margin:0;padding:24px;color:#fecaca;background:#0d0e0e;min-height:100vh;box-sizing:border-box;font:13px ui-monospace,SFMono-Regular,Menlo,monospace">Muchanipo frontend boot error:\n' + String(event.message || event.error || event.filename || 'unknown error') + '</pre>';
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        var root = document.getElementById('root');
+        if (!root) return;
+        document.documentElement.dataset.muchanipoBoot = 'window-rejection';
+        root.innerHTML = '<pre style="white-space:pre-wrap;margin:0;padding:24px;color:#fecaca;background:#0d0e0e;min-height:100vh;box-sizing:border-box;font:13px ui-monospace,SFMono-Regular,Menlo,monospace">Muchanipo frontend boot rejection:\n' + String(event.reason && (event.reason.stack || event.reason.message) || event.reason || 'unknown rejection') + '</pre>';
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

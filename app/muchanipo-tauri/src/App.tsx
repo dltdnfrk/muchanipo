@@ -1,9 +1,18 @@
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import IdeaSubmit from "./pages/IdeaSubmit";
+import StudioSession from "./pages/StudioSession";
+import BrowserHome from "./pages/BrowserHome";
 import RunProgress from "./pages/RunProgress";
 import ReportView from "./pages/ReportView";
 import Settings from "./pages/Settings";
 import Sidebar from "./components/Sidebar";
+import { listRuns } from "./lib/runsIndex";
+
+function HomeRedirect() {
+  // Returning users land in Browser if any Run exists; new users land in Studio.
+  const hasRun = listRuns().length > 0;
+  return <Navigate to={hasRun ? "/browser" : "/studio"} replace />;
+}
 
 function BackButton() {
   const navigate = useNavigate();
@@ -14,7 +23,10 @@ function BackButton() {
     else navigate("/");
   };
   return (
-    <header className="sticky top-0 z-30 flex items-center border-b border-white/5 bg-[#212121] px-4 py-2.5 backdrop-blur">
+    <header
+      data-tauri-drag-region
+      className="sticky top-0 z-30 flex items-center border-b border-white/5 bg-transparent pl-[88px] pr-4 py-2.5 backdrop-blur-xl supports-[backdrop-filter]:bg-black/20"
+    >
       <button
         onClick={goBack}
         className="flex h-7 w-7 items-center justify-center rounded-md text-tertiary transition hover:bg-white/5 hover:text-white"
@@ -31,13 +43,18 @@ function BackButton() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <div className="flex h-screen">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto">
+        <main className="app-workspace flex-1 overflow-y-auto">
           <BackButton />
           <Routes>
-            <Route path="/" element={<IdeaSubmit />} />
+            <Route path="/" element={<HomeRedirect />} />
+            <Route path="/studio" element={<IdeaSubmit />} />
+            <Route path="/studio/:studioId" element={<StudioSession />} />
+            <Route path="/browser" element={<BrowserHome />} />
+            <Route path="/browser/:runId" element={<RunProgress />} />
+            <Route path="/browser/:runId/report" element={<ReportView />} />
             <Route path="/run/:runId" element={<RunProgress />} />
             <Route path="/report/:runId" element={<ReportView />} />
             <Route path="/settings" element={<Settings />} />
@@ -45,6 +62,6 @@ export default function App() {
           </Routes>
         </main>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

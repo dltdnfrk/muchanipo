@@ -85,7 +85,7 @@ def test_expand_query_adds_evidence_intents_without_duplicates():
     assert len(queries) == len(set(queries))
 
 
-def test_expand_query_adds_english_bridge_for_korean_agtech_diagnostics():
+def test_expand_query_does_not_hardcode_vertical_bridge_terms_for_korean_topics():
     queries = expand_query(
         "딸기 농가용 저비용 분자진단 키트 시장성과 가격",
         context="한국 농협 유통 실증",
@@ -93,10 +93,28 @@ def test_expand_query_adds_english_bridge_for_korean_agtech_diagnostics():
     )
 
     bridge = " ".join(queries)
-    assert "strawberry" in bridge
-    assert "molecular diagnostic kit" in bridge
-    assert "market adoption" in bridge
+    forbidden = [
+        "strawberry",
+        "molecular diagnostic kit",
+        "plant pathogen",
+        "market adoption distribution",
+        "farmers agriculture",
+    ]
+    assert not any(term in bridge for term in forbidden)
     assert len(queries) == len(set(queries))
+
+
+def test_expand_query_keeps_korean_topic_anchor_instead_of_korea_only_bridge():
+    queries = expand_query(
+        "농업 분야에서 온톨로지 시스템 구축",
+        context="한국 peer reviewed evidence",
+        max_queries=8,
+    )
+
+    assert queries[0] == "농업 분야에서 온톨로지 시스템 구축"
+    assert not any(query == "Korea" or query == "Korea peer reviewed evidence" for query in queries)
+    assert any("온톨로지" in query for query in queries)
+    assert any("농업 분야" in query for query in queries)
 
 
 def test_mock_research_runner_returns_finding_with_evidence():

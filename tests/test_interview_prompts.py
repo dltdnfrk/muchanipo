@@ -17,7 +17,7 @@ from src.intent.interview_prompts import (
     planning_question_contract,
 )
 from src.intent.interview_rubric import InterviewRubric
-from src.intent.office_hours import OfficeHours
+from src.intent.office_hours import OfficeHours, reframe_with_context
 from src.intent.plan_review import PlanReview
 
 
@@ -58,7 +58,7 @@ def test_assess_missing_dimensions_detection():
 # Phase 0b — forcing questions
 # ---------------------------------------------------------------------------
 def test_forcing_questions_returns_six():
-    """PRD-style 리서치 톤의 6 questions — 무엇/왜/맥락/이미 아는 것/산출물 형태/품질."""
+    """Socratic ontology extraction keeps the six internal slots but not fixed PRD form copy."""
     qs = forcing_questions_korean()
     assert len(qs) == 6
     ids = [q["id"] for q in qs]
@@ -70,16 +70,21 @@ def test_forcing_questions_returns_six():
     assert "Q6_quality" in ids            # 품질 기준
 
 
-def test_forcing_questions_use_product_planning_tone_not_startup():
-    """gstack startup 톤(pain/10-star/scope) 대신 제품 기획 + 리서치 brief 톤 검증."""
+def test_forcing_questions_use_ontology_extraction_tone_not_generic_prd_form():
+    """Visible interview copy should push on ontology, not generic PRD/decision form slots."""
     qs = forcing_questions_korean()
     full_text = " ".join(q["question"] for q in qs)
-    # 제품 기획 + 리서치 톤 키워드는 있어야
-    assert "PRD" in full_text
-    assert "핵심 가치" in full_text
-    assert "타겟" in full_text or "시나리오" in full_text
-    assert "요구사항" in full_text and "상세 기능" in full_text
-    assert "출처" in full_text or "성공 지표" in full_text
+    assert "핵심 개체" in full_text
+    assert "행위자" in full_text
+    assert "트리거" in full_text or "신호" in full_text
+    assert "관계" in full_text
+    assert "제외 의미" in full_text
+    assert "반례" in full_text
+    assert "PRD 개요" not in full_text
+    assert "핵심 가치" not in full_text
+    assert "요구사항→기능→상세기능" not in full_text
+    assert "어떤 결정이나 산출물" not in full_text
+    assert "답을 얻은 뒤 무엇을 결정" not in full_text
     # 스타트업 비즈니스 톤 키워드는 없어야 (재사용된 텍스트면 잔재 점검)
     assert "10-star" not in full_text
     assert "Scope Expansion" not in full_text or "비교" in full_text  # alternatives 톤 잔재 X
@@ -99,6 +104,13 @@ def test_planning_question_contract_maps_all_six_questions():
     assert "prd.overview" in targets
     assert "feature_hierarchy" in targets
     assert "prd.success_metrics" in targets
+    labels = " ".join(item["label"] for item in contract)
+    assert "핵심 개체" in labels
+    assert "해석 경계" in labels
+    assert "증거 경계" in labels
+    assert "PRD 개요" not in labels
+    assert "핵심 가치" not in labels
+    assert "요구사항→기능→상세기능" not in labels
 
 
 def test_quick_clarification_max_two():
@@ -266,28 +278,98 @@ def test_q6_options_always_source_quality_a_to_d():
     assert opts[-1]["label"] == "Other"
 
 
-def test_q3_options_agtech_domain():
+def test_q3_options_stay_general_for_vertical_topics():
     opts = build_question_options("Q3_context", "MIRIVA 진단키트 한국 농가")
     labels = " ".join(o["label"] for o in opts)
-    assert "농" in labels or "작물" in labels
+    assert "농" not in labels
+    assert "작물" not in labels
+    assert "프로브" not in labels
+    assert "자율과학" not in labels
+    assert "특정 산업·제품 한정" in labels
     assert opts[-1]["label"] == "Other"
 
 
-def test_q3_options_biotech_domain():
-    opts = build_question_options(
-        "Q3_context", "형광 프로브 lab-in-the-loop 자율과학"
+def test_question_options_do_not_hardcode_agriculture_market_vertical():
+    topic = "딸기 농가용 저비용 분자진단 키트 시장성"
+    for dim_id in ("Q1_research_question", "Q2_purpose", "Q3_context"):
+        framed = reframe_with_context(dim_id, topic, {})
+        combined = framed["question"] + " " + " ".join(
+            f"{option['label']} {option['description']}" for option in framed["options"]
+        )
+        assert "농가 구매" not in combined
+        assert "현장 workflow" not in combined
+        assert "유통/사업화" not in combined
+        assert "작물" not in combined
+
+
+def test_interview_questions_are_topic_specific_for_ontology_request():
+    topic = "데이터 사이언스 분야에서의 온톨로지"
+    framed_q1 = reframe_with_context("Q1_research_question", topic, {})
+    q1_text = framed_q1["question"]
+    q1_options = " ".join(o["label"] for o in framed_q1["options"])
+    assert "온톨로지" in q1_text
+    assert "데이터 사이언스" in q1_text
+    assert "제품 정의" not in q1_options
+    assert "핵심 질문 좁히기" in q1_options
+
+    framed_q4 = reframe_with_context(
+        "Q4_known",
+        topic,
+        {"purpose": "학습·이해", "context": "데이터 사이언스 / 지식 그래프 맥락"},
     )
-    labels = " ".join(o["label"] for o in opts)
-    assert "분자" in labels or "프로브" in labels or "자율과학" in labels
-    assert opts[-1]["label"] == "Other"
+    q4_text = framed_q4["question"]
+    assert "데이터 사이언스" in q4_text
+    assert "온톨로지" in q4_text
+    assert "이미 알고" in q4_text
 
 
-def test_q5_options_includes_obsidian_vault():
+def test_reframe_questions_avoid_generic_prd_decision_form_copy():
+    topic = "노인 1인 가구 재택의료 신청 실패 원인"
+    banned = (
+        "PRD 개요",
+        "핵심 가치는",
+        "답을 얻으면 무엇을 결정",
+        "어떤 결정이나 산출물",
+        "요구사항→기능→상세기능",
+        "원하는 산출물 형태",
+    )
+    for dim_id in (
+        "Q1_research_question",
+        "Q2_purpose",
+        "Q3_context",
+        "Q4_known",
+        "Q5_deliverable",
+        "Q6_quality",
+    ):
+        framed = reframe_with_context(dim_id, topic, {})
+        text = framed["question"] + " " + " ".join(
+            f"{option['label']} {option['description']}" for option in framed["options"]
+        )
+        assert all(pattern not in text for pattern in banned), (dim_id, text)
+    q2 = reframe_with_context("Q2_purpose", topic, {})["question"]
+    assert "서로 다른 해석" in q2
+    q5 = reframe_with_context("Q5_deliverable", topic, {})["question"]
+    assert "개념 지도" in q5 or "엔티티" in q5
+
+
+def test_interview_questions_embed_topic_without_vertical_preset_for_market_request():
+    topic = "딸기 농가용 저비용 분자진단 키트 시장성"
+    framed = reframe_with_context("Q2_purpose", topic, {})
+    text = framed["question"]
+    labels = " ".join(o["label"] for o in framed["options"])
+    assert "딸기" in text or "분자진단" in text
+    assert "농가 구매" not in labels
+    assert "가격" not in labels
+    assert "구매" not in labels
+
+
+def test_q5_options_describe_ontology_maps_not_requirement_tree():
     opts = build_question_options("Q5_deliverable", "any topic")
     labels = " ".join(o["label"] for o in opts)
     assert "Obsidian" in labels or "vault" in labels.lower()
-    assert "Requirement" in labels and "Feature" in labels
-    assert "Slide deck" in labels
+    assert "Entity" in labels or "Relation" in labels
+    assert "Requirement" not in labels and "Feature" not in labels
+    assert "Evidence" in labels or "증거" in labels
     assert opts[-1]["label"] == "Other"
 
 

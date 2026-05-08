@@ -402,7 +402,7 @@ _CONSENSUS_ROLE_TO_POOL_ROLE: dict[str, str] = {
 }
 
 _KOREAN_DOMAIN_KEYWORDS: tuple[str, ...] = (
-    "한국", "korean", "agtech", "농가", "농업", "neobio", "miriva", "농민",
+    "한국", "korean", "korea",
 )
 
 

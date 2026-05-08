@@ -22,12 +22,13 @@ from pathlib import Path
 from typing import Any, IO
 
 from src.research.depth import normalize_depth
+from src.runtime.live_mode import assert_mimo_opencode_policy_credentials
 
 
 JSON_SCHEMA_VERSION = 1
 HOME_RECENT_RUN_LIMIT = 3
 HOME_FAILURE_SCAN_LIMIT = 50
-DEMO_TOPIC = "딸기 농가용 저비용 분자진단 키트 시장성"
+DEMO_TOPIC = "저비용 분자진단 키트 시장성"
 CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
     "muchanipo doctor": {
         "schema_version": JSON_SCHEMA_VERSION,
@@ -77,6 +78,22 @@ CLI_JSON_CONTRACTS_V1: dict[str, dict[str, Any]] = {
             "gaps",
             "not_ready_references",
             "license_warnings",
+        ),
+        "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
+    },
+    "muchanipo guard": {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "description": "Autoresearch completion-artifact guard for local product review, verification, and security barriers.",
+        "required_top_level_keys": (
+            "schema_version",
+            "command",
+            "status",
+            "passed",
+            "summary",
+            "autoresearch",
+            "checks",
+            "warnings",
+            "blockers",
         ),
         "compatibility": "Consumers may ignore additive fields; required keys are stable for schema_version 1.",
     },
@@ -205,6 +222,9 @@ def terminal_app(
         if command == "references":
             render_references(stdout=out)
             continue
+        if command == "guard":
+            render_guard(stdout=out)
+            continue
         if command == "orchestrate":
             render_orchestration(stdout=out)
             continue
@@ -296,6 +316,8 @@ def terminal_run(
         _render_dashboard(out, topic=topic, paths=paths, status=status, event=None)
 
     try:
+        if require_live:
+            assert_mimo_opencode_policy_credentials()
         result = run_pipeline(
             pipeline_topic,
             progress_callback=emit_terminal,
@@ -374,14 +396,35 @@ def terminal_run(
         encoding="utf-8",
     )
 
-    done_event = {"event": "terminal_run_done", **summary}
+    chapter_count = sum(1 for line in report_md.splitlines() if line.startswith("## "))
+    final_report_event = {
+        "event": "final_report",
+        "report_path": str(paths.report_path),
+        "vault_path": str(result.get("vault_path") or ""),
+        "chapter_count": chapter_count,
+    }
+    done_event = {
+        "event": "done",
+        "pipeline": "terminal",
+        "report_path": str(paths.report_path),
+        "vault_path": str(result.get("vault_path") or ""),
+        "status": "completed",
+        "depth": normalized_depth,
+        "council_persona_pool_size": summary["council_persona_pool_size"],
+        "active_council_persona_count": summary["active_council_persona_count"],
+        "council_turn_count": summary["council_turn_count"],
+    }
+    terminal_done_event = {"event": "terminal_run_done", **summary}
+    completion_events = [final_report_event, done_event, terminal_done_event]
     with paths.events_path.open("a", encoding="utf-8") as append_events:
-        _write_event(append_events, done_event)
+        for event in completion_events:
+            _write_event(append_events, event)
     if jsonl:
-        out.write(json.dumps(done_event, ensure_ascii=False) + "\n")
+        for event in completion_events:
+            out.write(json.dumps(event, ensure_ascii=False) + "\n")
     elif dashboard:
         status.update({stage: "done" for stage in STAGE_ORDER})
-        _render_dashboard(out, topic=topic, paths=paths, status=status, event=done_event)
+        _render_dashboard(out, topic=topic, paths=paths, status=status, event=terminal_done_event)
         out.write("\n")
     else:
         out.write(f"Report: {paths.report_path}\n")
@@ -549,6 +592,8 @@ def _normalize_home_command(choice: str) -> str | None:
         "/status": "status",
         "/references": "references",
         "/refs": "references",
+        "/guard": "guard",
+        "/audit": "guard",
         "/orchestrate": "orchestrate",
         "/orchestration": "orchestrate",
         "/ops": "orchestrate",
@@ -578,16 +623,19 @@ def _normalize_home_command(choice: str) -> str | None:
         "5": "references",
         "references": "references",
         "refs": "references",
-        "6": "orchestrate",
+        "6": "guard",
+        "guard": "guard",
+        "audit": "guard",
+        "7": "orchestrate",
         "orchestrate": "orchestrate",
         "orchestration": "orchestrate",
         "ops": "orchestrate",
-        "7": "contracts",
+        "8": "contracts",
         "contracts": "contracts",
-        "8": "doctor",
+        "9": "doctor",
         "doctor": "doctor",
         "d": "doctor",
-        "9": "help",
+        "10": "help",
         "help": "help",
         "h": "help",
         "?": "help",
@@ -622,6 +670,15 @@ def _record_terminal_failure(
     }
     _write_event(events_file, event)
     failure_status = "interrupted" if event_name == "terminal_run_interrupted" else "failed"
+    done_event = {
+        "event": "done",
+        "pipeline": "terminal",
+        "run_id": paths.run_id,
+        "aborted": True,
+        "status": failure_status,
+        "error_type": error_type,
+    }
+    _write_event(events_file, done_event)
     summary = {
         "topic": topic,
         "run_id": paths.run_id,
@@ -642,8 +699,9 @@ def _record_terminal_failure(
     )
     if jsonl:
         out.write(json.dumps(event, ensure_ascii=False) + "\n")
+        out.write(json.dumps(done_event, ensure_ascii=False) + "\n")
     elif dashboard:
-        _render_dashboard(out, topic=topic, paths=paths, status=status, event=event)
+        _render_dashboard(out, topic=topic, paths=paths, status=status, event=done_event)
         out.write("\n")
     elif event_name == "terminal_run_interrupted":
         out.write("\nINTERRUPTED: run stopped by user. Partial artifacts were saved.\n")
@@ -867,6 +925,25 @@ def render_references(*, stdout: IO[str] | None = None) -> dict[str, Any]:
     return report
 
 
+def guard_report(*, strict: bool = False, include_untracked: bool = True) -> dict[str, Any]:
+    """Return Autoresearch product guard status and write its completion artifact."""
+    from src.governance.autoresearch_guard import run_product_guard
+
+    return run_product_guard(
+        repo_root=_repo_root(),
+        strict=strict,
+        include_untracked=include_untracked,
+    )
+
+
+def render_guard(*, stdout: IO[str] | None = None, strict: bool = False) -> dict[str, Any]:
+    from src.governance.autoresearch_guard import render_product_guard
+
+    report = guard_report(strict=strict)
+    render_product_guard(report, stdout=stdout)
+    return report
+
+
 def orchestration_report(
     *,
     session: str = "muni",
@@ -1079,6 +1156,8 @@ def _execution_mode_check(records: list[dict[str, Any]]) -> dict[str, Any]:
             "OPENAI_API_KEY",
             "KIMI_API_KEY",
             "MOONSHOT_API_KEY",
+            "XIAOMI_MIMO_API_KEY",
+            "MIMO_API_KEY",
         )
         if os.environ.get(key)
     ]
@@ -1335,10 +1414,11 @@ def _render_home(out: IO[str], *, runs_dir: Path | None = None) -> None:
     out.write("3. Runs\n")
     out.write("4. CLI status\n")
     out.write("5. Reference readiness\n")
-    out.write("6. Operator orchestration\n")
-    out.write("7. JSON contracts\n")
-    out.write("8. Doctor\n")
-    out.write("9. Help\n")
+    out.write("6. Autoresearch product guard\n")
+    out.write("7. Operator orchestration\n")
+    out.write("8. JSON contracts\n")
+    out.write("9. Doctor\n")
+    out.write("10. Help\n")
     out.write("q. Quit\n\n")
     out.flush()
 
@@ -1388,6 +1468,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("muchanipo orchestrate             show tmux/smux operator status\n")
     out.write("muchanipo contracts               show CLI JSON contracts\n")
     out.write("muchanipo references              show reference runtime readiness\n")
+    out.write("muchanipo guard                   run Autoresearch product/security guard\n")
     out.write("muchanipo doctor                  check local runtime readiness\n\n")
     out.write("Interactive slash commands\n")
     out.write("  /new, /run        start a new research run\n")
@@ -1395,6 +1476,7 @@ def _render_help(out: IO[str]) -> None:
     out.write("  /runs, /history   list previous runs\n")
     out.write("  /status           show local CLI provider status\n")
     out.write("  /references       show reference runtime readiness\n")
+    out.write("  /guard, /audit    run Autoresearch product/security guard\n")
     out.write("  /orchestrate      show tmux/smux operator status\n")
     out.write("  /contracts        show CLI JSON contracts\n")
     out.write("  /doctor           check local runtime readiness\n")

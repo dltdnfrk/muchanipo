@@ -111,6 +111,23 @@ def _build_parser() -> argparse.ArgumentParser:
     references = sub.add_parser("references", help="Show reference-project runtime readiness")
     references.add_argument("--json", action="store_true", help="Print reference readiness as JSON")
 
+    guard = sub.add_parser("guard", help="Run Autoresearch product code/security guard")
+    guard.add_argument("--json", action="store_true", help="Print guard artifact as JSON")
+    guard.add_argument(
+        "--output",
+        default=None,
+        help="Completion artifact path (default: .omx/specs/autoresearch-product-guard/result.json)",
+    )
+    guard.add_argument("--strict", action="store_true", help="Treat warnings as failures")
+    guard.add_argument("--iterate", action="store_true", help="Run repeated guard checks until clean findings stabilize")
+    guard.add_argument("--min-iterations", type=int, default=3, help="Minimum clean stable iterations for --iterate")
+    guard.add_argument("--max-iterations", type=int, default=5, help="Maximum guard iterations for --iterate")
+    guard.add_argument(
+        "--tracked-only",
+        action="store_true",
+        help="Ignore untracked files during scans",
+    )
+
     orchestrate = sub.add_parser("orchestrate", help="Show/manage tmux operator and worker orchestration")
     orchestrate.add_argument("--session", default="muni", help="tmux session name (default: muni)")
     orchestrate.add_argument("--json", action="store_true", help="Print orchestration status as JSON")
@@ -454,10 +471,49 @@ def _detect_offline_mode() -> bool:
         "MOONSHOT_API_KEY",
         "OPENCODE_API_KEY",
         "OPENCODE_GO_API_KEY",
+        "XIAOMI_MIMO_API_KEY",
+        "MIMO_API_KEY",
     ):
         if os.environ.get(key):
             return False
     return True
+
+
+def _interview_counselling_gateway() -> Any | None:
+    """Build the LLM gateway used only for adaptive interview counselling.
+
+    The user-facing interview should be LLM-guided when credentials/CLI are
+    available, but tests and offline desktop runs must still work.  GatewayV2
+    already handles provider fallback; when it ultimately returns a mock or bad
+    JSON, src.interview.counselling falls back to deterministic counselling.
+    """
+    import os
+
+    if os.environ.get("MUCHANIPO_INTERVIEW_COUNSELLING", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    try:
+        from src.execution.gateway_v2 import default_gateway
+        from src.runtime.live_mode import assert_mimo_opencode_policy_credentials
+
+        try:
+            assert_mimo_opencode_policy_credentials()
+        except Exception:
+            return None
+
+        prefer_cli = os.environ.get("MUCHANIPO_PREFER_CLI", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        return default_gateway(force_offline=_detect_offline_mode(), prefer_cli=prefer_cli)
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -643,10 +699,19 @@ def _hitl_gate_preview(gate_name: str, payload: dict) -> str:
     if gate_name == "evidence" and isinstance(payload, dict):
         refs = payload.get("evidence_refs") or []
         if isinstance(refs, list):
-            lines = [f"Evidence count: {len(refs)}"]
+            lines = [f"Evidence sources: {len(refs)}"]
             for ref in refs[:8]:
                 if isinstance(ref, dict):
-                    lines.append(f"- {ref.get('id', '?')} | {ref.get('source_grade', '?')} | {ref.get('source_title', '')}")
+                    ref_id = str(ref.get("id", "") or "")
+                    provider = _evidence_provider_label(ref_id)
+                    title = str(ref.get("source_title", "") or "Untitled source")
+                    grade = str(ref.get("source_grade", "") or "?")
+                    url = str(ref.get("source_url", "") or "")
+                    lines.append(f"- [{grade}] {provider} — {title}")
+                    if url:
+                        lines.append(f"  {url}")
+                    if ref_id:
+                        lines.append(f"  id: {_compact_evidence_id(ref_id)}")
             return "\n".join(lines)
     if gate_name == "report" and isinstance(payload, dict):
         return _compact_preview(str(payload.get("report_md", "")), limit=2400)
@@ -664,6 +729,33 @@ def _compact_preview(value: Any, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _evidence_provider_label(ref_id: str) -> str:
+    value = str(ref_id or "").strip()
+    lowered = value.lower()
+    if lowered.startswith("openalex:"):
+        return "OpenAlex"
+    if lowered.startswith("crossref:"):
+        return "Crossref"
+    if lowered.startswith("arxiv:"):
+        return "arXiv"
+    if lowered.startswith("semantic_scholar:"):
+        return "Semantic Scholar"
+    if lowered.startswith("vault-"):
+        return "Vault"
+    if lowered.startswith("insight_forge-"):
+        return "InsightForge"
+    if lowered.startswith("mempalace:"):
+        return "MemPalace"
+    return value.split(":", 1)[0] or "Source"
+
+
+def _compact_evidence_id(ref_id: str) -> str:
+    value = str(ref_id or "").strip()
+    if len(value) <= 42:
+        return value
+    return f"{value[:24]}...{value[-12:]}"
+
+
 def _collect_serve_interview_answers(
     topic: str,
     *,
@@ -673,8 +765,8 @@ def _collect_serve_interview_answers(
     """Run a show-me-the-prd style intake over the JSON-line serve protocol."""
     from src.intake.idea_dump import IdeaDump
     from src.intent.interview_prompts import merge_answers_to_text
+    from src.interview.counselling import ask_prd_counselling_question
     from src.interview.product_planning import build_product_planning_projection, planning_question_contract
-    from src.intent.office_hours import reframe_with_context
     from src.interview.session import InterviewSession
     from src.interview.show_me_the_prd_port import (
         build_show_me_the_prd_plan,
@@ -686,6 +778,7 @@ def _collect_serve_interview_answers(
     session = InterviewSession.from_idea(IdeaDump(raw_text=topic))
     show_prd_plan = build_show_me_the_prd_plan(topic)
     question_contract = planning_question_contract()
+    counselling_gateway = _interview_counselling_gateway()
     total_questions = 6
     emit(
         "deep_interview_progress",
@@ -698,7 +791,7 @@ def _collect_serve_interview_answers(
         coverage_score=round(float(session.coverage_score), 3),
         ambiguity_score=round(1.0 - float(session.coverage_score), 3),
         missing_dimensions=list(session.missing_dimensions),
-        planning_schema="prd_feature_user_flow",
+        planning_schema="socratic_ontology_extraction",
     )
     emit(
         "phase_change",
@@ -755,10 +848,30 @@ def _collect_serve_interview_answers(
                         "queries": list(batch.queries),
                     },
                 )
-        framed = reframe_with_context(item.dimension_id, topic, session.answers)
+        framed = ask_prd_counselling_question(
+            item.dimension_id,
+            topic,
+            session.answers,
+            gateway=counselling_gateway,
+        )
         qid = item.dimension_id
         question = str(framed.get("question") or item.research_question or qid).strip()
         options = _normalize_show_prd_options(framed.get("options"))
+        counselling_raw = framed.get("counselling")
+        counselling: dict[str, Any] = dict(counselling_raw) if isinstance(counselling_raw, dict) else {}
+        ontology_state = framed.get("ontology_state") if isinstance(framed.get("ontology_state"), dict) else {}
+        ontology_delta = framed.get("ontology_delta") if isinstance(framed.get("ontology_delta"), dict) else {}
+        unknowns = framed.get("unknowns") if isinstance(framed.get("unknowns"), list) else []
+        targets_unknown_ids = [
+            str(item)
+            for item in (framed.get("targets_unknown_ids") or [])
+            if str(item).strip()
+        ]
+        question_gate = (
+            framed.get("question_quality_gate")
+            if isinstance(framed.get("question_quality_gate"), dict)
+            else {}
+        )
         header = _show_prd_header(qid)
         preview = _show_prd_preview(qid, topic, session.answers)
         clarity = _interview_clarity_payload(
@@ -770,6 +883,34 @@ def _collect_serve_interview_answers(
             phase="question",
         )
         emit("deep_interview_progress", stream=stdout, stage="interview", **clarity)
+        emit(
+            "interview_ontology_delta",
+            stream=stdout,
+            stage="interview",
+            q_id=qid,
+            question_id=qid,
+            index=idx,
+            total=total_questions,
+            ontology_state=ontology_state,
+            ontology_delta=ontology_delta,
+            entities=list(ontology_state.get("entities") or []),
+            relations=list(ontology_state.get("relations") or []),
+            unknowns=unknowns,
+            targets_unknown_ids=targets_unknown_ids,
+            coverage=float(ontology_state.get("coverage") or 0.0),
+            open_unknown_count=len([item for item in unknowns if not item.get("resolved")])
+            if all(isinstance(item, dict) for item in unknowns)
+            else len(unknowns),
+            question_quality_gate=question_gate,
+            data={
+                "planning_schema": "socratic_ontology_extraction",
+                "ontology_state": ontology_state,
+                "ontology_delta": ontology_delta,
+                "unknowns": unknowns,
+                "targets_unknown_ids": targets_unknown_ids,
+                "question_quality_gate": question_gate,
+            },
+        )
         emit(
             "interview_question",
             stream=stdout,
@@ -784,6 +925,16 @@ def _collect_serve_interview_answers(
             preview=preview,
             index=idx,
             total=total_questions,
+            counselling_mode=str(counselling.get("mode") or ""),
+            counselling_rationale=str(counselling.get("rationale") or ""),
+            reference_insights=list(counselling.get("reference_insights") or []),
+            assumptions_to_test=list(counselling.get("assumptions_to_test") or []),
+            prd_impact=str(counselling.get("prd_impact") or ""),
+            ontology_state=ontology_state,
+            ontology_delta=ontology_delta,
+            unknowns=unknowns,
+            targets_unknown_ids=targets_unknown_ids,
+            question_quality_gate=question_gate,
             data={
                 "q_id": qid,
                 "text": question,
@@ -792,10 +943,16 @@ def _collect_serve_interview_answers(
                 "allow_other": True,
                 "multiSelect": False,
                 "preview": preview,
-                "planning_schema": "prd_feature_user_flow",
+                "planning_schema": "socratic_ontology_extraction",
                 "index": idx,
                 "total": total_questions,
                 "deep_interview": clarity,
+                "counselling": counselling,
+                "ontology_state": ontology_state,
+                "ontology_delta": ontology_delta,
+                "unknowns": unknowns,
+                "targets_unknown_ids": targets_unknown_ids,
+                "question_quality_gate": question_gate,
             },
         )
 
@@ -813,7 +970,14 @@ def _collect_serve_interview_answers(
                 message=f"unexpected action while waiting for {qid}: {action.action}",
             )
 
-        answer = _interview_answer_from_action(action).strip()
+        raw_answer = _interview_answer_from_action(action).strip()
+        answer = _normalize_interview_answer(qid, raw_answer)
+        if _is_q1_format_only_answer(qid, raw_answer):
+            # A Q1 format choice is a UI preference, not research content. Mark the
+            # dimension covered with the original topic so the adaptive interview
+            # does not ask Q1 again and shift subsequent answers into the wrong slot.
+            session.answer(_serve_interview_answer_key(item.label), topic)
+            continue
         if answer and answer.lower() not in {"skip", "pass", "건너뛰기"}:
             session.answer(_serve_interview_answer_key(item.label), answer)
             qa_pairs.append({"id": qid, "answer": answer})
@@ -932,50 +1096,50 @@ def _normalize_show_prd_options(raw_options: Any) -> list[dict[str, str]]:
 
 def _show_prd_header(qid: str) -> str:
     return {
-        "Q1_research_question": "PRD 개요",
-        "Q2_purpose": "핵심 가치",
-        "Q3_context": "타겟·시나리오",
-        "Q4_known": "배경·제약",
-        "Q5_deliverable": "기능명세 seed",
-        "Q6_quality": "성공·검증 기준",
+        "Q1_research_question": "핵심 개체·질문",
+        "Q2_purpose": "해석 경계",
+        "Q3_context": "행위자·트리거·워크플로우",
+        "Q4_known": "정의·제약·참고근거",
+        "Q5_deliverable": "개념 지도·관계 구조",
+        "Q6_quality": "증거 경계·반례 기준",
     }.get(qid, "인터뷰")
 
 
 def _show_prd_preview(qid: str, topic: str, answers: dict[str, str]) -> str:
     if qid == "Q1_research_question":
         return (
-            "이 답변은 PRD overview.one_line과 리서치 핵심 질문으로 저장됩니다.\n"
+            "이 답변은 핵심 개체, 행위, 관계, 리서치 질문의 의미 경계를 고정합니다.\n"
             f"원 요청: {topic}"
         )
     if qid == "Q2_purpose":
         return (
-            "이 답변은 core_value.problem/resolution과 제품 목표로 저장됩니다. "
+            "이 답변은 서로 다른 해석 중 무엇이 1차 질문인지, 무엇을 제외할지 정합니다. "
             "이후 brief HITL gate에서 승인·수정 대상이 됩니다."
         )
     if qid == "Q3_context":
         return (
-            "선택한 맥락은 target_scenarios, 사용자 역할, 사용 환경, 이후 검색 범위를 제한합니다.\n"
+            "선택한 맥락은 행위자, 트리거, 신호, 행동, 결과 관계와 이후 검색 범위를 제한합니다.\n"
             f"원 요청: {topic}"
         )
     if qid == "Q4_known":
         context = answers.get("context", "아직 타겟 시나리오 미정")
         return (
-            "기존 자료와 제약은 PRD background, differentiator, risk/open issue 후보로 저장됩니다.\n"
+            "기존 자료와 제약은 정의가 흔들리는 용어, 제외 의미, 근거 경계 후보로 저장됩니다.\n"
             f"현재 타겟: {context}"
         )
     if qid == "Q5_deliverable":
         purpose = answers.get("purpose", "아직 목적 미정")
         return (
-            "| 기능명세 단계 | 이 답변에서 채울 내용 |\n"
+            "| 온톨로지 단계 | 이 답변에서 채울 내용 |\n"
             "| --- | --- |\n"
-            "| Requirement | 최상위 목표와 수용 기준 |\n"
-            "| Feature | 사용자가 수행할 기능 단위 |\n"
-            "| Specification | 실제 동작·정책·검증 조건 |\n\n"
+            "| Entity | 핵심 개체와 속성 |\n"
+            "| Relation | 행위자·트리거·신호·행동·결과 관계 |\n"
+            "| Boundary | 포함/제외 의미와 증거 한계 |\n\n"
             f"현재 목적: {purpose}"
         )
     if qid == "Q6_quality":
         return (
-            "성공 지표와 Source A/B급 기준을 고르면 속도는 느려지지만 mock·추정 결과가 최종 보고서에 섞이는 것을 더 강하게 막습니다."
+            "좋은 답과 나쁜 답을 가르는 증거 경계와 반례 기준을 고르면 mock·추정 결과가 최종 보고서에 섞이는 것을 더 강하게 막습니다."
         )
     return ""
 
@@ -985,6 +1149,32 @@ def _serve_interview_answer_key(label: str) -> str:
         "deliverable": "deliverable_type",
         "quality": "quality_bar",
     }.get(label, label)
+
+
+_Q1_FORMAT_ONLY_ANSWERS = {
+    "A",
+    "B",
+    "C",
+    "D",
+    "한 문장 제품 정의",
+    "단일 결정·숫자",
+    "옵션 비교",
+    "구축 가능성·설계도",
+    "Other",
+}
+
+
+def _is_q1_format_only_answer(qid: str, answer: str) -> bool:
+    cleaned = answer.strip()
+    return qid == "Q1_research_question" and cleaned in _Q1_FORMAT_ONLY_ANSWERS
+
+
+def _normalize_interview_answer(qid: str, answer: str) -> str:
+    """Remove UI answer-format choices that are not real interview content."""
+    cleaned = answer.strip()
+    if _is_q1_format_only_answer(qid, cleaned):
+        return ""
+    return cleaned
 
 
 def _interview_answer_from_action(action: Action) -> str:
@@ -1012,6 +1202,7 @@ class _PipelineHeartbeat:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._emit()
         self._thread = threading.Thread(target=self._run, name="muchanipo-heartbeat", daemon=True)
         self._thread.start()
 
@@ -1030,19 +1221,22 @@ class _PipelineHeartbeat:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_sec):
-            with self._lock:
-                stage = self.stage
-                detail = self.detail
-            emit(
-                "pipeline_heartbeat",
-                stream=self.stream,
-                run_id=self.run_id,
-                stage=stage,
-                detail=detail,
-                elapsed_sec=round(time.monotonic() - self.started_monotonic, 3),
-                python_pid=os.getpid(),
-                python_executable=sys.executable,
-            )
+            self._emit()
+
+    def _emit(self) -> None:
+        with self._lock:
+            stage = self.stage
+            detail = self.detail
+        emit(
+            "pipeline_heartbeat",
+            stream=self.stream,
+            run_id=self.run_id,
+            stage=stage,
+            detail=detail,
+            elapsed_sec=round(time.monotonic() - self.started_monotonic, 3),
+            python_pid=os.getpid(),
+            python_executable=sys.executable,
+        )
 
 
 def _heartbeat_interval_sec() -> float:
@@ -1067,8 +1261,14 @@ def serve_full(
     from src.report.chapter_mapper import ChapterMapper
     from src.report.pyramid_formatter import PyramidFormatter
     from src.research.depth import depth_profile
+    from src.runtime.live_mode import (
+        assert_mimo_opencode_policy_credentials,
+        source_research_requested_from_env,
+    )
 
     offline = _detect_offline_mode()
+    source_research = source_research_requested_from_env()
+    app_run_id = os.environ.get("MUCHANIPO_APP_RUN_ID", "")
     profile = depth_profile(depth)
     run_id = f"{int(time.time())}-{os.getpid()}-{uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc).isoformat()
@@ -1077,6 +1277,19 @@ def serve_full(
         stream=stdout,
         interval_sec=_heartbeat_interval_sec(),
     )
+    if not offline:
+        try:
+            assert_mimo_opencode_policy_credentials()
+        except Exception as exc:
+            emit(
+                "error",
+                stream=stdout,
+                kind="live_mode_violation",
+                message=str(exc),
+                pipeline="full",
+            )
+            emit("done", stream=stdout, pipeline="full", aborted=True)
+            return 1
     emit(
         "run_started",
         stream=stdout,
@@ -1084,8 +1297,10 @@ def serve_full(
         pipeline="full",
         topic=topic,
         offline=offline,
+        source_research=source_research,
         depth=depth,
         started_at=started_at,
+        app_run_id=app_run_id,
         python_pid=os.getpid(),
         python_executable=sys.executable,
         cwd=str(Path.cwd()),
@@ -1098,7 +1313,9 @@ def serve_full(
             "topic": topic,
             "pipeline": "full",
             "offline": offline,
+            "source_research": source_research,
             "depth": depth,
+            "app_run_id": app_run_id,
             "council_persona_pool_size": profile.persona_pool_size,
             "active_council_persona_count": profile.active_persona_count,
         },
@@ -1140,15 +1357,22 @@ def serve_full(
                 )
             elif name == "stage_completed":
                 heartbeat.update(stage=str(fields.get("stage", "")), detail="stage_completed")
+            elif name == "deep_interview_progress":
+                detail = str(fields.get("focus_label") or fields.get("mode") or name)
+                heartbeat.update(stage="interview", detail=detail)
+            elif name == "research_progress":
+                detail = str(fields.get("status") or name)
+                heartbeat.update(stage=str(fields.get("stage") or "research"), detail=detail)
             if name.startswith("council_"):
                 streamed_council_events += 1
+                heartbeat.update(stage="council", detail=name)
             emit(name, stream=stdout, **fields)
 
-        hitl_adapter = (
-            JSONLineHITLAdapter(stdout=stdout, stdin=stdin or sys.stdin)
-            if wait_for_input
-            else None
-        )
+        if wait_for_input:
+            hitl_adapter = JSONLineHITLAdapter(stdout=stdout, stdin=stdin or sys.stdin)
+        else:
+            from src.hitl.plannotator_adapter import HITLAdapter
+            hitl_adapter = HITLAdapter(mode="auto_approve", timeout_seconds=0)
         heartbeat.update(stage="pipeline", detail="run_pipeline")
         pipeline_result = run_pipeline(
             topic,
@@ -1161,10 +1385,18 @@ def serve_full(
     except Exception as exc:
         from src.runtime.live_mode import LiveModeViolation
 
-        if not isinstance(exc, LiveModeViolation):
-            heartbeat.stop()
-            raise
         heartbeat.stop()
+        if not isinstance(exc, LiveModeViolation):
+            emit(
+                "error",
+                stream=stdout,
+                kind="pipeline_error",
+                error_class=exc.__class__.__name__,
+                message=str(exc),
+                pipeline="full",
+            )
+            emit("done", stream=stdout, pipeline="full", aborted=True)
+            return 1
         emit(
             "error",
             stream=stdout,
@@ -1227,6 +1459,7 @@ def serve_full(
     for ch in chapters:
         chunk_md = _render_chapter_markdown(ch)
         md_parts.append(chunk_md)
+        heartbeat.update(stage="report", detail=f"report_chunk:{ch.chapter_no}")
         emit(
             "report_chunk",
             stream=stdout,
@@ -1331,6 +1564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "doctor",
         "contracts",
         "references",
+        "guard",
         "orchestrate",
         "demo",
     }
@@ -1426,6 +1660,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             render_references(stdout=sys.stdout)
         return 0
+
+    if args.command == "guard":
+        from src.governance.autoresearch_guard import (
+            render_product_guard,
+            run_product_guard,
+            run_product_guard_iterations,
+        )
+
+        if args.iterate:
+            report = run_product_guard_iterations(
+                output_path=Path(args.output) if args.output else None,
+                strict=True if not args.strict else bool(args.strict),
+                include_untracked=not bool(args.tracked_only),
+                min_iterations=args.min_iterations,
+                max_iterations=args.max_iterations,
+            )
+        else:
+            report = run_product_guard(
+                output_path=Path(args.output) if args.output else None,
+                strict=bool(args.strict),
+                include_untracked=not bool(args.tracked_only),
+            )
+        if args.json:
+            _write_json(report)
+        else:
+            render_product_guard(report, stdout=sys.stdout)
+        return 0 if report["passed"] else 1
 
     if args.command == "orchestrate":
         from src.muchanipo.terminal import orchestration_report, render_orchestration

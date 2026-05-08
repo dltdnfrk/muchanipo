@@ -17,13 +17,29 @@ import {
   planReviewAnnotations,
   type PlanReviewEditState,
 } from "../components/PlannotatorPlanEditor";
+import EvidenceIndexPanel from "../components/EvidenceIndexPanel";
+import SourceDiscoveryPanel, {
+  buildDiscoveredSourceMap,
+  buildKnowledgeGaps,
+  type DiscoveredSource,
+  type KnowledgeGap,
+} from "../components/SourceDiscoveryPanel";
+import {
+  PersonaPoolCard,
+  normalizePersonaPoolSummary,
+  type PersonaPoolSummary,
+} from "../components/PersonaPoolCard";
 import { clearPendingRun, getPendingRunAutostartDecision } from "../lib/pendingRun";
 
 type BackendMode = "offline" | "cli" | "api";
 
 function readBackendMode(): BackendMode {
   const value = localStorage.getItem("backend_mode");
-  return value === "cli" || value === "api" || value === "offline" ? value : "cli";
+  return value === "cli" || value === "api" || value === "offline" ? value : "offline";
+}
+
+function readCredential(k: string): string {
+  return localStorage.getItem(`credential:${k}`) || sessionStorage.getItem(k) || "";
 }
 
 function readEnvsFromSettings(): Record<string, string> {
@@ -35,21 +51,45 @@ function readEnvsFromSettings(): Record<string, string> {
     envs.MUCHANIPO_USE_CLI = "1";
     envs.MUCHANIPO_ONLINE = "1";
     envs.MUCHANIPO_REQUIRE_LIVE = "1";
+    envs.MUCHANIPO_SOURCE_RESEARCH = "1";
   } else {
+    const mimoKey = readCredential("mimo_api_key").trim();
+    const opencodeGoKey = readCredential("opencode_api_key").trim();
+    if (!mimoKey && !opencodeGoKey) {
+      throw new Error(
+        "API 실행 모드인데 MiMo 또는 OpenCode Go API Key가 앱 설정/localStorage에 없습니다. 설정에서 둘 중 하나 이상을 저장한 뒤 다시 시작하세요.",
+      );
+    }
     envs.MUCHANIPO_ONLINE = "1";
     envs.MUCHANIPO_REQUIRE_LIVE = "1";
-    const carry = (k: string, e: string) => {
-      const v = sessionStorage.getItem(k);
-      if (v) envs[e] = v;
-    };
-    carry("anthropic_api_key", "ANTHROPIC_API_KEY");
-    carry("gemini_api_key", "GEMINI_API_KEY");
-    carry("kimi_api_key", "KIMI_API_KEY");
-    carry("openai_api_key", "OPENAI_API_KEY");
-    carry("opencode_api_key", "OPENCODE_API_KEY");
-    carry("openalex_email", "MUCHANIPO_CONTACT_EMAIL");
-    carry("openalex_email", "UNPAYWALL_EMAIL");
-    carry("plannotator_key", "PLANNOTATOR_API_KEY");
+    envs.MUCHANIPO_SOURCE_RESEARCH = "1";
+    envs.MUCHANIPO_VERIFICATION_ROUTING = "mimo_opencode_go_only";
+    envs.MUCHANIPO_API_ROUTING = "mimo_opencode_go_only";
+    envs.MUCHANIPO_MODEL_ROUTING = "mimo_opencode_go_only";
+    envs.MUCHANIPO_INTERVIEW_COUNSELLING = "1";
+    envs.MUCHANIPO_PREFER_CLI = "0";
+    envs.OPENCODE_USE_CLI = "0";
+    envs.MUCHANIPO_USE_CLI = "0";
+    if (mimoKey) {
+      envs.XIAOMI_MIMO_API_KEY = mimoKey;
+      envs.MIMO_API_KEY = mimoKey;
+      envs.MIMO_MODEL = readCredential("mimo_model").trim() || "mimo-v2.5-pro";
+      const mimoBaseUrl = readCredential("mimo_base_url").trim() || "https://token-plan-sgp.xiaomimimo.com/v1";
+      envs.MIMO_BASE_URL = mimoBaseUrl;
+    }
+    if (opencodeGoKey) {
+      envs.OPENCODE_API_KEY = opencodeGoKey;
+      envs.OPENCODE_GO_API_KEY = opencodeGoKey;
+    }
+    const plannotatorKey = readCredential("plannotator_key").trim();
+    if (plannotatorKey) envs.PLANNOTATOR_API_KEY = plannotatorKey;
+  }
+  if (backendMode !== "offline") {
+    const openAlexEmail = readCredential("openalex_email").trim();
+    if (openAlexEmail) {
+      envs.MUCHANIPO_CONTACT_EMAIL = openAlexEmail;
+      envs.UNPAYWALL_EMAIL = openAlexEmail;
+    }
   }
   const visualizer = localStorage.getItem("council_visualizer");
   if (visualizer === "ollama") {
@@ -73,6 +113,8 @@ type Stage =
   | "evidence"
   | "council"
   | "report"
+  | "vault"
+  | "agents"
   | "finalize";
 
 interface StageState {
@@ -81,6 +123,10 @@ interface StageState {
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
+  lastEventAt?: number;
+  lastSignal?: string;
+  referenceProjects?: string[];
+  artifactKeys?: string[];
 }
 
 interface TokenCard {
@@ -92,7 +138,7 @@ interface TokenCard {
 
 interface ResearchActivity {
   id: string;
-  status: "searching" | "source_found" | "done";
+  status: "searching" | "source_found" | "source_evaluated" | "knowledge_gap" | "facet_summary" | "done";
   query?: string;
   queryIndex?: number;
   queryCount?: number;
@@ -100,23 +146,63 @@ interface ResearchActivity {
   sourceTitle?: string;
   sourceUrl?: string;
   sourceGrade?: string;
+  sourceKind?: string;
+  accessStatus?: string;
+  accepted?: boolean;
+  facetIds?: string[];
+  relevanceScore?: number;
+  reason?: string;
+  facetId?: string;
+  message?: string;
+  acceptedCount?: number;
+  minAcceptedSources?: number;
+  gapCount?: number;
 }
 
 interface CouncilActivity {
   id: string;
-  kind: "round_start" | "turn" | "token" | "round_done";
+  kind:
+    | "round_start"
+    | "turn"
+    | "token"
+    | "round_done"
+    | "provider_call_start"
+    | "provider_call_done"
+    | "provider_call_timeout"
+    | "provider_call_error";
   round?: number;
   layer?: string;
   persona?: string;
   councilStage?: string;
   text?: string;
   provider?: string;
+  providerRoute?: string;
+  model?: string;
   score?: number;
   responseChars?: number;
   activePersonaCount?: number;
   activePersonaIds?: string[];
   visualizationSource?: string;
   visualizerModel?: string;
+  timeoutSec?: number;
+  elapsedSec?: number;
+  errorClass?: string;
+}
+
+interface StudioProvenance {
+  studioId?: string;
+  studioModel?: string;
+  studioBrief?: string;
+}
+
+interface InterviewCounselling {
+  mode?: string;
+  rationale?: string;
+  referenceInsights: string[];
+  assumptionsToTest: string[];
+  prdImpact?: string;
+  provider?: string;
+  model?: string;
 }
 
 interface InterviewPrompt {
@@ -130,6 +216,7 @@ interface InterviewPrompt {
   index?: number;
   total?: number;
   clarity?: InterviewClarity;
+  counselling?: InterviewCounselling;
 }
 
 interface HitlPrompt {
@@ -189,6 +276,14 @@ interface RuntimeEvidence {
   stalled?: boolean;
 }
 
+interface BrowserPersonaRow {
+  id: string;
+  name: string;
+  role: string;
+  provenance: string;
+  note: string;
+}
+
 const STAGES: Stage[] = [
   "intake",
   "interview",
@@ -197,6 +292,8 @@ const STAGES: Stage[] = [
   "evidence",
   "council",
   "report",
+  "vault",
+  "agents",
   "finalize",
 ];
 
@@ -208,6 +305,8 @@ const STAGE_LABEL: Record<Stage, string> = {
   evidence: "증거 수집",
   council: "심의",
   report: "보고서",
+  vault: "Vault 저장",
+  agents: "에이전트 기록",
   finalize: "완료",
 };
 
@@ -228,6 +327,25 @@ function formatElapsed(ms?: number | null): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${seconds % 60}s`;
+}
+
+function isStage(value: unknown): value is Stage {
+  return typeof value === "string" && STAGES.includes(value as Stage);
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter(Boolean);
+}
+
+function artifactKeyList(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value as Record<string, unknown>).sort();
+}
+
+function signalAge(now: number, lastEventAt?: number): string {
+  if (!lastEventAt) return "";
+  return formatElapsed(now - lastEventAt);
 }
 
 const COUNCIL_STAGE_LABEL: Record<string, string> = {
@@ -259,6 +377,21 @@ function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
     data.deep_interview && typeof data.deep_interview === "object"
       ? normalizeInterviewClarity(data.deep_interview as Record<string, unknown>)
       : undefined;
+  const counsellingRaw =
+    data.counselling && typeof data.counselling === "object"
+      ? (data.counselling as Record<string, unknown>)
+      : undefined;
+  const counselling = counsellingRaw
+    ? {
+        mode: String(counsellingRaw.mode ?? event.counselling_mode ?? ""),
+        rationale: String(counsellingRaw.rationale ?? event.counselling_rationale ?? ""),
+        referenceInsights: stringList(counsellingRaw.reference_insights ?? event.reference_insights),
+        assumptionsToTest: stringList(counsellingRaw.assumptions_to_test ?? event.assumptions_to_test),
+        prdImpact: String(counsellingRaw.prd_impact ?? event.prd_impact ?? ""),
+        provider: String(counsellingRaw.provider ?? ""),
+        model: String(counsellingRaw.model ?? ""),
+      }
+    : undefined;
 
   const rawOptions = Array.isArray(event.options)
     ? event.options
@@ -282,22 +415,34 @@ function normalizeInterviewPrompt(event: BackendEvent): InterviewPrompt | null {
     return { key, label: value, value };
   });
 
+  const isDeepInterviewPrompt = isDeepInterviewSignal(id, total, clarity);
+
   return {
     id,
-    header,
+    header: isDeepInterviewPrompt ? "Deep Interview" : header,
     text,
     options,
-    allowOther: event.allow_other !== false && data.allow_other !== false,
+    allowOther: isDeepInterviewPrompt || (event.allow_other !== false && data.allow_other !== false),
     multiSelect:
-      event.multiSelect === true ||
-      event.multi_select === true ||
-      data.multiSelect === true ||
-      data.multi_select === true,
+      !isDeepInterviewPrompt &&
+      (event.multiSelect === true ||
+        event.multi_select === true ||
+        data.multiSelect === true ||
+        data.multi_select === true),
     preview: preview || undefined,
     index,
     total,
     clarity,
+    counselling,
   };
+}
+
+function isDeepInterviewSignal(
+  id?: string,
+  total?: number,
+  clarity?: InterviewClarity,
+): boolean {
+  return Boolean((id && /^Q[1-6]_/.test(id)) || total === 6 || clarity);
 }
 
 function normalizeInterviewClarity(raw: Record<string, unknown>): InterviewClarity {
@@ -412,20 +557,38 @@ function normalizeHitlPrompt(event: BackendEvent): HitlPrompt | null {
   };
 }
 
+function hitlEvidenceRefs(prompt: HitlPrompt): unknown {
+  if (prompt.gate !== "evidence") return undefined;
+  return prompt.payload?.evidence_refs;
+}
+
 function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null {
   if (event.event !== "research_progress") return null;
   const status = String(event.status ?? "searching");
-  if (!["searching", "source_found", "done"].includes(status)) return null;
+  if (!["searching", "source_found", "source_evaluated", "knowledge_gap", "facet_summary", "done"].includes(status)) return null;
   const query = String(event.query ?? "").trim();
   const sourceTitle = String(event.source_title ?? "").trim();
   const sourceUrl = String(event.source_url ?? "").trim();
   const sourceGrade = String(event.source_grade ?? "").trim();
+  const sourceKind = String(event.source_kind ?? "").trim();
+  const accessStatus = String(event.access_status ?? "").trim();
+  const reason = String(event.reason ?? "").trim();
+  const facetId = String(event.facet_id ?? "").trim();
+  const message = String(event.message ?? "").trim();
   const queryIndex = Number(event.query_index ?? 0) || undefined;
   const queryCount = Number(event.query_count ?? 0) || undefined;
+  const relevanceScore = Number(event.relevance_score ?? Number.NaN);
+  const acceptedCount = Number(event.accepted_count ?? 0) || undefined;
+  const minAcceptedSources = Number(event.min_accepted_sources ?? 0) || undefined;
+  const gapCount = Number(event.gap_count ?? 0) || undefined;
   const backends = Array.isArray(event.backends)
     ? event.backends.map((item) => String(item)).filter(Boolean)
     : undefined;
-  const id = [status, queryIndex ?? "", query, sourceTitle, sourceUrl].join("|");
+  const facetIds = Array.isArray(event.facet_ids)
+    ? event.facet_ids.map((item) => String(item)).filter(Boolean)
+    : undefined;
+  const accepted = typeof event.accepted === "boolean" ? event.accepted : undefined;
+  const id = [status, queryIndex ?? "", query, sourceTitle, sourceUrl, facetId, reason].join("|");
   return {
     id,
     status: status as ResearchActivity["status"],
@@ -436,12 +599,90 @@ function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null
     sourceTitle: sourceTitle || undefined,
     sourceUrl: sourceUrl || undefined,
     sourceGrade: sourceGrade || undefined,
+    sourceKind: sourceKind || undefined,
+    accessStatus: accessStatus || undefined,
+    accepted,
+    facetIds,
+    relevanceScore: Number.isFinite(relevanceScore) ? relevanceScore : undefined,
+    reason: reason || undefined,
+    facetId: facetId || undefined,
+    message: message || undefined,
+    acceptedCount,
+    minAcceptedSources,
+    gapCount,
   };
 }
 
 function compactPersonaName(value: string | undefined): string {
   if (!value) return "persona";
   return value.replace(/^persona-/, "P-").replace(/^mirofish-entity-/, "M-");
+}
+
+const PERSONA_PROVENANCE_LABELS = {
+  samplePool: "Persona sample pool",
+  fallbackTemplate: "Fallback template",
+  diversitySampling: "Diversity sampling",
+  councilProtocol: "Council protocol",
+  backendSelected: "Backend selected persona",
+} as const;
+
+const BROWSER_PERSONA_FALLBACK_ROWS: BrowserPersonaRow[] = [
+  {
+    id: "layer-1-direct-user",
+    name: "Layer 1 · 직접 사용자",
+    role: "Goal을 직접 겪는 사용자",
+    provenance: PERSONA_PROVENANCE_LABELS.fallbackTemplate,
+    note: "pending backend selection",
+  },
+  {
+    id: "layer-2-ecosystem",
+    name: "Layer 2 · 생태계 이해관계자",
+    role: "도입, 운영, 비용, 규칙 이해관계자",
+    provenance: PERSONA_PROVENANCE_LABELS.samplePool,
+    note: "pending backend selection",
+  },
+  {
+    id: "layer-3-contrarian",
+    name: "Layer 3 · 교차 분야/반대 전문가",
+    role: "반례와 다른 분야 기준 검토",
+    provenance: PERSONA_PROVENANCE_LABELS.diversitySampling,
+    note: "pending backend selection",
+  },
+  {
+    id: "council-protocol",
+    name: "Council protocol",
+    role: "심의 순서와 발언 규칙",
+    provenance: PERSONA_PROVENANCE_LABELS.councilProtocol,
+    note: "protocol label; selected persona ids replace fallback rows when available",
+  },
+];
+
+function browserPersonaRows(personas: string[]): BrowserPersonaRow[] {
+  const selected = personas.map((persona, index) => ({
+    id: `selected-${persona}-${index}`,
+    name: compactPersonaName(persona),
+    role: index === 0 ? "selected persona" : "selected council persona",
+    provenance: PERSONA_PROVENANCE_LABELS.backendSelected,
+    note: "received from council active_persona_ids",
+  }));
+  return selected.length > 0 ? selected : BROWSER_PERSONA_FALLBACK_ROWS;
+}
+
+function clearRunScopedSessionKeys(runId: string): void {
+  const keysToRemove: string[] = [];
+  for (let index = 0; index < sessionStorage.length; index += 1) {
+    const key = sessionStorage.key(index);
+    if (!key) continue;
+    if (
+      key.startsWith(`muchanipo:auto-answer:${runId}:`) ||
+      key.startsWith(`muchanipo:auto-approve:${runId}:`)
+    ) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    sessionStorage.removeItem(key);
+  }
 }
 
 function pushCouncilActivity(
@@ -458,14 +699,36 @@ export default function RunProgress() {
   const [stages, setStages] = useState<Record<Stage, StageState>>(() => initialState());
   const [councilRound, setCouncilRound] = useState<number>(0);
   const [topic, setTopic] = useState<string>("");
+  const [studioProvenance, setStudioProvenance] = useState<StudioProvenance | null>(null);
   const [tokenCards, setTokenCards] = useState<TokenCard[]>([]);
   const [researchActivity, setResearchActivity] = useState<ResearchActivity[]>([]);
+  const [discoveredSources, setDiscoveredSources] = useState<Map<string, DiscoveredSource>>(() => {
+    if (!runId) return new Map();
+    try {
+      const raw = localStorage.getItem(`run:${runId}:sources`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as [string, DiscoveredSource][];
+        return new Map(parsed);
+      }
+    } catch { /* ignore */ }
+    return new Map();
+  });
+  const [knowledgeGaps, setKnowledgeGaps] = useState<KnowledgeGap[]>(() => {
+    if (!runId) return [];
+    try {
+      const raw = localStorage.getItem(`run:${runId}:gaps`);
+      if (raw) return JSON.parse(raw) as KnowledgeGap[];
+    } catch { /* ignore */ }
+    return [];
+  });
   const [councilActivity, setCouncilActivity] = useState<CouncilActivity[]>([]);
   const [councilPersonas, setCouncilPersonas] = useState<string[]>([]);
+  const [personaPool, setPersonaPool] = useState<PersonaPoolSummary | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const runErrorRef = useRef<string | null>(null);
   const [runWarnings, setRunWarnings] = useState<string[]>([]);
   const [reportPreview, setReportPreview] = useState("");
+  const [finalReport, setFinalReport] = useState("");
   const [interviewPrompt, setInterviewPrompt] = useState<InterviewPrompt | null>(null);
   const [interviewClarity, setInterviewClarity] = useState<InterviewClarity | null>(null);
   const [interviewArtifacts, setInterviewArtifacts] = useState<DeepInterviewArtifacts | null>(null);
@@ -479,10 +742,31 @@ export default function RunProgress() {
   const [hitlError, setHitlError] = useState<string | null>(null);
   const [runtimeEvidence, setRuntimeEvidence] = useState<RuntimeEvidence | null>(null);
   const [aborting, setAborting] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const unlistenRef = useRef<(() => void) | null>(null);
   const chunkKeysRef = useRef<Set<string>>(new Set());
   const finalReportReceivedRef = useRef(false);
   const planReviewEditCount = planReviewAnnotations(planReviewEdits).length;
+  const activeDeepInterviewPrompt = interviewPrompt
+    ? isDeepInterviewSignal(interviewPrompt.id, interviewPrompt.total, interviewPrompt.clarity)
+    : false;
+  const unknownDimensions = interviewClarity?.missingDimensions.filter(Boolean).slice(0, 6) ?? [];
+  const ontologyNodes = Array.from(
+    new Set(
+      [
+        interviewClarity?.focusLabel,
+        interviewClarity?.focusDimension,
+        ...unknownDimensions.slice(0, 3),
+      ]
+        .map((item) => item?.trim())
+        .filter((item): item is string => Boolean(item)),
+    ),
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const failRun = useCallback(
     (message: string) => {
@@ -518,23 +802,34 @@ export default function RunProgress() {
         setCouncilRound(0);
         setTokenCards([]);
         setResearchActivity([]);
+        setDiscoveredSources(new Map());
+        setKnowledgeGaps([]);
+        if (runId) {
+          localStorage.removeItem(`run:${runId}:sources`);
+          localStorage.removeItem(`run:${runId}:gaps`);
+        }
         setCouncilActivity([]);
         setCouncilPersonas([]);
+        setPersonaPool(null);
         setReportPreview("");
+        setFinalReport("");
         setInterviewPrompt(null);
         setInterviewClarity(null);
+        setInterviewArtifacts(null);
         setInterviewAnswer("");
         setInterviewSelections([]);
         setInterviewError(null);
         setHitlPrompt(null);
+        setPlanReviewEdits(null);
         setHitlError(null);
         setHitlSubmitting(false);
         setRuntimeEvidence(null);
         try {
-          for (const suffix of ["report", "report_path", "chapter_count", "pending", "pending_at"]) {
+          for (const suffix of ["report", "report_path", "vault_path", "chapter_count", "pending", "pending_at"]) {
             localStorage.removeItem(`run:${runId}:${suffix}`);
           }
           sessionStorage.removeItem(`run:${runId}:pending_session`);
+          clearRunScopedSessionKeys(runId);
           markRunRunning(runId);
         } catch {
           /* ignore */
@@ -544,7 +839,7 @@ export default function RunProgress() {
       try {
         const pipelineMode =
           (localStorage.getItem("pipeline_mode") as PipelineMode | null) || "full";
-        await submitIdea(trimmed, pipelineMode, readResearchDepth(), readEnvsFromSettings());
+        await submitIdea(trimmed, pipelineMode, readResearchDepth(), readEnvsFromSettings(), runId);
         return true;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -559,6 +854,16 @@ export default function RunProgress() {
     if (!runId) return;
     try {
       setTopic(localStorage.getItem(`run:${runId}:topic`) || "");
+      const prov: StudioProvenance = {};
+      const studioId = localStorage.getItem(`run:${runId}:studioId`);
+      const studioModel = localStorage.getItem(`run:${runId}:studioModel`);
+      const studioBrief = localStorage.getItem(`run:${runId}:studioBrief`);
+      if (studioId) prov.studioId = studioId;
+      if (studioModel) prov.studioModel = studioModel;
+      if (studioBrief) prov.studioBrief = studioBrief;
+      if (prov.studioId || prov.studioModel || prov.studioBrief) {
+        setStudioProvenance(prov);
+      }
     } catch {
       /* ignore */
     }
@@ -606,6 +911,17 @@ export default function RunProgress() {
       }
 
       if (event.event === "run_started") {
+        setStages((prev) => ({
+          ...prev,
+          intake: {
+            ...prev.intake,
+            status: prev.intake.status === "completed" ? "completed" : "active",
+            startedAt: prev.intake.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: "run_started",
+            message: "Python backend 시작 확인",
+          },
+        }));
         setRuntimeEvidence((prev) => ({
           ...(prev ?? {}),
           runId: String(event.run_id ?? ""),
@@ -621,6 +937,26 @@ export default function RunProgress() {
       }
 
       if (event.event === "pipeline_heartbeat") {
+        const stage = isStage(event.stage) ? event.stage : null;
+        if (stage) {
+          setStages((prev) => {
+            const current = prev[stage];
+            if (current.status === "completed" || current.status === "error") return prev;
+            return {
+              ...prev,
+              [stage]: {
+                ...current,
+                status: current.status === "pending" ? "active" : current.status,
+                startedAt: current.startedAt ?? Date.now(),
+                lastEventAt: Date.now(),
+                lastSignal: event.detail
+                  ? `heartbeat · ${String(event.detail)}`
+                  : "heartbeat",
+                message: "실행 중 · heartbeat 수신",
+              },
+            };
+          });
+        }
         setRuntimeEvidence((prev) => ({
           ...(prev ?? {}),
           runId: String(event.run_id ?? prev?.runId ?? ""),
@@ -637,15 +973,79 @@ export default function RunProgress() {
       if (event.event === "research_progress") {
         const activity = normalizeResearchActivity(event);
         if (!activity) return;
+        setStages((prev) => ({
+          ...prev,
+          research: {
+            ...prev.research,
+            status: prev.research.status === "completed" ? "completed" : "active",
+            startedAt: prev.research.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal:
+              activity.status === "source_found" || activity.status === "source_evaluated"
+                ? `${activity.status} · ${activity.sourceTitle || "source"}`
+                : activity.status === "knowledge_gap"
+                  ? `knowledge_gap · ${activity.facetId || "facet"}`
+                  : activity.status === "facet_summary"
+                    ? `facet_summary · gaps ${activity.gapCount ?? 0}`
+                    : `searching · ${activity.query || "query"}`,
+            message:
+              activity.status === "source_found"
+                ? "출처 확인 중"
+                : activity.status === "source_evaluated"
+                  ? activity.accepted === false
+                    ? "출처 평가 · 거절/보류"
+                    : "출처 평가 · 채택"
+                  : activity.status === "knowledge_gap"
+                    ? "근거 부족 gap 발견"
+                    : activity.status === "facet_summary"
+                      ? "facet별 근거 커버리지 요약"
+                      : "검색 쿼리 실행 중",
+          },
+        }));
         setResearchActivity((prev) => {
           const withoutDuplicate = prev.filter((item) => item.id !== activity.id);
           return [activity, ...withoutDuplicate].slice(0, 8);
+        });
+        setDiscoveredSources((prev) => {
+          const next = buildDiscoveredSourceMap(prev, activity);
+          if (runId) {
+            try {
+              localStorage.setItem(`run:${runId}:sources`, JSON.stringify(Array.from(next.entries())));
+            } catch { /* ignore */ }
+          }
+          return next;
+        });
+        setKnowledgeGaps((prev) => {
+          const next = buildKnowledgeGaps(prev, activity);
+          if (runId) {
+            try {
+              localStorage.setItem(`run:${runId}:gaps`, JSON.stringify(next));
+            } catch { /* ignore */ }
+          }
+          return next;
         });
         return;
       }
 
       if (event.event === "deep_interview_progress") {
-        setInterviewClarity(normalizeDeepInterviewProgress(event));
+        const clarity = normalizeDeepInterviewProgress(event);
+        setInterviewClarity(clarity);
+        setStages((prev) => ({
+          ...prev,
+          interview: {
+            ...prev.interview,
+            status: prev.interview.status === "completed" ? "completed" : "active",
+            startedAt: prev.interview.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: clarity?.focusLabel
+              ? `deep_interview · ${clarity.focusLabel}`
+              : "deep_interview",
+            message:
+              clarity?.coverageScore !== undefined
+                ? `질문 명확화 중 · coverage ${Math.round(clarity.coverageScore * 100)}%`
+                : "질문 명확화 중",
+          },
+        }));
         return;
       }
 
@@ -658,6 +1058,17 @@ export default function RunProgress() {
       if (event.event === "interview_question") {
         const prompt = normalizeInterviewPrompt(event);
         if (prompt) {
+          setStages((prev) => ({
+            ...prev,
+            interview: {
+              ...prev.interview,
+              status: prev.interview.status === "completed" ? "completed" : "active",
+              startedAt: prev.interview.startedAt ?? Date.now(),
+              lastEventAt: Date.now(),
+              lastSignal: `interview_question · ${prompt.id}`,
+              message: "사용자 답변 대기",
+            },
+          }));
           setInterviewPrompt(prompt);
           if (prompt.clarity) setInterviewClarity(prompt.clarity);
           setInterviewAnswer("");
@@ -671,6 +1082,18 @@ export default function RunProgress() {
       if (event.event === "hitl_gate") {
         const prompt = normalizeHitlPrompt(event);
         if (prompt) {
+          const gateStage: Stage = prompt.gate === "plan" ? "targeting" : "evidence";
+          setStages((prev) => ({
+            ...prev,
+            [gateStage]: {
+              ...prev[gateStage],
+              status: prev[gateStage].status === "completed" ? "completed" : "active",
+              startedAt: prev[gateStage].startedAt ?? Date.now(),
+              lastEventAt: Date.now(),
+              lastSignal: `hitl_gate · ${prompt.gate}`,
+              message: "사용자 검토 대기",
+            },
+          }));
           setHitlPrompt(prompt);
           setPlanReviewEdits(normalizePlanReviewEditState(prompt));
           setHitlError(null);
@@ -689,6 +1112,23 @@ export default function RunProgress() {
         setHitlPrompt(null);
         setPlanReviewEdits(null);
         setHitlSubmitting(false);
+        // Stage transitions carry pipeline artifacts; mine persona telemetry
+        // (seed source, validation/diversity framework, council protocol, pool
+        // counts, fallbacks_used) so Browser shows the real Studio→Browser
+        // persona handoff rather than only ids.
+        const phaseData = (event as Record<string, unknown>).data;
+        const artifactsCandidate =
+          phaseData && typeof phaseData === "object" && !Array.isArray(phaseData)
+            ? (phaseData as Record<string, unknown>).artifacts
+            : (event as Record<string, unknown>).artifacts;
+        const artifacts =
+          artifactsCandidate && typeof artifactsCandidate === "object" && !Array.isArray(artifactsCandidate)
+            ? (artifactsCandidate as Record<string, unknown>)
+            : null;
+        const summary = normalizePersonaPoolSummary(artifacts);
+        if (summary) {
+          setPersonaPool(summary);
+        }
         setStages((prev) => {
           const next = { ...prev };
           const currentIndex = STAGES.indexOf(stage);
@@ -706,7 +1146,9 @@ export default function RunProgress() {
             ...next[stage],
             status: "active",
             startedAt: next[stage].startedAt ?? Date.now(),
-            message: "진행 중",
+            lastEventAt: Date.now(),
+            lastSignal: `phase_change · ${event.phase}`,
+            message: "진행 중 · phase event 수신",
           };
           return next;
         });
@@ -730,16 +1172,24 @@ export default function RunProgress() {
         setStages((prev) => {
           const next = { ...prev };
           const current = { ...next[stage] };
+          const referenceProjects = stringList(event.reference_projects);
+          const artifactKeys = artifactKeyList(event.artifacts);
           if (event.event === "stage_started") {
             current.status = "active";
             current.startedAt = Date.now();
-            current.message = "진행 중";
+            current.lastEventAt = Date.now();
+            current.lastSignal = "stage_started";
+            current.message = "실행 시작 · backend event 수신";
           } else {
             current.status = "completed";
             current.completedAt = Date.now();
             if (current.startedAt) current.durationMs = current.completedAt - current.startedAt;
-            current.message = "완료";
+            current.lastEventAt = Date.now();
+            current.lastSignal = "stage_completed";
+            current.message = "완료 · backend event 수신";
           }
+          if (referenceProjects.length > 0) current.referenceProjects = referenceProjects;
+          if (artifactKeys.length > 0) current.artifactKeys = artifactKeys;
           next[stage] = current;
           return next;
         });
@@ -748,6 +1198,17 @@ export default function RunProgress() {
 
       if (event.event === "council_round_start" && typeof event.round === "number") {
         setCouncilRound(event.round);
+        setStages((prev) => ({
+          ...prev,
+          council: {
+            ...prev.council,
+            status: prev.council.status === "completed" ? "completed" : "active",
+            startedAt: prev.council.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: `council_round_start · R${event.round}`,
+            message: "페르소나 라운드 시작",
+          },
+        }));
         const activePersonaIds = Array.isArray(event.active_persona_ids)
           ? event.active_persona_ids.map((item) => String(item)).filter(Boolean)
           : [];
@@ -768,6 +1229,17 @@ export default function RunProgress() {
       if (event.event === "council_turn" && typeof event.round === "number") {
         const persona = String(event.persona ?? "");
         const councilStage = String(event.council_stage ?? "");
+        setStages((prev) => ({
+          ...prev,
+          council: {
+            ...prev.council,
+            status: prev.council.status === "completed" ? "completed" : "active",
+            startedAt: prev.council.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: `council_turn · ${persona || "persona"}`,
+            message: "페르소나 응답 수신",
+          },
+        }));
         setCouncilActivity((prev) =>
           pushCouncilActivity(prev, {
             id: `turn:${event.round}:${event.layer ?? ""}:${councilStage}:${persona}:${event.response_chars ?? ""}`,
@@ -796,6 +1268,17 @@ export default function RunProgress() {
           return [...prev, { persona, text: delta, layer, round }].slice(-12);
         });
         if (delta.trim()) {
+          setStages((prev) => ({
+            ...prev,
+            council: {
+              ...prev.council,
+              status: prev.council.status === "completed" ? "completed" : "active",
+              startedAt: prev.council.startedAt ?? Date.now(),
+              lastEventAt: Date.now(),
+              lastSignal: `council_token · ${persona}`,
+              message: "토론 시각화 토큰 수신",
+            },
+          }));
           setCouncilActivity((prev) =>
             pushCouncilActivity(prev, {
               id: `token:${round ?? ""}:${layer ?? ""}:${event.council_stage ?? ""}:${persona}:${delta.slice(0, 80)}`,
@@ -827,11 +1310,84 @@ export default function RunProgress() {
         return;
       }
 
+      if (
+        (event.event === "council_provider_call_start" ||
+          event.event === "council_provider_call_done" ||
+          event.event === "council_provider_call_timeout" ||
+          event.event === "council_provider_call_error") &&
+        typeof event.round === "number"
+      ) {
+        const persona = String(event.persona ?? "persona");
+        const councilStage = String(event.council_stage ?? "council");
+        const providerRoute = String(event.provider_route ?? "");
+        const provider = String(event.provider ?? "");
+        const model = String(event.model ?? "");
+        const elapsedSec = Number(event.elapsed_sec ?? 0) || undefined;
+        const timeoutSec = Number(event.timeout_sec ?? 0) || undefined;
+        const errorClass = String(event.error_class ?? "");
+        const errorText = String(event.error ?? "").trim();
+        setStages((prev) => ({
+          ...prev,
+          council: {
+            ...prev.council,
+            status: prev.council.status === "completed" ? "completed" : "active",
+            startedAt: prev.council.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: `${event.event} · ${councilStage}`,
+            message:
+              event.event === "council_provider_call_start"
+                ? "Council provider 호출 시작"
+                : event.event === "council_provider_call_done"
+                  ? "Council provider 응답 수신"
+                  : event.event === "council_provider_call_timeout"
+                    ? "Council provider 타임아웃 감지"
+                    : "Council provider 오류 감지",
+          },
+        }));
+        setCouncilActivity((prev) =>
+          pushCouncilActivity(prev, {
+            id: `provider:${event.event}:${event.round}:${event.layer ?? ""}:${councilStage}:${persona}:${providerRoute}:${provider}:${elapsedSec ?? timeoutSec ?? ""}`,
+            kind:
+              event.event === "council_provider_call_start"
+                ? "provider_call_start"
+                : event.event === "council_provider_call_done"
+                  ? "provider_call_done"
+                  : event.event === "council_provider_call_timeout"
+                    ? "provider_call_timeout"
+                    : "provider_call_error",
+            round: event.round,
+            layer: String(event.layer ?? ""),
+            persona,
+            councilStage,
+            providerRoute: providerRoute || undefined,
+            provider: provider || undefined,
+            model: model || undefined,
+            responseChars: Number(event.response_chars ?? 0) || undefined,
+            elapsedSec,
+            timeoutSec,
+            errorClass: errorClass || undefined,
+            text: errorText || undefined,
+          }),
+        );
+        return;
+      }
+
       if (event.event === "report_chunk" && runId) {
         const chunk = String(event.markdown ?? event.delta ?? "");
         const key = chunk.trim();
         if (!key || finalReportReceivedRef.current || chunkKeysRef.current.has(key)) return;
         chunkKeysRef.current.add(key);
+        setStages((prev) => ({
+          ...prev,
+          report: {
+            ...prev.report,
+            status: prev.report.status === "completed" ? "completed" : "active",
+            startedAt: prev.report.startedAt ?? Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: `report_chunk · ${event.chapter_no ?? event.title ?? "chapter"}`,
+            message: "보고서 chunk 수신",
+          },
+        }));
         setReportPreview((prev) => {
           const next = `${prev}${prev ? "\n\n" : ""}${chunk}`;
           try {
@@ -851,6 +1407,18 @@ export default function RunProgress() {
         const chapterCount = (event.chapter_count as number) || 0;
         finalReportReceivedRef.current = true;
         chunkKeysRef.current.clear();
+        setStages((prev) => ({
+          ...prev,
+          report: {
+            ...prev.report,
+            status: "completed",
+            completedAt: Date.now(),
+            durationMs: prev.report.startedAt ? Date.now() - prev.report.startedAt : prev.report.durationMs,
+            lastEventAt: Date.now(),
+            lastSignal: "final_report",
+            message: "최종 보고서 수신",
+          },
+        }));
         try {
           if (markdown) localStorage.setItem(`run:${runId}:report`, markdown);
           localStorage.setItem(`run:${runId}:report_path`, reportPath);
@@ -859,7 +1427,7 @@ export default function RunProgress() {
         } catch {
           /* ignore */
         }
-        if (markdown) setReportPreview(markdown);
+        if (markdown) setFinalReport(markdown);
         return;
       }
 
@@ -876,7 +1444,12 @@ export default function RunProgress() {
                 ...next[stage],
                 status: "completed",
                 completedAt: Date.now(),
-                message: "완료",
+                durationMs: next[stage].startedAt
+                  ? Date.now() - (next[stage].startedAt ?? Date.now())
+                  : next[stage].durationMs,
+                lastEventAt: Date.now(),
+                lastSignal: "done",
+                message: "완료 · done event 수신",
               };
             }
           }
@@ -891,13 +1464,13 @@ export default function RunProgress() {
         }
         markRunDone(runId);
         setTimeout(() => {
-          if (mounted) navigate(`/report/${runId}`);
+          if (mounted) navigate(`/browser/${runId}/report`);
         }, 600);
         return;
       }
     };
 
-    onBackendEvent(handleEvent).then(async (unlisten) => {
+    onBackendEvent(handleEvent, runId).then(async (unlisten) => {
       if (!mounted) {
         unlisten();
         return;
@@ -910,7 +1483,7 @@ export default function RunProgress() {
       // even though Python is mid-run.
       let replayedEventCount = 0;
       try {
-        const history = await getBufferedEvents();
+        const history = await getBufferedEvents(runId);
         replayedEventCount = history.length;
         for (const e of history) handleEvent(e);
       } catch {
@@ -945,7 +1518,7 @@ export default function RunProgress() {
         let hasRuntimeEvidence = replayedEventCount > 0;
         try {
           const status = await getPipelineRuntimeStatus();
-          hasRuntimeEvidence = status.running;
+          hasRuntimeEvidence = Boolean(status.running && status.app_run_id === runId);
           setRuntimeEvidence((prev) => ({
             ...(prev ?? {}),
             childPid: status.child_pid ?? null,
@@ -959,7 +1532,7 @@ export default function RunProgress() {
         }
         if (isRunningEntry && !hasRuntimeEvidence && report && reportPath) {
           markRunDone(runId);
-          navigate(`/report/${runId}`);
+          navigate(`/browser/${runId}/report`);
           return;
         }
         const shouldRecoverStaleRun =
@@ -997,7 +1570,7 @@ export default function RunProgress() {
       let lastEventElapsedMs: number | null = null;
       try {
         const status = await getPipelineRuntimeStatus();
-        runtimeRunning = status.running;
+        runtimeRunning = Boolean(status.running && status.app_run_id === runId);
         lastEventElapsedMs = status.last_event_elapsed_ms ?? null;
         setRuntimeEvidence((prev) => ({
           ...(prev ?? {}),
@@ -1013,7 +1586,10 @@ export default function RunProgress() {
       }
       if (runtimeRunning && lastEventElapsedMs !== null && lastEventElapsedMs > 30000) {
         const seconds = Math.round(lastEventElapsedMs / 1000);
-        const message = `백엔드 이벤트가 ${seconds}초 동안 도착하지 않았습니다. 실행이 멈췄는지 확인 중입니다.`;
+        const message =
+          lastEventElapsedMs > 120000
+            ? `백엔드 이벤트가 2분 넘게 도착하지 않았습니다. 실행이 멈춘 상태일 수 있으니 필요하면 다시 시작을 눌러주세요. (${seconds}초)`
+            : `백엔드 이벤트가 ${seconds}초 동안 도착하지 않았습니다. 실행이 멈췄는지 확인 중입니다.`;
         setRunWarnings((prev) => [message, ...prev.filter((item) => item !== message)].slice(0, 3));
         return;
       }
@@ -1023,7 +1599,7 @@ export default function RunProgress() {
       const reportPath = localStorage.getItem(`run:${runId}:report_path`);
       if (report && reportPath) {
         markRunDone(runId);
-        navigate(`/report/${runId}`);
+        navigate(`/browser/${runId}/report`);
         return;
       }
 
@@ -1055,7 +1631,36 @@ export default function RunProgress() {
   }, [failRun, navigate, runError, runId]);
 
   const completedCount = STAGES.filter((s) => stages[s].status === "completed").length;
+  const activeStage = STAGES.find((s) => stages[s].status === "active");
+  const activeStageState = activeStage ? stages[activeStage] : undefined;
+  const latestStage = activeStage
+    ?? [...STAGES].reverse().find((s) => stages[s].lastEventAt || stages[s].status === "completed")
+    ?? "intake";
+  const latestStageState = stages[latestStage];
+  const liveSignalAge = signalAge(now, latestStageState.lastEventAt);
+  const liveStatusLabel = runError
+    ? "실행 중단"
+    : activeStage
+    ? "실시간 진행 중"
+    : completedCount === STAGES.length
+    ? "완료"
+    : "첫 백엔드 신호 대기";
+  const liveDetail = runError
+    ? runError
+    : activeStageState?.message || latestStageState.message || "백엔드 이벤트를 기다리는 중입니다.";
   const totalProgress = (completedCount / STAGES.length) * 100;
+  const selectedPersonaRows = browserPersonaRows(councilPersonas);
+  const runtimeRunId = runtimeEvidence?.runId;
+  const runtimeHeartbeatStage = runtimeEvidence?.heartbeatStage;
+  const desktopRuntimeStatus = runtimeEvidence ? "Observed" : "Not observed yet";
+  const liveE2eStatus =
+    runtimeRunId === runId && runtimeHeartbeatStage
+      ? "Backend run signals observed"
+      : "Not proven in this UI session";
+  const sourceAccessEvidenceStatus =
+    discoveredSources.size > 0
+      ? `${discoveredSources.size} source event${discoveredSources.size === 1 ? "" : "s"}`
+      : "Not observed yet";
 
   async function submitInterviewAnswer(answer: string, selected?: string, isOther = false) {
     if (!interviewPrompt || interviewSubmitting) return;
@@ -1122,6 +1727,30 @@ export default function RunProgress() {
     }
   }
 
+  useEffect(() => {
+    const autogoals = Boolean(import.meta.env.VITE_MUCHANIPO_AUTOSTART_TOPIC);
+    if (!autogoals || !interviewPrompt || interviewSubmitting || !runId) return;
+    const currentRunTopic = (topic || localStorage.getItem(`run:${runId}:topic`) || "").trim();
+    if (!currentRunTopic) return;
+    const key = `muchanipo:auto-answer:${runId}:${interviewPrompt.id}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+    const answer =
+      interviewPrompt.id === "Q1_research_question"
+        ? currentRunTopic
+        : `${currentRunTopic} 기준으로 핵심 정의와 범위, 현장 검증, 가격/채택, 이해관계자와 규제 맥락, 한계와 검증 가능한 근거를 균형 있게 종합해줘.`;
+    void submitInterviewAnswer(answer, "OTHER", true);
+  }, [interviewPrompt, interviewSubmitting, runId, topic]);
+
+  useEffect(() => {
+    const autogoals = Boolean(import.meta.env.VITE_MUCHANIPO_AUTOSTART_TOPIC);
+    if (!autogoals || !hitlPrompt || hitlSubmitting) return;
+    const key = `muchanipo:auto-approve:${runId}:${hitlPrompt.gate}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, "1");
+    void submitHitlDecision("approved");
+  }, [hitlPrompt, hitlSubmitting, runId]);
+
   async function abortRun() {
     if (aborting) return;
     setAborting(true);
@@ -1143,15 +1772,32 @@ export default function RunProgress() {
 
   return (
     <div className="min-h-screen px-6 py-10">
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-6xl">
         {/* Header */}
-        <div className="fade-in mb-8">
+        <div className="fade-in mb-8 border-b border-white/10 pb-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="truncate text-xl font-semibold tracking-tight text-white">
+              <p className="atlas-label mb-2">Browser</p>
+              <h1 className="display-serif truncate text-[32px] font-semibold leading-tight text-white md:text-[44px]">
                 {topic || "(주제 없음)"}
               </h1>
               <p className="mt-1 text-xs text-tertiary">{runId}</p>
+              {studioProvenance && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {studioProvenance.studioId && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-100">
+                      <span className="h-1 w-1 rounded-full bg-amber-300" />
+                      Studio {studioProvenance.studioId.slice(-6)}
+                    </span>
+                  )}
+                  {studioProvenance.studioModel && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[10px] text-sky-100">
+                      <span className="h-1 w-1 rounded-full bg-sky-300" />
+                      {studioProvenance.studioModel}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
             <button
               type="button"
@@ -1177,8 +1823,88 @@ export default function RunProgress() {
           </span>
         </div>
 
+        <div className={`fade-in mb-6 overflow-hidden rounded-lg border px-4 py-4 shadow-[var(--shadow-paper)] ${
+          runError
+            ? "border-red-500/20 bg-red-500/5"
+            : activeStage
+            ? "border-emerald-400/20 bg-emerald-400/5"
+            : "border-white/5 bg-white/[0.02]"
+        }`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                {!runError && activeStage && (
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-60" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-300" />
+                  </span>
+                )}
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-secondary">
+                  Run
+                </span>
+                <span className={`min-w-[120px] max-w-[160px] truncate rounded-full border px-2 py-0.5 text-center font-mono text-[10px] uppercase tracking-[0.08em] ${
+                  runError
+                    ? "border-red-400/20 bg-red-400/10 text-red-200"
+                    : activeStage
+                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                    : "border-white/10 bg-black/20 text-tertiary"
+                }`}>
+                  {liveStatusLabel}
+                </span>
+              </div>
+              <p className="break-words text-sm leading-relaxed text-white">
+                {STAGE_LABEL[latestStage]} · {liveDetail}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-tertiary">
+                {latestStageState.lastSignal && (
+                  <span className="font-mono">signal {latestStageState.lastSignal}</span>
+                )}
+                {liveSignalAge && <span>last signal {liveSignalAge} 전</span>}
+                {runtimeEvidence?.lastEventElapsedMs !== undefined && runtimeEvidence.lastEventElapsedMs !== null && (
+                  <span>backend event age {formatElapsed(runtimeEvidence.lastEventElapsedMs)}</span>
+                )}
+                {runtimeEvidence?.runtimeAgeMs !== undefined && runtimeEvidence.runtimeAgeMs !== null && (
+                  <span>runtime age {formatElapsed(runtimeEvidence.runtimeAgeMs)}</span>
+                )}
+              </div>
+            </div>
+            <div className="shrink-0 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-right">
+              <p className="font-mono text-lg text-white">{completedCount}/{STAGES.length}</p>
+              <p className="text-[10px] uppercase tracking-wider text-tertiary">steps done</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="fade-in mb-6 rounded-lg border border-white/5 bg-white/[0.02] px-4 py-3 shadow-[var(--shadow-paper)]">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                Desktop/live evidence
+              </p>
+              <h2 className="mt-1 text-sm font-medium text-white">Evidence gap surface</h2>
+            </div>
+            <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 font-mono text-[10px] text-tertiary">
+              run scoped
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Desktop runtime</p>
+              <p className="mt-1 text-xs text-white">{desktopRuntimeStatus}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Live e2e</p>
+              <p className="mt-1 text-xs text-white">{liveE2eStatus}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Source access</p>
+              <p className="mt-1 text-xs text-white">{sourceAccessEvidenceStatus}</p>
+            </div>
+          </div>
+        </div>
+
         {runtimeEvidence && (
-          <div className={`fade-in mb-6 rounded-xl border px-4 py-3 ${
+          <div className={`fade-in mb-6 rounded-lg border px-4 py-3 ${
             runtimeEvidence.stalled
               ? "border-amber-400/20 bg-amber-400/5"
               : "border-white/5 bg-white/[0.02]"
@@ -1218,9 +1944,49 @@ export default function RunProgress() {
           </div>
         )}
 
+        <div className="fade-in mb-6 rounded-lg border border-white/5 bg-white/[0.02] p-4 shadow-[var(--shadow-paper)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                Selected personas
+              </p>
+              <h2 className="mt-1 text-sm font-medium text-white">Persona provenance</h2>
+            </div>
+            <span className="min-w-[86px] rounded-full border border-white/10 bg-black/20 px-2 py-1 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-tertiary">
+              Provenance
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {selectedPersonaRows.map((persona) => (
+              <div
+                key={persona.id}
+                className="rounded-lg border border-white/10 bg-black/20 px-3 py-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-white">{persona.name}</p>
+                    <p className="mt-1 text-xs leading-5 text-secondary">{persona.role}</p>
+                  </div>
+                  <span className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[10px] text-tertiary">
+                    Source
+                  </span>
+                </div>
+                <p className="mt-2 break-words font-mono text-[10px] leading-5 text-tertiary">
+                  {persona.provenance}
+                </p>
+                <p className="mt-1 text-[11px] leading-5 text-tertiary">{persona.note}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="fade-in mb-6">
+          <PersonaPoolCard pool={personaPool} />
+        </div>
+
         {/* Run error banner */}
         {runError && (
-          <div className="fade-in mb-6 flex items-start justify-between gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
+          <div className="fade-in mb-6 flex items-start justify-between gap-4 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
             <p className="break-all text-sm text-red-300">{runError}</p>
             <div className="flex shrink-0 items-center gap-2">
               <button
@@ -1242,7 +2008,7 @@ export default function RunProgress() {
         )}
 
         {runWarnings.length > 0 && !runError && (
-          <div className="fade-in mb-6 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3">
+          <div className="fade-in mb-6 rounded-lg border border-amber-400/20 bg-amber-400/5 px-4 py-3">
             <p className="mb-1 text-xs font-medium uppercase tracking-wider text-amber-200">
               실행 경고
             </p>
@@ -1256,7 +2022,7 @@ export default function RunProgress() {
 
         {/* Inline HITL approval card */}
         {hitlPrompt && (
-          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-4">
+          <div className="fade-in mb-6 overflow-hidden rounded-lg border border-amber-400/20 bg-amber-400/5 px-4 py-4">
             <div className="mb-3 flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-200">
@@ -1274,10 +2040,31 @@ export default function RunProgress() {
               </span>
             </div>
 
-            {hitlPrompt.preview && (
+            {hitlPrompt.gate === "evidence" && (
+              <div className="mb-3">
+                <EvidenceIndexPanel
+                  evidenceRefs={hitlEvidenceRefs(hitlPrompt)}
+                  compact
+                  title="검토할 근거"
+                />
+              </div>
+            )}
+
+            {hitlPrompt.preview && hitlPrompt.gate !== "evidence" && (
               <pre className="mb-3 max-h-64 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-secondary">
                 {hitlPrompt.preview}
               </pre>
+            )}
+
+            {hitlPrompt.preview && hitlPrompt.gate === "evidence" && (
+              <details className="mb-3 rounded-lg border border-white/10 bg-black/15 px-3 py-2">
+                <summary className="cursor-pointer text-xs text-secondary transition hover:text-white">
+                  원본 evidence payload 보기
+                </summary>
+                <pre className="mt-2 max-h-44 max-w-full overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-tertiary">
+                  {hitlPrompt.preview}
+                </pre>
+              </details>
             )}
 
             {hitlPrompt.gate === "plan" && planReviewEdits && (
@@ -1316,7 +2103,7 @@ export default function RunProgress() {
         )}
 
         {interviewArtifacts && (
-          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+          <div className="fade-in mb-6 overflow-hidden rounded-lg border border-white/10 bg-white/[0.03] px-4 py-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
@@ -1367,7 +2154,7 @@ export default function RunProgress() {
 
         {/* Inline HITL/interview answer card */}
         {interviewPrompt && (
-          <div className="fade-in mb-6 overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4">
+          <div className="fade-in mb-6 overflow-hidden rounded-lg border border-white/10 bg-white/[0.03] px-4 py-4">
             <div className="mb-3 flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
@@ -1379,6 +2166,31 @@ export default function RunProgress() {
                 <h2 className="mt-1 whitespace-pre-wrap text-sm font-medium leading-relaxed text-white">
                   {interviewPrompt.text}
                 </h2>
+                {interviewPrompt.counselling && (
+                  <div className="mt-3 rounded-lg border border-sky-400/15 bg-sky-400/5 px-3 py-2 text-[11px] leading-relaxed text-sky-100">
+                    <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wider text-sky-200/80">
+                      <span className="font-semibold">Deep Interview</span>
+                      {interviewPrompt.counselling.mode && <span>{interviewPrompt.counselling.mode}</span>}
+                      {interviewPrompt.counselling.provider && <span>{interviewPrompt.counselling.provider}</span>}
+                    </div>
+                    {interviewPrompt.counselling.rationale && (
+                      <p className="text-sky-100/90">{interviewPrompt.counselling.rationale}</p>
+                    )}
+                    {interviewPrompt.counselling.referenceInsights.length > 0 && (
+                      <p className="mt-1 text-sky-100/75">
+                        참고자료 단서: {interviewPrompt.counselling.referenceInsights.slice(0, 3).join(" · ")}
+                      </p>
+                    )}
+                    {interviewPrompt.counselling.assumptionsToTest.length > 0 && (
+                      <p className="mt-1 text-sky-100/75">
+                        검증할 가정: {interviewPrompt.counselling.assumptionsToTest.slice(0, 2).join(" · ")}
+                      </p>
+                    )}
+                    {interviewPrompt.counselling.prdImpact && (
+                      <p className="mt-1 text-sky-100/60">해석 반영: {interviewPrompt.counselling.prdImpact}</p>
+                    )}
+                  </div>
+                )}
               </div>
               <span className="shrink-0 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] text-amber-200">
                 {interviewSubmitting ? "다음 질문 대기" : "대기 중"}
@@ -1420,39 +2232,145 @@ export default function RunProgress() {
               </pre>
             )}
 
-            {interviewPrompt.options.length > 0 && (
-              <div className="mb-3 grid gap-2 sm:grid-cols-2">
-                {interviewPrompt.options.map((option) => (
-                  <button
-                    key={`${option.key}:${option.value}`}
-                    type="button"
-                    disabled={interviewSubmitting}
-                    onClick={() => {
-                      if (interviewPrompt.multiSelect) {
-                        setInterviewSelections((prev) =>
-                          prev.includes(option.value)
-                            ? prev.filter((item) => item !== option.value)
-                            : [...prev, option.value],
-                        );
-                      } else {
-                        void submitInterviewAnswer(option.value, option.key);
-                      }
-                    }}
-                    className={`rounded-lg border px-3 py-2 text-left text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                      interviewSelections.includes(option.value)
-                        ? "border-white/30 bg-white/10 text-white"
-                        : "border-white/10 bg-black/20 text-secondary hover:border-white/25 hover:bg-white/5 hover:text-white"
-                    }`}
-                  >
-                    <span className="mr-2 font-mono text-white">{option.key}</span>
-                    <span className="font-medium">{option.label}</span>
-                    {option.description && (
-                      <span className="mt-1 block text-[11px] leading-relaxed text-tertiary">
-                        {option.description}
-                      </span>
+            {activeDeepInterviewPrompt && (
+              <div className="mb-3 grid gap-2 md:grid-cols-2">
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">
+                    Unknowns board
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {unknownDimensions.length > 0 ? (
+                      unknownDimensions.map((dimension) => (
+                        <span
+                          key={dimension}
+                          className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-100"
+                        >
+                          {dimension}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[11px] text-secondary">No unresolved dimensions reported.</span>
                     )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">
+                    Ontology map seed
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(ontologyNodes.length > 0 ? ontologyNodes : ["entity", "relation", "boundary"]).map((node) => (
+                      <span
+                        key={node}
+                        className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[10px] text-sky-100"
+                      >
+                        {node}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-tertiary">
+                    This turn should stabilize entities, relations, triggers, constraints, or evidence boundaries.
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">
+                    Answer assimilation
+                  </p>
+                  <p className="mt-2 text-[11px] leading-relaxed text-secondary">
+                    {interviewPrompt.counselling?.prdImpact ||
+                      "Your answer will update the working interpretation before research, evidence, and council stages continue."}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">
+                    Capability graph
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-secondary">
+                    <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">Ambiguity gate</span>
+                    <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">Source grounding</span>
+                    <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">Council handoff</span>
+                    <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">Report contract</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {interviewPrompt.allowOther && (
+              <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                  Socratic answer
+                </label>
+                <textarea
+                  value={interviewAnswer}
+                  disabled={interviewSubmitting}
+                  onChange={(event) => setInterviewAnswer(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                      void submitInterviewAnswer(interviewAnswer, "OTHER", true);
+                    }
+                  }}
+                  placeholder="자연어로 답변하세요. 보존하려는 개체, 행위자, 트리거, 제외 의미, 제약, 또는 근거 경계를 적어주세요."
+                  rows={4}
+                  className="min-h-24 w-full resize-y rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm leading-relaxed text-white placeholder-tertiary outline-none transition focus:border-white/30 focus:bg-black/40"
+                />
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] text-tertiary">⌘/Ctrl + Enter로 전송 · 답변이 정리되어 리서치가 계속됩니다</p>
+                  <button
+                    type="button"
+                    disabled={interviewSubmitting || !interviewAnswer.trim()}
+                    onClick={() => submitInterviewAnswer(interviewAnswer, "OTHER", true)}
+                    className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {interviewSubmitting ? "전송 중" : "답변 전송"}
                   </button>
-                ))}
+                </div>
+              </div>
+            )}
+
+            {(() => {
+              return !activeDeepInterviewPrompt && interviewPrompt.options.length > 0;
+            })() && (
+              <div className="mb-3 rounded-xl border border-white/5 bg-white/[0.02] p-3">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                  추천 답변 초안
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {interviewPrompt.options.map((option) => (
+                    <button
+                      key={`${option.key}:${option.value}`}
+                      type="button"
+                      disabled={interviewSubmitting}
+                      onClick={() => {
+                        if (interviewPrompt.multiSelect) {
+                          setInterviewSelections((prev) =>
+                            prev.includes(option.value)
+                              ? prev.filter((item) => item !== option.value)
+                              : [...prev, option.value],
+                          );
+                        } else {
+                          setInterviewSelections([option.value]);
+                          setInterviewAnswer(option.description ? `${option.label}\n${option.description}` : option.label || option.value);
+                          setInterviewError(null);
+                        }
+                      }}
+                      className={`rounded-lg border px-3 py-2 text-left text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        interviewSelections.includes(option.value)
+                          ? "border-white/30 bg-white/10 text-white"
+                          : "border-white/10 bg-black/20 text-secondary hover:border-white/25 hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <span className="mr-2 font-mono text-white">{option.key}</span>
+                      <span className="font-medium">{option.label}</span>
+                      {option.description && (
+                        <span className="mt-1 block text-[11px] leading-relaxed text-tertiary">
+                          {option.description}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1469,42 +2387,40 @@ export default function RunProgress() {
               </div>
             )}
 
-            {interviewPrompt.allowOther && (
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input
-                  value={interviewAnswer}
-                  disabled={interviewSubmitting}
-                  onChange={(event) => setInterviewAnswer(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void submitInterviewAnswer(interviewAnswer, "OTHER", true);
-                  }}
-                  placeholder="직접 답변 입력"
-                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white placeholder-tertiary outline-none transition focus:border-white/30 focus:bg-black/30"
-                />
-                <button
-                  type="button"
-                  disabled={interviewSubmitting}
-                  onClick={() => submitInterviewAnswer(interviewAnswer, "OTHER", true)}
-                  className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {interviewSubmitting ? "전송 중" : "답변 전송"}
-                </button>
-              </div>
-            )}
-
             {interviewError && (
               <p className="mt-2 break-all text-xs text-red-300">{interviewError}</p>
             )}
           </div>
         )}
 
-        {/* Stage list (vertical, ChatGPT-style minimalist) */}
-        <ul className="space-y-px overflow-hidden rounded-xl border border-white/5">
+        {/* Source discovery panel — live accumulated evidence inventory */}
+        {(discoveredSources.size > 0 || knowledgeGaps.length > 0) && (
+          <div className="fade-in mb-6 overflow-hidden rounded-lg border border-white/5 bg-white/[0.02] shadow-[var(--shadow-paper)]">
+            <SourceDiscoveryPanel
+              sources={Array.from(discoveredSources.values()).sort(
+                (a, b) => b.firstSeenAt - a.firstSeenAt,
+              )}
+              gaps={knowledgeGaps}
+              compact
+            />
+          </div>
+        )}
+
+        {/* Stage list (vertical, minimalist) */}
+        <ul className="space-y-px overflow-hidden rounded-lg border border-white/5 shadow-[var(--shadow-paper)]">
           {STAGES.map((stage) => {
             const state = stages[stage];
             const isActive = state.status === "active";
             const isCompleted = state.status === "completed";
             const isError = state.status === "error";
+            const lastSignalAge = signalAge(now, state.lastEventAt);
+            const proofTone = isActive
+              ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+              : isCompleted
+              ? "border-white/10 bg-black/20 text-tertiary"
+              : isError
+              ? "border-red-400/20 bg-red-400/10 text-red-200"
+              : "border-white/5 bg-black/10 text-tertiary";
 
             return (
               <li
@@ -1554,6 +2470,53 @@ export default function RunProgress() {
                       Round <span className="font-mono text-white">{councilRound}</span> / 10
                     </p>
                   )}
+                  {(state.message || state.lastSignal) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span className={`min-w-[72px] text-center rounded-full border px-2 py-0.5 text-[10px] ${proofTone}`}>
+                        {isActive
+                          ? "실행 중"
+                          : isCompleted
+                          ? "완료"
+                          : isError
+                          ? "오류"
+                          : "대기"}
+                      </span>
+                      {state.lastSignal && (
+                        <span className="min-w-0 max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2 py-0.5 font-mono text-[10px] text-secondary">
+                          {state.lastSignal}
+                          {lastSignalAge ? ` · ${lastSignalAge} 전` : ""}
+                        </span>
+                      )}
+                      {state.message && (
+                        <span className="min-w-0 max-w-full truncate text-[11px] text-tertiary">
+                          {state.message}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {state.referenceProjects && state.referenceProjects.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {state.referenceProjects.slice(0, 5).map((project) => (
+                        <span
+                          key={project}
+                          className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] text-secondary"
+                        >
+                          {project}
+                        </span>
+                      ))}
+                      {state.referenceProjects.length > 5 && (
+                        <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-tertiary">
+                          +{state.referenceProjects.length - 5}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {state.artifactKeys && state.artifactKeys.length > 0 && (
+                    <p className="mt-1 truncate font-mono text-[10px] text-tertiary">
+                      artifacts: {state.artifactKeys.slice(0, 8).join(" · ")}
+                      {state.artifactKeys.length > 8 ? ` · +${state.artifactKeys.length - 8}` : ""}
+                    </p>
+                  )}
                   {stage === "council" && councilActivity.length > 0 && (
                     <div className="mt-2 space-y-2">
                       {councilPersonas.length > 0 && (
@@ -1589,6 +2552,14 @@ export default function RunProgress() {
                                     ? `라운드 시작 · ${item.layer}`
                                     : item.kind === "round_done"
                                     ? `라운드 완료 · ${item.layer}`
+                                    : item.kind === "provider_call_start"
+                                      ? `호출 시작 · ${stageLabel}${item.round ? ` · R${item.round}` : ""}`
+                                      : item.kind === "provider_call_done"
+                                        ? `호출 완료 · ${stageLabel}${item.round ? ` · R${item.round}` : ""}`
+                                        : item.kind === "provider_call_timeout"
+                                          ? `타임아웃 · ${stageLabel}${item.round ? ` · R${item.round}` : ""}`
+                                          : item.kind === "provider_call_error"
+                                            ? `오류 · ${stageLabel}${item.round ? ` · R${item.round}` : ""}`
                                     : `${stageLabel}${item.round ? ` · R${item.round}` : ""}`}
                                 </span>
                                 {item.score !== undefined && (
@@ -1634,6 +2605,30 @@ export default function RunProgress() {
                                   {item.text}
                                 </p>
                               )}
+                              {(item.kind === "provider_call_start" ||
+                                item.kind === "provider_call_done" ||
+                                item.kind === "provider_call_timeout" ||
+                                item.kind === "provider_call_error") && (
+                                <div className="mt-1 space-y-1 text-xs leading-relaxed text-secondary">
+                                  <p>
+                                    {item.providerRoute ? `route ${item.providerRoute}` : "provider route unavailable"}
+                                    {item.provider ? ` · provider ${item.provider}` : ""}
+                                    {item.model ? ` · ${item.model}` : ""}
+                                  </p>
+                                  <p className="text-[11px] text-tertiary">
+                                    {item.persona ? compactPersonaName(item.persona) : "persona"}
+                                    {item.timeoutSec !== undefined ? ` · timeout ${item.timeoutSec}s` : ""}
+                                    {item.elapsedSec !== undefined ? ` · elapsed ${item.elapsedSec}s` : ""}
+                                    {item.responseChars ? ` · ${item.responseChars} chars` : ""}
+                                    {item.errorClass ? ` · ${item.errorClass}` : ""}
+                                  </p>
+                                  {item.text && (
+                                    <p className="break-words text-[11px] leading-relaxed text-tertiary">
+                                      {item.text}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1649,7 +2644,17 @@ export default function RunProgress() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] uppercase tracking-wider text-tertiary">
-                              {item.status === "source_found" ? "출처 확인" : "검색 중"}
+                              {item.status === "source_found"
+                                ? "출처 확인"
+                                : item.status === "source_evaluated"
+                                  ? item.accepted === false
+                                    ? "출처 거절"
+                                    : "출처 채택"
+                                  : item.status === "knowledge_gap"
+                                    ? "근거 gap"
+                                    : item.status === "facet_summary"
+                                      ? "Facet 요약"
+                                      : "검색 중"}
                               {item.queryIndex && item.queryCount
                                 ? ` · ${item.queryIndex}/${item.queryCount}`
                                 : ""}
@@ -1660,7 +2665,7 @@ export default function RunProgress() {
                               </span>
                             )}
                           </div>
-                          {item.status === "source_found" ? (
+                          {item.status === "source_found" || item.status === "source_evaluated" ? (
                             <>
                               <p className="mt-1 truncate text-xs text-secondary">
                                 {item.sourceTitle || "로컬/내부 근거"}
@@ -1670,12 +2675,39 @@ export default function RunProgress() {
                                   {item.sourceUrl}
                                 </p>
                               )}
+                              {item.status === "source_evaluated" && (
+                                <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-tertiary">
+                                  {item.sourceKind && <span>kind: {item.sourceKind}</span>}
+                                  {item.facetIds && item.facetIds.length > 0 && (
+                                    <span>facets: {item.facetIds.join(", ")}</span>
+                                  )}
+                                  {item.relevanceScore !== undefined && (
+                                    <span>relevance: {Math.round(item.relevanceScore * 100)}%</span>
+                                  )}
+                                </div>
+                              )}
+                              {item.reason && (
+                                <p className="mt-1 break-words text-[11px] leading-relaxed text-tertiary">
+                                  {item.reason}
+                                </p>
+                              )}
                               {item.query && (
                                 <p className="mt-1 break-words text-[11px] leading-relaxed text-tertiary">
                                   {item.query}
                                 </p>
                               )}
                             </>
+                          ) : item.status === "knowledge_gap" ? (
+                            <div className="mt-1 space-y-1 text-xs leading-relaxed text-secondary">
+                              <p>{item.message || "필수 facet 근거가 부족합니다."}</p>
+                              <p className="text-[11px] text-tertiary">
+                                {item.facetId || "facet"}: {item.acceptedCount ?? 0}/{item.minAcceptedSources ?? "?"} accepted sources
+                              </p>
+                            </div>
+                          ) : item.status === "facet_summary" ? (
+                            <p className="mt-1 break-words text-xs leading-relaxed text-secondary">
+                              근거 facet 요약 완료 · gaps {item.gapCount ?? 0}
+                            </p>
                           ) : (
                             <p className="mt-1 break-words text-xs leading-relaxed text-secondary">
                               {item.query}
@@ -1696,15 +2728,46 @@ export default function RunProgress() {
           })}
         </ul>
 
-        {/* Live report preview */}
-        {reportPreview && (
-          <div className="fade-in mt-8 rounded-xl border border-white/5 bg-white/[0.02] p-4">
+        {/* Report preview */}
+        {reportPreview && !finalReport && (
+          <div className="fade-in mt-8 rounded-lg border border-white/5 bg-white/[0.02] p-4 shadow-[var(--shadow-paper)]">
             <p className="mb-3 text-[11px] uppercase tracking-wider text-tertiary">
-              Live report preview
+              Report preview
             </p>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-secondary">
-              {reportPreview}
-            </pre>
+            <div className="space-y-3">
+              <EvidenceIndexPanel markdown={reportPreview} compact title="보고서 근거 요약" />
+              <details className="rounded-lg border border-white/10 bg-black/15 px-3 py-2">
+                <summary className="cursor-pointer text-xs text-secondary transition hover:text-white">
+                  원본 Markdown 보기
+                </summary>
+                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-tertiary">
+                  {reportPreview}
+                </pre>
+              </details>
+            </div>
+          </div>
+        )}
+
+        {/* Final report */}
+        {finalReport && (
+          <div className="fade-in mt-8 rounded-lg border border-emerald-500/10 bg-emerald-500/[0.02] p-4 shadow-[var(--shadow-paper)]">
+            <p className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-emerald-200">
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Final report
+            </p>
+            <div className="space-y-3">
+              <EvidenceIndexPanel markdown={finalReport} compact title="보고서 근거 요약" />
+              <details className="rounded-lg border border-white/10 bg-black/15 px-3 py-2">
+                <summary className="cursor-pointer text-xs text-secondary transition hover:text-white">
+                  원본 Markdown 보기
+                </summary>
+                <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-tertiary">
+                  {finalReport}
+                </pre>
+              </details>
+            </div>
           </div>
         )}
 
@@ -1714,7 +2777,7 @@ export default function RunProgress() {
             <p className="mb-3 text-[11px] uppercase tracking-wider text-tertiary">
               Council activity
             </p>
-            <div className="space-y-px overflow-hidden rounded-xl border border-white/5">
+            <div className="space-y-px overflow-hidden rounded-lg border border-white/5">
               {tokenCards.map((card, idx) => (
                 <div
                   key={idx}

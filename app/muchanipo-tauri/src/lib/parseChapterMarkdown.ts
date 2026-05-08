@@ -36,7 +36,7 @@ export function parseChapterMarkdown(md: string): Chapter[] {
     let m;
     while ((m = regex.exec(md)) !== null) {
       const no = parseInt(m[1], 10);
-      const title = m[2].trim();
+      const title = cleanChapterTitle(m[2]);
       const content = m[3];
       chapters.push(parseBlock(no, content, title));
     }
@@ -55,7 +55,7 @@ function parseBlock(
   // Title from first line if not overridden
   let title = overrideTitle || "";
   if (!title && lines[0]) {
-    title = lines[0].replace(/^#+\s*/, "").trim();
+    title = cleanChapterTitle(lines[0].replace(/^#+\s*/, ""));
   }
 
   // Lead claim: first **bold** line
@@ -75,11 +75,11 @@ function parseBlock(
 
   // Source layers: `_Sources: ...` or `Sources: ...`
   let source_layers: string[] = [];
-  const sourceMatch = body.match(/\*?\*?_?Sources?:?_?\*?\*?\s*([\s\S]+?)(?=\n{2,}|\n##|$)/i);
+  const sourceMatch = body.match(/^\s*\*?\*?_?Sources?:?_?\*?\*?\s*([\s\S]+?)(?=\n{2,}|\n##|$)/im);
   if (sourceMatch) {
     source_layers = sourceMatch[1]
       .split(/[,;]/)
-      .map((s) => s.trim())
+      .map(cleanSourceLayer)
       .filter(Boolean);
   }
 
@@ -104,4 +104,16 @@ function parseBlock(
     source_layers,
     scr,
   };
+}
+
+function cleanChapterTitle(value: string): string {
+  return value.replace(/^\s*[:\-·–—]\s*/, "").trim();
+}
+
+function cleanSourceLayer(value: string): string {
+  return value
+    .trim()
+    .replace(/^[_*`]+/, "")
+    .replace(/[_*`]+$/, "")
+    .trim();
 }

@@ -3,7 +3,13 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChapterCard from "../components/ChapterCard";
+import EvidenceIndexPanel from "../components/EvidenceIndexPanel";
+import SourceDiscoveryPanel, {
+  type DiscoveredSource,
+  type KnowledgeGap,
+} from "../components/SourceDiscoveryPanel";
 import { parseChapterMarkdown } from "../lib/parseChapterMarkdown";
+import { parseEvidenceIndex } from "../lib/reportPresentation";
 import {
   getBufferedEvents,
   onBackendEvent,
@@ -17,6 +23,8 @@ export default function ReportView() {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [showRaw, setShowRaw] = useState(false);
   const [topic, setTopic] = useState<string>("");
+  const [discoveredSources, setDiscoveredSources] = useState<DiscoveredSource[]>([]);
+  const [knowledgeGaps, setKnowledgeGaps] = useState<KnowledgeGap[]>([]);
   const chunkKeysRef = useRef<Set<string>>(new Set());
   const finalReportReceivedRef = useRef(false);
 
@@ -60,17 +68,41 @@ export default function ReportView() {
       const md = localStorage.getItem(`run:${runId}:report`) || "";
       applyMarkdown(md);
       setTopic(localStorage.getItem(`run:${runId}:topic`) || "");
+      const rawSources = localStorage.getItem(`run:${runId}:sources`);
+      if (rawSources) {
+        const parsed = JSON.parse(rawSources) as [string, DiscoveredSource][];
+        setDiscoveredSources(Array.from(new Map(parsed).values()).sort((a, b) => b.firstSeenAt - a.firstSeenAt));
+      } else if (md) {
+        const parsed = parseEvidenceIndex(md);
+        if (parsed.sources.length > 0) {
+          setDiscoveredSources(
+            parsed.sources.map(
+              (src, index): DiscoveredSource => ({
+                key: src.id || `report-source-${index}`,
+                title: src.title,
+                url: src.url,
+                grade: src.grade,
+                accessStatus: src.accessStatus,
+                status: "accepted",
+                firstSeenAt: 0,
+              }),
+            ),
+          );
+        }
+      }
+      const rawGaps = localStorage.getItem(`run:${runId}:gaps`);
+      if (rawGaps) setKnowledgeGaps(JSON.parse(rawGaps) as KnowledgeGap[]);
     } catch {
       /* ignore */
     }
-    onBackendEvent(handleEvent).then(async (cleanup) => {
+    onBackendEvent(handleEvent, runId).then(async (cleanup) => {
       if (!mounted) {
         cleanup();
         return;
       }
       unlisten = cleanup;
       try {
-        const history = await getBufferedEvents();
+        const history = await getBufferedEvents(runId);
         const finalReports = history.filter((event) => event.event === "final_report");
         const latestFinal = finalReports[finalReports.length - 1];
         if (latestFinal) {
@@ -132,29 +164,29 @@ export default function ReportView() {
   }
 
   return (
-    <div className="min-h-screen px-6 py-10">
-      <div className="mx-auto max-w-4xl">
+    <div className="report-reader min-h-screen px-6 py-8">
+      <div className="mx-auto max-w-6xl">
         {/* Header */}
-        <header className="fade-in mb-8 flex flex-col items-start justify-between gap-3 md:flex-row md:items-end">
+        <header className="fade-in mb-8 grid gap-5 border-b border-white/10 pb-6 md:grid-cols-[1fr_auto] md:items-end">
           <div>
-            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+            <p className="atlas-label mb-2">
               MBB 6-chapter report
             </p>
-            <h1 className="text-2xl font-semibold tracking-tight text-white">
+            <h1 className="display-serif max-w-4xl text-[34px] font-semibold leading-tight text-white md:text-[46px]">
               {topic || "리서치 보고서"}
             </h1>
-            <p className="mt-1 font-mono text-xs text-tertiary">{runId}</p>
+            <p className="mt-3 font-mono text-xs text-tertiary">{runId}</p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowRaw((s) => !s)}
-              className="rounded-full border border-white/10 bg-transparent px-3.5 py-1.5 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
+              className="rounded-md border border-white/10 bg-transparent px-3.5 py-2 text-xs text-secondary transition hover:bg-white/5 hover:text-white"
             >
               {showRaw ? "카드 보기" : "원본 Markdown"}
             </button>
             <button
               onClick={exportMarkdown}
-              className="rounded-full bg-white px-3.5 py-1.5 text-xs font-medium text-black transition hover:opacity-90"
+              className="rounded-md bg-white px-3.5 py-2 text-xs font-medium text-black transition hover:opacity-90"
             >
               다운로드
             </button>
@@ -162,14 +194,24 @@ export default function ReportView() {
         </header>
 
         {/* Body */}
+        {(discoveredSources.length > 0 || knowledgeGaps.length > 0) && (
+          <div className="mb-6 overflow-hidden rounded-lg border border-white/5 bg-white/[0.02] shadow-[var(--shadow-paper)]">
+            <SourceDiscoveryPanel sources={discoveredSources} gaps={knowledgeGaps} compact />
+          </div>
+        )}
+
         {showRaw ? (
-          <div className="rounded-xl border border-white/5 bg-white/[0.02] p-6">
-            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-strong:text-white prose-li:text-secondary prose-p:text-secondary">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+          <div className="space-y-4">
+            <EvidenceIndexPanel markdown={markdown} compact />
+            <div className="chapter-card p-6 md:p-8">
+              <div className="report-prose max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+              </div>
             </div>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-4">
+            <EvidenceIndexPanel markdown={markdown} compact />
             {chapters.length > 0 ? (
               chapters.map((chapter) => (
                 <ChapterCard
@@ -179,7 +221,7 @@ export default function ReportView() {
                 />
               ))
             ) : (
-              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-6">
+              <div className="chapter-card p-6">
                 <p className="text-sm text-tertiary">
                   파싱된 챕터가 없습니다. 원본 Markdown을 확인해주세요.
                 </p>

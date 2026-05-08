@@ -40,7 +40,7 @@ class InterviewPlan:
 # 핵심 차원 감지 키워드 (한국어 + 영문)
 _DIM_KEYWORDS: Dict[str, Tuple[str, ...]] = {
     "timeframe": ("최신", "2026", "2025", "지금", "현재", "올해", "이번", "분기", "now", "recent", "latest"),
-    "domain": ("한국", "한국어", "korean", "AgTech", "농가", "농업", "neobio", "MIRIVA", "의료", "농촌"),
+    "domain": ("한국", "한국어", "korean", "글로벌", "global", "산업", "도메인", "분야", "시장", "지역", "region"),
     "evaluation": ("ROI", "비용", "가격", "cost", "지표", "정량", "수치", "기준", "score", "근거"),
     "comparison": ("비교", "vs", " or ", "또는", "대신", "차이", "더 좋은"),
     "monitoring": ("지속", "장기", "쌓아", "매일", "주간", "monitor", "feed", "trend", "꾸준히", "꾸준"),
@@ -134,89 +134,62 @@ def assess(user_input: str) -> InterviewPlan:
 # Forcing questions (Phase 0b — Deep mode)
 # ---------------------------------------------------------------------------
 def forcing_questions_korean() -> List[Dict[str, str]]:
-    """아이디어를 PRD/기능명세/유저플로우 seed로 정밀화하는 6 questions.
+    """Socratic ontology extraction questions for Deep Interview.
 
-    원본 gstack /office-hours는 YC 파운더 office hours 톤이라 비즈니스 의사결정에 치우침.
-    사용자 요청에 맞춰 '리서치 brief'와 제품 기획 초안을 동시에 만드는 톤으로 재구성:
-    PRD 개요/핵심 가치/타겟 시나리오/기존 정보/기능 계층/성공 기준.
-    이 6가지가 답해지면 council이 어긋나지 않고 사용자 의도대로 진행 가능.
-
-    Claude이 사용자에게 그대로 출력해 한 번에 하나씩 답변을 받는다.
+    Internal Q1..Q6 IDs are retained for the existing brief/planning contract,
+    but visible copy must not ask a fixed PRD form. Each prompt should infer the
+    user's real ask by clarifying entities, actors, relations, triggers, signals,
+    workflows, constraints, evidence boundaries, and excluded meanings.
     """
     return [
         {
             "id": "Q1_research_question",
             "question": (
-                "**Q1 / 6 — PRD 개요: 무엇을 만들거나 검증하려는 아이디어인가요?**\n"
-                "한 문장 제품 정의와, 이번 리서치가 답해야 할 핵심 질문을 같이 적어주세요. "
-                "처음 던진 토픽보다 _한 단계 더 좁힌_ 질문이면 더 좋습니다.\n"
-                "예시:\n"
-                "- '한국 사과 농가 진단키트 가격 책정(2026 1분기 기준)'\n"
-                "- 'LangGraph vs CrewAI — multi-agent council 구축에 어느 게 더 적합한가'\n"
-                "- 'AI 에이전트 메모리 시스템 — 최근 6개월 주요 패턴'"
+                "**핵심 개체·질문**\n"
+                "이 요청에서 진짜로 고정해야 할 핵심 명사와 대상은 무엇인가요? "
+                "누가/무엇을/어떤 상태에서/어떤 신호를 근거로/어떤 행동으로 바꾸는지 "
+                "한 문장으로 좁혀주세요. 단순 주제명이 아니라 개체·행위·관계가 드러나야 합니다."
             ),
         },
         {
             "id": "Q2_purpose",
             "question": (
-                "**Q2 / 6 — 핵심 가치: 사용자가 얻는 변화는 무엇인가요?**\n"
-                "어떤 문제를 어떤 방식으로 해결하고, 답을 얻은 뒤 무엇을 결정할지 알려주세요.\n"
-                "- 의사결정 (예: 어떤 도구 도입할지)\n"
-                "- 글/문서 작성 (블로그, 보고서, 발표 자료)\n"
-                "- 학습 / 이해 (개념·맥락 파악)\n"
-                "- 추적 모니터링 (트렌드, 경쟁사)\n"
-                "- 단순 호기심"
+                "**해석 경계**\n"
+                "같은 표현이 가리킬 수 있는 서로 다른 해석을 갈라볼게요. "
+                "지금 1차로 묻는 것은 문제 구조, 판별해야 할 상태, 채택 조건, 대체 해석 중 무엇인가요? "
+                "포함할 의미와 제외 의미를 함께 적어주세요."
             ),
         },
         {
             "id": "Q3_context",
             "question": (
-                "**Q3 / 6 — 타겟 및 시나리오: 누가 어떤 상황에서 쓰나요?**\n"
-                "핵심 사용자, 실제 사용 흐름, 시장/도메인 범위를 알려주시면 페르소나·평가 기준이 그쪽에 grounded됩니다.\n"
-                "- NeoBio / AgTech / 한국 농업\n"
-                "- AI / ML / 에이전트 시스템\n"
-                "- Business strategy / 시장 분석\n"
-                "- Tech stack / 개발 도구\n"
-                "- 그 외 (자유 기술)\n"
-                "그리고 **한국 시장 specific**인지, **글로벌 일반**인지도 알려주세요."
+                "**행위자·트리거·워크플로우**\n"
+                "이 일이 실제로 발생하는 장면을 쪼개면, 핵심 행위자는 누구이고 어떤 트리거나 신호가 "
+                "어떤 행동과 결과로 이어지나요? 사용자-상황-신호-행동-결과 관계를 구체적으로 적어주세요."
             ),
         },
         {
             "id": "Q4_known",
             "question": (
-                "**Q4 / 6 — 배경·제약: 이미 알고 있거나 피해야 할 것은?**\n"
-                "출발점과 제약을 알면 중복 검색을 피하고 새 인사이트에 집중할 수 있어요.\n"
-                "- 들어본 키워드 / 읽은 자료\n"
-                "- 알고 있는 경쟁사 / 기술 / 솔루션\n"
-                "- 이미 검토한 옵션 / 폐기한 가설\n"
-                "- 법무·예산·일정·데이터 제약\n"
-                "없으셔도 OK — '거의 모름'이라고만 답해도 됩니다."
+                "**정의·제약·참고근거**\n"
+                "이미 알고 있다고 느끼지만 정의가 흔들리는 용어는 무엇인가요? 참고자료, 배경 지식, "
+                "제약, 폐기한 가설이 있다면 적어주세요. 리서치 전에 고정해야 할 개념 2-3개가 핵심입니다."
             ),
         },
         {
             "id": "Q5_deliverable",
             "question": (
-                "**Q5 / 6 — 기능명세 seed: 요구사항→기능→상세기능으로 쪼개면?**\n"
-                "결과물 형식과 최소 기능 단위를 같이 적어주세요. 명확할수록 council 산출물이 사용자 의도와 맞아요.\n"
-                "- 한 줄 요약 + 핵심 포인트 3-5개\n"
-                "- 비교표 (옵션 A vs B vs C)\n"
-                "- 정량 수치 + 출처 (시장 규모 / 가격 / 비율)\n"
-                "- 시간순 흐름 / 단계별 가이드\n"
-                "- 권고 / 의사결정 옵션\n"
-                "- 인사이트 정리 (학습용)\n"
-                "가능하면 '요구사항 / 기능 / 상세 기능' 형태로 적어주세요."
+                "**개념 지도·관계 구조**\n"
+                "이 요청을 개념 지도로 옮기면 어떤 엔티티, 속성, 관계, 흐름, 금지해야 할 오해가 필요할까요? "
+                "나중에 문서나 기능으로 바뀌더라도 먼저 ontology map이 안정되어야 합니다."
             ),
         },
         {
             "id": "Q6_quality",
             "question": (
-                "**Q6 / 6 — 성공 지표·검증 기준은?**\n"
-                "성공을 판단할 KPI, 리스크, 오픈 이슈, 근거 품질 기준을 정해주세요.\n"
-                "- **출처**: 학술 논문 우선 / 실무 블로그 OK / 모두 OK\n"
-                "- **깊이**: 개요(5분 읽기) / 보통(15분) / 심층(전체 디테일)\n"
-                "- **시점**: 최신만 / 최근 6개월 / 1년 / 무관\n"
-                "- **신뢰도**: citation grounding 강하게 / 단순 참고 OK\n"
-                "- **언어**: 한국어 우선 / 영문 reference OK / 모두"
+                "**증거 경계·반례 기준**\n"
+                "어떤 증거가 나오면 이 개념 정의가 맞다/틀리다고 판단할 수 있나요? "
+                "허용할 출처 범위, 최신성, 지역성, 정량 기준, 가장 강한 반례를 함께 정해주세요."
             ),
         },
     ]
@@ -527,20 +500,8 @@ def select_next_question(rubric: "InterviewRubric") -> Optional["RubricItem"]:
 
 
 # 토픽-맞춤 옵션 보정 휴리스틱 (LLM 호출 없이)
-_DOMAIN_HINTS: Dict[str, Tuple[str, ...]] = {
-    "agtech": ("농가", "농업", "AgTech", "MIRIVA", "병원체", "작물", "과수"),
-    "ai_agent": ("에이전트", "agent", "council", "LLM", "GPT", "Claude"),
-    "biotech": ("진단", "프로브", "형광", "biomarker", "분자", "lab-in-the-loop"),
-    "saas": ("SaaS", "구독", "ARR", "MRR", "churn"),
-}
-
-
-def _detect_domain(topic: str) -> str:
-    lowered = (topic or "").lower()
-    for dom, kws in _DOMAIN_HINTS.items():
-        if any(kw.lower() in lowered for kw in kws):
-            return dom
-    return "general"
+# Muchanipo는 범용 리서치 툴이므로 특정 vertical(농업/바이오/SaaS 등)을
+# 코드에 하드코딩하지 않는다. 선택지는 모든 토픽에 적용 가능한 리서치 차원만 쓴다.
 
 
 def build_question_options(
@@ -548,13 +509,12 @@ def build_question_options(
     topic: str,
     prev_answers: Optional[Mapping[str, str]] = None,
 ) -> List[Dict[str, str]]:
-    """AskUserQuestion 도구용 토픽-맞춤 선택지 생성 (show-me-the-prd 패턴).
+    """AskUserQuestion 도구용 토픽-맞춤 선택지 생성.
 
     Returns: [{"label": str, "description": str}, ...] — 마지막은 항상 "Other".
-    Q6은 Source A-D 고정. 그 외는 토픽 도메인에 맞춘 4 옵션 + Other.
+    Q6은 Source A-D를 증거 경계 옵션으로 유지한다. 그 외는 범용
+    ontology-extraction 차원 옵션 + Other.
     """
-    domain = _detect_domain(topic)
-
     # Q6: Source quality A-D 고정 (deep-research-query)
     if dim_id == "Q6_quality":
         return [
@@ -569,64 +529,40 @@ def build_question_options(
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q5 deliverable: 산출 형태 + 기능명세 seed
+    # Q5: concept map and relation structure
     if dim_id == "Q5_deliverable":
         return [
-            {"label": "Requirement → Feature → Spec 트리",
-             "description": "요구사항, 기능, 상세기능을 바로 만들 때"},
-            {"label": "1페이지 PRD 결정서",
-             "description": "핵심 숫자 + 권고 + 수용 기준"},
-            {"label": "10-20p 리서치 리포트",
-             "description": "상세 분석 + 기능/플로우 근거"},
-            {"label": "Slide deck",
-             "description": "발표/IR/보고용"},
-            {"label": "Obsidian vault 누적",
-             "description": "지속 모니터링 — autonomous_loop 자동 라우팅"},
+            {"label": "Entity / Relation map",
+             "description": "핵심 개체, 속성, 관계를 먼저 고정"},
+            {"label": "Workflow / Trigger map",
+             "description": "상황, 신호, 행동, 결과 흐름을 구조화"},
+            {"label": "Evidence boundary table",
+             "description": "허용 근거, 금지 추정, 반례 기준을 분리"},
+            {"label": "Excluded meanings list",
+             "description": "헷갈리는 용어와 의도적으로 제외할 의미"},
+            {"label": "Obsidian vault ontology",
+             "description": "누적 지식 그래프/노트로 저장"},
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q2 purpose: 핵심 가치 / 사용 목적
+    # Q2: interpretation boundary
     if dim_id == "Q2_purpose":
         return [
-            {"label": "사용자 문제 해결",
-             "description": "문제, 해결 방식, 차별점 중심"},
-            {"label": "내부 의사결정",
-             "description": "다음 액션 선택 (도구/방향/투자)"},
-            {"label": "외부 보고",
-             "description": "투자자 IR / 정부 과제 / 파트너 제안"},
-            {"label": "지속 모니터링",
-             "description": "트렌드/경쟁사 추적 (vault 누적)"},
-            {"label": "학습·이해",
-             "description": "맥락 파악 / 멘탈 모델 구축"},
+            {"label": "문제 구조 우선",
+             "description": "누가 어떤 마찰을 겪는지 정의"},
+            {"label": "판별 상태 우선",
+             "description": "무엇을 감지/분류/측정해야 하는지 정의"},
+            {"label": "채택 조건 우선",
+             "description": "누가 시간·돈·권한을 써서 받아들이는 조건"},
+            {"label": "대체 해석 비교",
+             "description": "서로 다른 개념 정의나 관점을 분리"},
+            {"label": "제외 의미 먼저",
+             "description": "이 요청이 뜻하지 않는 범위를 명시"},
             {"label": "Other", "description": "직접 입력"},
         ]
 
     # Q3 context: 도메인 범위 — domain hint 반영
     if dim_id == "Q3_context":
-        if domain == "agtech":
-            return [
-                {"label": "한국 단일 작물·병원체 한정",
-                 "description": "예: 사과 화상병"},
-                {"label": "한국 작물 전반",
-                 "description": "다 작물·다 병원체"},
-                {"label": "한국 + 글로벌 비교",
-                 "description": "일본/유럽/미국"},
-                {"label": "글로벌 일반",
-                 "description": "지역 무관"},
-                {"label": "Other", "description": "직접 입력"},
-            ]
-        if domain == "biotech":
-            return [
-                {"label": "단일 분자·플랫폼 한정",
-                 "description": "특정 프로브/타겟"},
-                {"label": "분자 클래스 전반",
-                 "description": "유사 메커니즘 군"},
-                {"label": "기술 + 시장 융합",
-                 "description": "기술 + 산업 동향"},
-                {"label": "자율과학 시스템 전반",
-                 "description": "도메인 무관 SOTA"},
-                {"label": "Other", "description": "직접 입력"},
-            ]
         return [
             {"label": "특정 산업·제품 한정", "description": "한 도메인 깊게"},
             {"label": "산업 전반", "description": "여러 도메인 비교"},
@@ -635,31 +571,35 @@ def build_question_options(
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q1 research_question: PRD 개요 / 무엇을 알아내고 싶은가
+    # Q1: core entity and question
     if dim_id == "Q1_research_question":
         return [
-            {"label": "한 문장 제품 정의",
-             "description": "PRD 개요의 one-line definition"},
-            {"label": "단일 결정·숫자",
-             "description": "1개 답 (예: 적정 가격)"},
-            {"label": "옵션 비교",
-             "description": "A vs B vs C 비교표"},
-            {"label": "구축 가능성·설계도",
-             "description": "feasibility + 아키텍처"},
+            {"label": "핵심 질문 좁히기",
+             "description": "핵심 명사와 행위 관계를 한 문장으로 고정"},
+            {"label": "행위자/대상 분리",
+             "description": "누가 무엇에 대해 움직이는지 분리"},
+            {"label": "신호/상태 정의",
+             "description": "무엇을 근거로 판단하는지 명시"},
+            {"label": "행동/결과 관계",
+             "description": "관찰 이후 어떤 행동과 결과가 이어지는지 명시"},
+            {"label": "제외 의미",
+             "description": "비슷하지만 지금 묻지 않는 범위"},
             {"label": "Other", "description": "직접 입력"},
         ]
 
-    # Q4 known: 이미 아는 것
+    # Q4: definitions, constraints, and references
     if dim_id == "Q4_known":
         return [
-            {"label": "관련 도구·솔루션 일부 파악",
-             "description": "이름·키워드 수준"},
-            {"label": "내부 데이터·노하우 보유",
-             "description": "이미 시도한 접근"},
-            {"label": "결정 일부 완료",
-             "description": "특정 옵션은 이미 폐기"},
+            {"label": "정의가 흔들리는 용어",
+             "description": "먼저 고정해야 할 명사/범주"},
+            {"label": "참고자료·배경 단서",
+             "description": "이미 본 문서, 데이터, 현장 메모"},
+            {"label": "제약·금지 범위",
+             "description": "법무, 예산, 일정, 데이터, 윤리 제약"},
+            {"label": "폐기한 가설",
+             "description": "다시 묻지 않아야 할 해석"},
             {"label": "거의 없음",
-             "description": "처음부터 매핑 필요"},
+             "description": "처음부터 개념 지도 작성 필요"},
             {"label": "Other", "description": "직접 입력"},
         ]
 

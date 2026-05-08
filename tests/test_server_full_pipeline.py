@@ -15,12 +15,59 @@ import pytest
 from src.muchanipo.server import JSONLineHITLAdapter, serve_full, _PipelineHeartbeat, _build_demo_rounds
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
 from src.report.pyramid_formatter import PyramidFormatter
-from src.runtime.live_mode import LiveModeViolation
+from src.runtime.live_mode import (
+    LiveModeViolation,
+    assert_mimo_opencode_policy_credentials,
+    mimo_opencode_live_credentials_present,
+    mimo_opencode_only_requested_from_env,
+)
 
 
 def _writable_tmp(name: str) -> Path:
     base = os.environ.get("TMPDIR") or "/tmp"
     return Path(base) / name
+
+
+def test_mimo_opencode_policy_credential_gate_uses_nonblank_approved_keys_only(monkeypatch):
+    for name in (
+        "XIAOMI_MIMO_API_KEY",
+        "MIMO_API_KEY",
+        "OPENCODE_GO_API_KEY",
+        "OPENCODE_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MUCHANIPO_VERIFICATION_ROUTING", "mimo_opencode_go_only")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-approved-for-this-policy")
+    monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "   ")
+
+    assert mimo_opencode_only_requested_from_env() is True
+    assert mimo_opencode_live_credentials_present() is False
+    with pytest.raises(LiveModeViolation, match="XIAOMI_MIMO_API_KEY"):
+        assert_mimo_opencode_policy_credentials()
+
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "oc-test")
+    assert mimo_opencode_live_credentials_present() is True
+    assert_mimo_opencode_policy_credentials()
+
+
+def test_serve_full_mimo_opencode_policy_fails_before_run_started_without_api_key(tmp_path, monkeypatch):
+    for name in ("XIAOMI_MIMO_API_KEY", "MIMO_API_KEY", "OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MUCHANIPO_VERIFICATION_ROUTING", "mimo_opencode_go_only")
+    monkeypatch.setenv("MUCHANIPO_ONLINE", "1")
+    stdout = io.StringIO()
+
+    rc = serve_full("딸기 진단키트", report_path=tmp_path / "R.md", stdout=stdout)
+
+    assert rc == 1
+    events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    assert events[0]["event"] == "error"
+    assert events[0]["kind"] == "live_mode_violation"
+    assert "mimo_opencode_go_only" in events[0]["message"]
+    assert all(event["event"] != "run_started" for event in events)
+    assert events[-1]["event"] == "done"
+    assert events[-1]["aborted"] is True
 
 
 def test_serve_full_writes_six_chapters_to_report_md(tmp_path):
@@ -48,16 +95,20 @@ def test_serve_full_emits_all_pipeline_stages(tmp_path):
     ]
 
 
-def test_serve_full_emits_runtime_identity(tmp_path):
+def test_serve_full_emits_runtime_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_APP_RUN_ID", "app-run-test-123")
     stdout = io.StringIO()
     serve_full("test topic", report_path=tmp_path / "R.md", stdout=stdout)
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     started = events[0]
+    startup = next(e for e in events if e["event"] == "phase_change" and e["phase"] == "STARTUP")
 
     assert started["event"] == "run_started"
     assert started["pipeline"] == "full"
     assert started["python_pid"] == os.getpid()
     assert started["python_executable"] == sys.executable
+    assert started["app_run_id"] == "app-run-test-123"
+    assert startup["data"]["app_run_id"] == "app-run-test-123"
     assert started["run_id"]
     assert started["started_at"]
 
@@ -207,6 +258,7 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
 
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     question_events = [e for e in events if e["event"] == "interview_question"]
+    ontology_events = [e for e in events if e["event"] == "interview_ontology_delta"]
     clarity_events = [e for e in events if e["event"] == "deep_interview_progress"]
     artifact_events = [e for e in events if e["event"] == "deep_interview_artifacts"]
     phase_events = [e for e in events if e["event"] == "phase_change" and e.get("phase") == "INTERVIEW"]
@@ -216,10 +268,12 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
         if e["event"] in {"council_round_start", "report_chunk", "done"}
     )
     first_question_index = next(i for i, e in enumerate(events) if e["event"] == "interview_question")
+    first_ontology_index = next(i for i, e in enumerate(events) if e["event"] == "interview_ontology_delta")
     first_clarity_index = next(i for i, e in enumerate(events) if e["event"] == "deep_interview_progress")
 
     assert rc == 0
     assert len(question_events) == 6
+    assert len(ontology_events) == 6
     assert clarity_events
     assert artifact_events
     assert phase_events[0]["data"]["workflow"] == "show-me-the-prd"
@@ -231,15 +285,22 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     ]
     assert phase_events[0]["data"]["workflow_research_batches"][0]["queries"]
     assert first_clarity_index < first_question_index
+    assert first_ontology_index < first_question_index
     assert clarity_events[0]["phase"] == "idea_dump"
     assert clarity_events[0]["stage"] == "intake"
     assert clarity_events[0]["ambiguity_score"] >= 0
     assert question_events[0]["q_id"] == "Q1_research_question"
-    assert question_events[0]["header"] == "PRD 개요"
-    assert question_events[0]["data"]["planning_schema"] == "prd_feature_user_flow"
+    assert question_events[0]["header"] == "핵심 개체·질문"
+    assert question_events[0]["data"]["planning_schema"] == "socratic_ontology_extraction"
     assert question_events[0]["data"]["deep_interview"]["focus_dimension"] == "Q1_research_question"
     assert question_events[0]["data"]["deep_interview"]["phase"] == "question"
-    assert "PRD overview" in question_events[0]["preview"]
+    assert question_events[0]["targets_unknown_ids"]
+    assert question_events[0]["question_quality_gate"]["passed"] is True
+    assert question_events[0]["data"]["ontology_state"]["unknowns"]
+    assert ontology_events[0]["unknowns"]
+    assert ontology_events[0]["targets_unknown_ids"] == question_events[0]["targets_unknown_ids"]
+    assert ontology_events[0]["data"]["planning_schema"] == "socratic_ontology_extraction"
+    assert "핵심 개체" in question_events[0]["preview"]
     assert question_events[0]["options"][0]["description"]
     assert any(event["phase"] == "research_batch" for event in clarity_events)
     artifact = artifact_events[0]
@@ -256,6 +317,52 @@ def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
     assert artifact["data"]["document_manifest"][0]["chars"] > 100
     assert first_question_index < first_pipeline_index
     assert calls and "answer 1" in calls[0]
+
+
+@pytest.mark.parametrize("q1_selected", ["A", "한 문장 제품 정의"])
+def test_serve_full_does_not_use_q1_format_choice_as_research_topic(tmp_path, monkeypatch, q1_selected):
+    import src.pipeline.runner as runner_mod
+
+    calls: list[str] = []
+
+    def fake_run_pipeline(topic, **kwargs):
+        calls.append(topic)
+        return {
+            "rounds": _build_demo_rounds(topic),
+            "executed_council_round_count": 1,
+            "council_turn_transcript": [],
+            "report_md": "# Report\n\n## Chapter 1\n\nbody\n",
+            "council_persona_pool_size": 1,
+            "active_council_persona_count": 1,
+        }
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+    lines = [
+        json.dumps({"action": "interview_answer", "q_id": "Q1_research_question", "selected": q1_selected}),
+        json.dumps({"action": "interview_answer", "q_id": "Q2_purpose", "answer": "학습·이해"}),
+        json.dumps({"action": "interview_answer", "q_id": "Q3_context", "answer": "데이터 사이언스 / 지식 그래프 맥락"}),
+        json.dumps({"action": "interview_answer", "q_id": "Q4_known", "answer": "온톨로지, RDF, OWL, knowledge graph"}),
+        json.dumps({"action": "interview_answer", "q_id": "Q5_deliverable", "answer": "개념 설명 리서치 리포트"}),
+        json.dumps({"action": "interview_answer", "q_id": "Q6_quality", "answer": "학술 논문 우선"}),
+    ]
+    stdin = io.StringIO("\n".join(lines) + "\n")
+    stdout = io.StringIO()
+
+    rc = serve_full(
+        "데이터 사이언스 분야에서의 온톨로지",
+        report_path=tmp_path / "R.md",
+        stdout=stdout,
+        stdin=stdin,
+        wait_for_input=True,
+    )
+
+    assert rc == 0
+    assert calls
+    assert "데이터 사이언스 분야에서의 온톨로지" in calls[0]
+    assert "한 문장 제품 정의" not in calls[0]
+    assert "[Q1_research_question]" not in calls[0]
+    assert "[Q2_purpose] 학습·이해" in calls[0]
+    assert "[Q3_context] 데이터 사이언스 / 지식 그래프 맥락" in calls[0]
 
 
 def test_serve_full_wires_jsonline_hitl_gate_when_waiting(tmp_path, monkeypatch):
@@ -372,6 +479,27 @@ def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkey
     assert events[-2]["event"] == "error"
     assert events[-2]["kind"] == "live_mode_violation"
     assert "live evidence missing" in events[-2]["message"]
+    assert events[-1] == {"event": "done", "pipeline": "full", "aborted": True}
+    assert not (tmp_path / "R.md").exists()
+
+
+def test_serve_full_emits_terminal_error_on_pipeline_exception(tmp_path, monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    def fail_pipeline(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fail_pipeline)
+    stdout = io.StringIO()
+
+    rc = serve_full("topic", report_path=tmp_path / "R.md", stdout=stdout)
+
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    assert rc == 1
+    assert events[-2]["event"] == "error"
+    assert events[-2]["kind"] == "pipeline_error"
+    assert events[-2]["error_class"] == "RuntimeError"
+    assert "provider unavailable" in events[-2]["message"]
     assert events[-1] == {"event": "done", "pipeline": "full", "aborted": True}
     assert not (tmp_path / "R.md").exists()
 

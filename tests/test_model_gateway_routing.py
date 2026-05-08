@@ -16,6 +16,25 @@ from src.execution.models import ModelResult
 from src.execution.providers.anthropic import AnthropicProvider
 
 
+_MIMO_OPENCODE_POLICY_ENVS = (
+    "MUCHANIPO_VERIFICATION_ROUTING",
+    "MUCHANIPO_LIVE_VERIFICATION_ROUTING",
+    "MUCHANIPO_MODEL_ROUTING",
+    "MUCHANIPO_API_ROUTING",
+    "MUCHANIPO_EXTERNAL_MODEL_ROUTING",
+    "MUCHANIPO_PROVIDER_ROUTING",
+    "XIAOMI_MIMO_API_KEY",
+    "MIMO_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "OPENCODE_API_KEY",
+)
+
+
+def _clear_mimo_opencode_policy_env(monkeypatch):
+    for name in _MIMO_OPENCODE_POLICY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+
+
 # ---- offline mock providers ----------------------------------------------
 
 
@@ -34,7 +53,8 @@ def test_anthropic_provider_present_in_default_set():
     assert "mock" in providers
 
 
-def test_default_providers_prefer_local_cli_when_requested():
+def test_default_providers_prefer_local_cli_when_requested(monkeypatch):
+    _clear_mimo_opencode_policy_env(monkeypatch)
     providers = build_default_providers(force_offline=False, prefer_cli=True)
 
     assert providers["anthropic"].use_cli is bool(providers["anthropic"].claude_bin)
@@ -66,11 +86,85 @@ def test_stage_routes_to_correct_primary_provider(stage, expected_primary):
     assert PRIMARY_ROUTES[stage] == expected_primary
 
 
-def test_default_gateway_routes_council_to_anthropic_class():
+def test_default_gateway_routes_council_to_anthropic_class(monkeypatch):
+    _clear_mimo_opencode_policy_env(monkeypatch)
     gw = default_gateway(force_offline=True)
     # offline mock anthropic은 raise (mock 키 없음 등) — 그러나 FallbackChain에 의해 다음 시도
     # 그래서 단순 라우팅 값만 확인
     assert gw.stage_routes["council"] == "anthropic"
+
+
+def test_mimo_opencode_only_policy_overrides_explicit_verification_routes(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.delenv("MUCHANIPO_PROVIDER_CHAIN", raising=False)
+    monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "tp-test")
+    providers = build_default_providers(prefer_cli=False)
+
+    gw = default_gateway(
+        providers=providers,
+        routes={"council": "anthropic", "report": "gemini", "utilities": "codex"},
+        fallback_chain={
+            "council": ["anthropic", "gemini", "mimo", "opencode", "mock"],
+            "report": ["gemini", "anthropic", "mimo", "mock"],
+            "utilities": ["codex", "opencode", "mock"],
+        },
+    )
+
+    assert gw.stage_routes["council"] == "mimo"
+    assert gw.stage_routes["report"] == "mimo"
+    assert gw.stage_routes["utilities"] == "opencode"
+    assert gw.fallback_chain["council"] == ["mimo", "opencode"]
+    assert gw.fallback_chain["report"] == ["mimo", "opencode"]
+    assert gw.fallback_chain["utilities"] == ["opencode"]
+
+
+def test_user_verification_routing_alias_enforces_mimo_opencode_only(monkeypatch):
+    monkeypatch.delenv("MUCHANIPO_API_ROUTING", raising=False)
+    monkeypatch.delenv("MUCHANIPO_PROVIDER_CHAIN", raising=False)
+    monkeypatch.setenv("MUCHANIPO_VERIFICATION_ROUTING", "mimo_opencode_go_only")
+    monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "tp-test")
+
+    gw = default_gateway(
+        providers=build_default_providers(prefer_cli=False),
+        routes={"council": "anthropic", "report": "gemini", "utilities": "codex"},
+        fallback_chain={
+            "council": ["anthropic", "gemini", "mimo", "opencode", "mock"],
+            "report": ["gemini", "anthropic", "mimo", "mock"],
+            "utilities": ["codex", "opencode", "mock"],
+        },
+    )
+
+    assert gw.stage_routes["council"] == "mimo"
+    assert gw.stage_routes["report"] == "mimo"
+    assert gw.stage_routes["utilities"] == "opencode"
+    assert gw.fallback_chain["council"] == ["mimo", "opencode"]
+    assert gw.fallback_chain["report"] == ["mimo", "opencode"]
+    assert gw.fallback_chain["utilities"] == ["opencode"]
+
+
+def test_mimo_opencode_only_policy_honors_explicit_opencode_only_chain(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.setenv("MUCHANIPO_PROVIDER_CHAIN", "opencode")
+
+    gw = default_gateway(
+        providers=build_default_providers(prefer_cli=False),
+        routes={"interview": "anthropic", "council": "anthropic", "report": "gemini", "utilities": "codex"},
+        fallback_chain={
+            "interview": ["anthropic", "mimo", "opencode", "mock"],
+            "council": ["anthropic", "gemini", "mimo", "opencode", "mock"],
+            "report": ["gemini", "anthropic", "mimo", "mock"],
+            "utilities": ["codex", "opencode", "mock"],
+        },
+    )
+
+    assert gw.stage_routes["interview"] == "opencode"
+    assert gw.stage_routes["council"] == "opencode"
+    assert gw.stage_routes["report"] == "opencode"
+    assert gw.stage_routes["utilities"] == "opencode"
+    assert gw.fallback_chain["interview"] == ["opencode"]
+    assert gw.fallback_chain["council"] == ["opencode"]
+    assert gw.fallback_chain["report"] == ["opencode"]
+    assert gw.fallback_chain["utilities"] == ["opencode"]
 
 
 # ---- FallbackChain primitive --------------------------------------------

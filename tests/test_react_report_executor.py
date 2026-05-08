@@ -67,6 +67,23 @@ def test_execute_react_section_calls_local_insight_and_mempalace_backends(tmp_pa
     assert result["execution_mode"] == "deterministic_tool_loop"
 
 
+def test_plan_sections_strips_meta_open_question_placeholders():
+    report = {
+        "topic": "딸기 농가용 저비용 분자진단 키트 시장성",
+        "query": "딸기 농가용 저비용 분자진단 키트 시장성",
+        "consensus": ["조건부 권고: 시장 규모 + 컨텍스트은 확보 출처 기반의 조건부 판단까지 가능하다."],
+        "dissent": "What evidence should be collected next?",
+        "recommendations": ["Resolve open question: What evidence should be collected next?"],
+        "evidence": [],
+    }
+
+    sections = react_report.plan_sections(report, max_sections=3)
+
+    assert all("What evidence should be collected next" not in section["source_text"] for section in sections)
+    assert sections[0]["search_query"].startswith("딸기 농가용 저비용 분자진단 키트 시장성")
+    assert "조건부 권고" not in sections[0]["search_query"]
+
+
 def test_execute_react_section_supports_llm_driven_react_loop(tmp_path, monkeypatch):
     fixture = tmp_path / "insight.json"
     fixture.write_text(

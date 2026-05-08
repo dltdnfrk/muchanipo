@@ -104,7 +104,7 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
     "biology": ["bio", "genome", "cell", "molecular", "protein"],
     "economics": ["economy", "market", "finance", "price", "gdp"],
     "medicine": ["medical", "clinical", "patient", "treatment", "drug"],
-    "agriculture": ["agriculture", "farm", "crop", "plant", "soil", "농업", "농가", "작물", "딸기", "과수", "스마트팜"],
+    "agriculture": ["agriculture", "farm", "crop", "plant", "soil", "농업", "농가", "작물", "스마트팜"],
     "chemistry": ["chemical", "synthesis", "reaction", "compound", "polymer"],
     "physics": ["physics", "quantum", "particle", "thermo"],
     "psychology": ["psychology", "cognitive", "behavior", "mental"],

@@ -191,3 +191,86 @@ def test_generate_large_mirofish_style_pool_without_map_elites_capping():
     assert telemetry["fallbacks_used"] == 0
     assert dmap.coverage() > 0
     assert len({p.persona_id for p in finals}) == 32
+
+
+def test_generate_records_hachimi_quota_and_simhash_dedup():
+    gen = PersonaGenerator()
+    duplicate = Draft(
+        persona_id="persona-dup-1",
+        name="Duplicate A",
+        role="evidence_reviewer",
+        intent="Evaluate cited evidence for strawberry diagnostics market adoption.",
+        allowed_tools=["read_file"],
+        required_outputs=["report"],
+        value_axes={
+            "time_horizon": "mid",
+            "risk_tolerance": 0.3,
+            "stakeholder_priority": ["primary"],
+            "innovation_orientation": 0.5,
+        },
+    )
+    near_duplicate = Draft(
+        persona_id="persona-dup-2",
+        name="Duplicate B",
+        role="evidence_reviewer",
+        intent="Evaluate cited evidence for strawberry diagnostics market adoption.",
+        allowed_tools=["read_file"],
+        required_outputs=["report"],
+        value_axes={
+            "time_horizon": "mid",
+            "risk_tolerance": 0.3,
+            "stakeholder_priority": ["primary"],
+            "innovation_orientation": 0.5,
+        },
+    )
+    distinct = Draft(
+        persona_id="persona-distinct",
+        name="Distinct",
+        role="market_analyst",
+        intent="Compare pricing, channel adoption, and institutional procurement risk.",
+        allowed_tools=["read_file"],
+        required_outputs=["report"],
+        value_axes={
+            "time_horizon": "long",
+            "risk_tolerance": 0.7,
+            "stakeholder_priority": ["secondary"],
+            "innovation_orientation": 0.8,
+        },
+    )
+
+    finals, telemetry = gen.finalize_drafts(
+        [duplicate, near_duplicate, distinct],
+        {
+            "roles": ["evidence_reviewer", "market_analyst"],
+            "allowed_tools": ["read_file"],
+            "required_outputs": ["report"],
+            "role_quotas": {
+                "evidence_reviewer": 2,
+                "market_analyst": 1,
+            },
+        },
+        target_count=3,
+        allow_fallbacks=False,
+    )
+
+    assert [persona.persona_id for persona in finals] == ["persona-dup-1", "persona-distinct"]
+    assert telemetry["quota_target"] == {"evidence_reviewer": 2, "market_analyst": 1}
+    assert telemetry["quota_actual"] == {"evidence_reviewer": 1, "market_analyst": 1}
+    assert telemetry["dedup_strategy"] == "simhash_hamming"
+    assert telemetry["dedup_removed_ids"] == ["persona-dup-2"]
+
+
+class ExplodingGateway:
+    def call(self, *args, **kwargs):
+        raise AssertionError("LLM persona proposal should be skipped")
+
+
+def test_persona_generator_can_skip_llm_proposal_for_bounded_live_liveness(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_PERSONA_LLM_PROPOSE", "skip")
+    monkeypatch.setenv("MUCHANIPO_PERSONA_LLM_DEEP_VALIDATE", "skip")
+    generator = PersonaGenerator(gateway=ExplodingGateway())
+
+    finals, telemetry = generator.generate(_ontology(), target_count=2, allow_fallbacks=False)
+
+    assert [persona.persona_id for persona in finals] == ["persona-001", "persona-002"]
+    assert telemetry["fallbacks_used"] == 0

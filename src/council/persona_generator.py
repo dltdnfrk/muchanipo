@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HACHIMI 스타일 페르소나 생성 파이프라인.
+"""HACHIMI-style persona generation pipeline.
 
 기본값은 외부 LLM 호출 없이 Propose -> Validate -> Revise 단계를 재현한다.
 GatewayV2가 주입되면 Stage 1 propose와 Stage 2 deep validate에 LLM 모드를
@@ -13,10 +13,17 @@ PRD-v2 §5.2 Neuro-Symbolic Validator 추가:
 
 PRD-v2 §5.5 EvoAgentX MAP-Elites 통합:
     - generate() 메서드가 DiversityMap을 받아 Final 단계에서 셀 점유 강제
+
+HACHIMI upstream README parity:
+    - five-agent collaboration is represented by topic/role-specific drafts
+    - two-stage validator is represented by fast validate + deep validate
+    - SimHash-style semantic deduplication runs before finalization
+    - role quota telemetry is recorded for distribution control
 """
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -147,6 +154,10 @@ class PersonaGenerator:
             gateway = None
         self.gateway = gateway
         self.risk_threshold = float(risk_threshold)
+        self._deep_validate_failures = 0
+        self._deep_validate_failure_limit = max(
+            1, int(os.environ.get("MUCHANIPO_PERSONA_DEEP_VALIDATE_FAILURE_LIMIT", 3))
+        )
 
     def propose(
         self,
@@ -233,12 +244,22 @@ class PersonaGenerator:
 
         prompt = build_persona_propose_prompt(ontology, target_count, topic)
         try:
-            result = self.gateway.call("council", prompt)
+            result = self.gateway.call(
+                "council",
+                prompt,
+                council_stage="persona_propose",
+                layer_id="persona_generation",
+                max_tokens=_persona_council_max_tokens("persona_propose"),
+            )
             raw_personas = parse_persona_proposal_response(result.text)
             drafts = self._drafts_from_llm_specs(raw_personas, ontology, target_count)
         except LiveModeViolation:
             raise
-        except Exception:
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            if _is_provider_auth_or_policy_failure(exc):
+                raise
             return self.propose(ontology, target_count=target_count)
         if len(drafts) < target_count:
             fallback = self.propose(ontology, target_count=target_count)
@@ -465,18 +486,38 @@ class PersonaGenerator:
         ontology: Mapping[str, Any],
         topic: str,
     ) -> List[ValidationIssue]:
-        """Ask the LLM judge whether a draft is topic-relevant."""
+        """Ask the LLM judge whether a draft is topic-relevant.
 
-        if self.gateway is None:
+        Circuit-breaker: after ``_deep_validate_failure_limit`` consecutive
+        failures we skip the remaining personas so a flaky provider does not
+        stall the whole council.
+        """
+
+        if self.gateway is None or not _llm_deep_validation_enabled():
+            return []
+        if self._deep_validate_failures >= self._deep_validate_failure_limit:
             return []
         prompt = build_persona_deep_validate_prompt(draft, ontology, topic)
         try:
-            result = self.gateway.call("council", prompt)
+            result = self.gateway.call(
+                "council",
+                prompt,
+                council_stage="persona_deep_validate",
+                layer_id="persona_generation",
+                max_tokens=_persona_council_max_tokens("persona_deep_validate"),
+            )
             score, reason, issues = parse_persona_validation_response(result.text)
-        except LiveModeViolation:
+        except LiveModeViolation as exc:
             raise
-        except Exception:
+        except TimeoutError:
+            self._deep_validate_failures += 1
             return []
+        except Exception as exc:
+            if _is_provider_auth_or_policy_failure(exc):
+                raise
+            self._deep_validate_failures += 1
+            return []
+        self._deep_validate_failures = 0
         if score < 0.3:
             detail = reason or "; ".join(issues) or f"LLM relevance {score:.2f} < 0.3"
             return [_issue(draft, "deep.llm_topic_relevance", detail)]
@@ -567,6 +608,7 @@ class PersonaGenerator:
         diversity_map: Any = None,
         topic_keywords: Optional[Sequence[str]] = None,
         topic: Optional[str] = None,
+        allow_fallbacks: bool = True,
     ) -> Tuple[List[FinalPersona], Dict[str, Any]]:
         """propose → fast validate → (revise → re-validate) ×3 → deep validate → MAP-Elites → finalize.
 
@@ -575,15 +617,14 @@ class PersonaGenerator:
                 ``revisions_used``, ``fast_failed_ids``, ``deep_failed_ids``,
                 ``fallbacks_used``, ``coverage_after_admit``
         """
-        if self.gateway is not None and not seed_personas:
-            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+        resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+        if self.gateway is not None and not seed_personas and _llm_persona_propose_enabled():
             drafts = self.propose_with_llm(
                 ontology,
                 target_count=target_count,
                 topic=resolved_topic,
             )
         else:
-            resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
             drafts = self.propose(ontology, target_count=target_count, seed_personas=seed_personas)
 
         return self.finalize_drafts(
@@ -594,7 +635,7 @@ class PersonaGenerator:
             diversity_map=diversity_map,
             topic_keywords=topic_keywords,
             topic=resolved_topic,
-            allow_fallbacks=True,
+            allow_fallbacks=allow_fallbacks,
         )
 
     def finalize_drafts(
@@ -608,12 +649,15 @@ class PersonaGenerator:
         topic_keywords: Optional[Sequence[str]] = None,
         topic: Optional[str] = None,
         allow_fallbacks: bool = True,
+        repair_duplicate_drafts: bool | None = None,
         revision_notes: Optional[Sequence[str]] = None,
     ) -> Tuple[List[FinalPersona], Dict[str, Any]]:
         """Run already-proposed Drafts through the full HACHIMI/MAP-Elites path."""
 
         resolved_target = len(drafts) if target_count is None else max(int(target_count), 0)
         resolved_topic = topic or _topic_from_keywords(topic_keywords, ontology)
+        if repair_duplicate_drafts is None:
+            repair_duplicate_drafts = allow_fallbacks
         drafts = list(drafts)
         telemetry: Dict[str, Any] = {
             "revisions_used": 0,
@@ -622,6 +666,12 @@ class PersonaGenerator:
             "fallbacks_used": 0,
             "coverage_after_admit": 0.0,
             "target_count": resolved_target,
+            "quota_target": _quota_target(ontology, resolved_target),
+            "quota_actual": {},
+            "dedup_strategy": "simhash_hamming",
+            "dedup_threshold": 3,
+            "dedup_removed_ids": [],
+            "dedup_repaired_ids": [],
         }
 
         # Fast loop with up to max_revisions iterations
@@ -650,6 +700,14 @@ class PersonaGenerator:
             d.persona_id for d in survivors if d.persona_id not in deep_report.valid_ids
         ]
         deep_survivors = [d for d in survivors if d.persona_id in deep_report.valid_ids]
+        deep_survivors, dedup_removed, dedup_repaired = _dedupe_drafts_by_simhash(
+            deep_survivors,
+            hamming_threshold=int(telemetry["dedup_threshold"]),
+            repair_duplicates=bool(repair_duplicate_drafts),
+        )
+        telemetry["dedup_removed_ids"] = [draft.persona_id for draft in dedup_removed]
+        telemetry["dedup_repaired_ids"] = [draft.persona_id for draft in dedup_repaired]
+        telemetry["quota_actual"] = _role_counts(deep_survivors)
 
         # MAP-Elites records diversity coverage. It does not cap the full
         # MiroFish-style persona pool; many personas may share a cell, while
@@ -706,6 +764,115 @@ def _topic_relevance(text_lower: str, topic_set: set) -> float:
     return hits / max(len(topic_set), 1)
 
 
+def _quota_target(ontology: Mapping[str, Any], target_count: int) -> Dict[str, int]:
+    roles = _string_list(ontology.get("roles")) or ["evidence_reviewer"]
+    quotas = ontology.get("role_quotas")
+    if isinstance(quotas, Mapping):
+        out: Dict[str, int] = {}
+        for role in roles:
+            try:
+                out[role] = max(0, int(quotas.get(role, 0)))
+            except (TypeError, ValueError):
+                out[role] = 0
+        if sum(out.values()) > 0:
+            return out
+    out = {role: 0 for role in roles}
+    for index in range(max(0, int(target_count))):
+        out[roles[index % len(roles)]] += 1
+    return out
+
+
+def _role_counts(drafts: Sequence[Draft]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for draft in drafts:
+        counts[draft.role] = counts.get(draft.role, 0) + 1
+    return counts
+
+
+def _dedupe_drafts_by_simhash(
+    drafts: Sequence[Draft],
+    *,
+    hamming_threshold: int = 3,
+    repair_duplicates: bool = False,
+) -> Tuple[List[Draft], List[Draft], List[Draft]]:
+    kept: List[Draft] = []
+    removed: List[Draft] = []
+    repaired: List[Draft] = []
+    hashes: List[int] = []
+    for index, draft in enumerate(drafts):
+        digest = _simhash(_draft_signature(draft))
+        if any(_hamming_distance(digest, existing) <= hamming_threshold for existing in hashes):
+            if repair_duplicates:
+                accepted = False
+                for attempt in range(1, 6):
+                    candidate = _repair_duplicate_draft(draft, index=index, attempt=attempt)
+                    repaired_digest = _simhash(_draft_signature(candidate))
+                    if not any(
+                        _hamming_distance(repaired_digest, existing) <= hamming_threshold
+                        for existing in hashes
+                    ):
+                        kept.append(candidate)
+                        hashes.append(repaired_digest)
+                        repaired.append(candidate)
+                        accepted = True
+                        break
+                if accepted:
+                    continue
+            removed.append(draft)
+            continue
+        kept.append(draft)
+        hashes.append(digest)
+    return kept, removed, repaired
+
+
+def _repair_duplicate_draft(draft: Draft, *, index: int, attempt: int) -> Draft:
+    axes = dict(draft.value_axes)
+    axes["risk_tolerance"] = ((index * 37 + attempt * 11) % 100) / 100
+    axes["innovation_orientation"] = ((index * 53 + attempt * 19 + 17) % 100) / 100
+    intent = (
+        f"{draft.intent} Distinct HACHIMI quota slot {index + 1}: "
+        f"emphasize non-overlap axis {attempt}, stakeholder lens {index % 7}, "
+        f"failure mode {(index + attempt) % 11}."
+    )
+    return replace(draft, intent=intent, value_axes=axes)
+
+
+def _draft_signature(draft: Draft) -> str:
+    manifest = draft.to_manifest()
+    parts = [
+        draft.role,
+        draft.intent,
+        " ".join(draft.allowed_tools),
+        " ".join(draft.required_outputs),
+        _manifest_text(manifest),
+    ]
+    return " ".join(parts)
+
+
+def _simhash(text: str, bits: int = 64) -> int:
+    weights = [0] * bits
+    tokens = re.findall(r"[A-Za-z0-9_]+|[가-힣]{2,}", text.lower())
+    for token in tokens:
+        digest = _stable_hash64(token)
+        for idx in range(bits):
+            weights[idx] += 1 if digest & (1 << idx) else -1
+    value = 0
+    for idx, weight in enumerate(weights):
+        if weight >= 0:
+            value |= 1 << idx
+    return value
+
+
+def _stable_hash64(value: str) -> int:
+    import hashlib
+
+    return int(hashlib.sha1(value.encode("utf-8")).hexdigest()[:16], 16)
+
+
+def _hamming_distance(left: int, right: int) -> int:
+    return bin(left ^ right).count("1")
+
+
 def _build_fallback_persona(ontology: Mapping[str, Any], index: int) -> FinalPersona:
     """모든 검증을 통과하는 안전 프리셋 페르소나."""
     roles = _string_list(ontology.get("roles")) or ["evidence_reviewer"]
@@ -729,6 +896,62 @@ def _build_fallback_persona(ontology: Mapping[str, Any], index: int) -> FinalPer
         manifest=manifest,
         revision_notes=["fallback_safe_preset"],
     )
+
+
+def _is_empty_or_short_live_output_violation(exc: LiveModeViolation) -> bool:
+    text = str(exc).lower()
+    return "empty or too-short model output" in text
+
+
+def _persona_council_max_tokens(council_stage: str) -> int:
+    raw = (
+        os.environ.get(f"MUCHANIPO_{council_stage.upper()}_MAX_TOKENS")
+        or os.environ.get("MUCHANIPO_PERSONA_COUNCIL_MAX_TOKENS")
+        or os.environ.get("MUCHANIPO_COUNCIL_MAX_TOKENS")
+        or "4096"
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 4096
+    return max(1024, min(value, 8192))
+
+
+def _is_provider_auth_or_policy_failure(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "401",
+            "403",
+            "forbidden",
+            "unauthorized",
+            "invalid api key",
+            "invalid_key",
+            "api key is not configured",
+            "missing_credential",
+            "mock_or_offline",
+            "no live provider",
+            "rejected mock model result",
+            "cloudflare",
+            "1010",
+            "access denied",
+        )
+    )
+
+
+def _llm_persona_propose_enabled() -> bool:
+    raw = os.environ.get("MUCHANIPO_PERSONA_LLM_PROPOSE", "").strip().lower()
+    if raw in {"0", "false", "no", "off", "disabled", "skip"}:
+        return False
+    return True
+
+
+def _llm_deep_validation_enabled() -> bool:
+    raw = os.environ.get("MUCHANIPO_PERSONA_LLM_DEEP_VALIDATE", "").strip().lower()
+    if raw in {"0", "false", "no", "off", "disabled", "skip"}:
+        return False
+    return True
 
 
 def _string_list(value: Any) -> List[str]:

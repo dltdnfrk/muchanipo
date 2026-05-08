@@ -53,60 +53,61 @@ class RubricItem:
 
 
 # ---------------------------------------------------------------------------
-# Default 6 PRD items (interview_prompts.forcing_questions_korean과 동기화)
+# Default 6 interview items (interview_prompts.forcing_questions_korean과 동기화)
 # ---------------------------------------------------------------------------
 def _default_items() -> List[RubricItem]:
     return [
         RubricItem(
             dimension_id="Q1_research_question",
             label="research_question",
-            research_question="PRD 개요: 무엇을 만들거나 검증하려는 아이디어인가?",
+            research_question="핵심 개체·질문: 어떤 개체·행위·관계를 한 문장으로 고정해야 하는가?",
             probe_hints=[
-                "한 문장 제품 정의",
-                "원 토픽보다 한 단계 좁힌 질문",
-                "측정 가능한 결과 형태",
-                "목표 시점/범위",
+                "핵심 명사",
+                "행위자/대상",
+                "판단 신호",
+                "행동/결과 관계",
             ],
         ),
         RubricItem(
             dimension_id="Q2_purpose",
             label="purpose",
-            research_question="핵심 가치: 어떤 문제를 어떻게 해결하고 무엇을 결정하는가?",
-            probe_hints=["사용자 문제", "해결 방식", "차별점", "의사결정용"],
+            research_question="해석 경계: 어떤 의미를 포함하고 어떤 의미를 제외해야 하는가?",
+            probe_hints=["문제 구조", "판별 상태", "채택 조건", "제외 의미"],
         ),
         RubricItem(
             dimension_id="Q3_context",
             label="context",
-            research_question="타겟 및 시나리오: 누가 어떤 상황에서 사용하는가?",
-            probe_hints=["핵심 사용자", "사용 시나리오", "국가/지역", "산업 도메인"],
+            research_question="행위자·트리거·워크플로우: 누가 어떤 신호로 무엇을 하는가?",
+            probe_hints=["핵심 행위자", "트리거", "신호", "행동/결과", "환경 경계"],
         ),
         RubricItem(
             dimension_id="Q4_known",
             label="known",
-            research_question="배경·제약: 이미 알고 있거나 피해야 할 것은?",
-            probe_hints=["이미 시도한 접근", "보유 데이터", "결정 완료 사항", "법무·예산·일정 제약"],
+            research_question="정의·제약·참고근거: 어떤 용어와 경계를 먼저 고정해야 하는가?",
+            probe_hints=["참고자료", "흔들리는 정의", "보유 데이터", "폐기한 가설", "법무·예산·일정 제약"],
         ),
         RubricItem(
             dimension_id="Q5_deliverable",
             label="deliverable",
-            research_question="기능명세 seed: 요구사항, 기능, 상세기능은 무엇인가?",
+            research_question="개념 지도·관계 구조: 엔티티, 속성, 관계, 금지할 오해는 무엇인가?",
             probe_hints=[
-                "요구사항",
-                "기능",
-                "상세 기능",
-                "1페이지 요약",
-                "리서치 리포트",
-                "Slide deck",
-                "Obsidian vault 누적",
+                "엔티티",
+                "속성",
+                "관계",
+                "workflow",
+                "제외 의미",
+                "Obsidian ontology 누적",
             ],
         ),
         RubricItem(
             dimension_id="Q6_quality",
             label="quality",
-            research_question="성공 지표와 검증 기준은? (Source A-D)",
+            research_question="증거 경계·반례 기준: 무엇이 맞다/틀리다를 가르는가?",
             probe_hints=[
-                "KPI",
-                "리스크",
+                "증거 경계",
+                "최신성",
+                "지역성",
+                "반례",
                 "A: peer-review/공식 통계만",
                 "B: 학술+산업 리포트",
                 "C: 블로그/뉴스 포함",

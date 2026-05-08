@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.governance.cost_simulator import simulate_research_cost
-from src.research.depth import ResearchDepthProfile
+from src.research.depth import ResearchDepthProfile, depth_profile, effective_query_limit
 
 
 def test_cost_simulator_uses_depth_profile_budgets() -> None:
@@ -28,7 +28,7 @@ def test_cost_simulator_uses_depth_profile_budgets() -> None:
     assert deep["depth_profile"]["persona_pool_size"] == 80
     assert max_["depth_profile"]["persona_pool_size"] == 160
     assert shallow["depth_profile"]["active_persona_count"] == 6
-    assert deep["depth_profile"]["active_persona_count"] == 10
+    assert deep["depth_profile"]["active_persona_count"] == 6
     assert max_["depth_profile"]["active_persona_count"] == 16
 
     assert shallow["depth_profile"]["extended_test_time_compute"] is False
@@ -59,6 +59,18 @@ def test_cost_simulator_explicit_num_rounds_overrides_depth() -> None:
     assert result["assumptions"]["num_rounds"] == 3
     assert result["assumptions"]["query_limit"] == 8
     assert result["depth"] == "deep"
+
+
+def test_source_research_shallow_query_budget_has_source_channel_floor() -> None:
+    """Source-backed shallow runs need room for science + market/adoption probes."""
+
+    shallow = depth_profile("shallow")
+    deep = depth_profile("deep")
+
+    assert shallow.query_limit == 4
+    assert effective_query_limit(shallow, source_research=False) == 4
+    assert effective_query_limit(shallow, source_research=True) == 9
+    assert effective_query_limit(deep, source_research=True) == 8
 
 
 def test_cost_simulator_rejects_nonpositive_num_rounds() -> None:

@@ -1,0 +1,38 @@
+- generic [ref=e3] [box=0,0,1200,770]:
+  - complementary [ref=e4] [box=0,0,260,770]:
+    - generic [ref=e5] [box=0,0,260,40]:
+      - button "사이드바 닫기" [ref=e6] [cursor=pointer] [box=8,8,32,32]:
+        - img [ref=e7] [box=14,14,20,20]
+      - link "새 리서치" [ref=e9] [cursor=pointer] [box=220,8,32,32]:
+        - /url: "#/"
+        - img [ref=e10] [box=227,15,18,18]
+    - link "새 리서치" [ref=e13] [cursor=pointer] [box=8,44,244,37]:
+      - /url: "#/"
+      - img [ref=e14] [box=20,55,16,16]
+      - generic [ref=e16] [box=46,52,53,21]: 새 리서치
+    - navigation [ref=e17] [box=0,89,260,636]:
+      - generic [ref=e18] [box=8,89,244,55]:
+        - paragraph [ref=e19] [box=8,89,244,21]: 지난 7일
+        - list [ref=e20] [box=8,110,244,35]:
+          - listitem [ref=e21] [box=8,110,244,35]
+    - link "설정" [ref=e26] [cursor=pointer] [box=8,725,244,37]:
+      - /url: "#/settings"
+      - img [ref=e27] [box=20,736,16,16]
+      - generic [ref=e30] [box=46,733,25,21]: 설정
+  - main [ref=e31] [box=260,0,940,770]:
+    - generic [ref=e32] [box=260,0,940,770]:
+      - link "설정" [ref=e33] [cursor=pointer] [box=1146,16,38,38]:
+        - /url: "#/settings"
+        - img [ref=e34] [box=1155,25,20,20]
+      - generic [ref=e37] [box=284,133,892,504]:
+        - generic [ref=e38] [box=284,133,892,213]:
+          - generic [ref=e39] [box=284,143,347,203]
+          - generic [ref=e43] [box=655,133,521,213]
+        - generic [ref=e48] [box=284,374,892,210]:
+          - 'textbox "예: 딸기 농가용 저비용 분자진단 키트 시장성" [ref=e49] [box=293,383,874,136]'
+          - generic [ref=e50] [box=293,525,874,49]
+        - generic [ref=e57] [box=284,607,892,30]:
+          - button "딸기 농가용 저비용 분자진단 키트 시장성" [ref=e58] [cursor=pointer] [box=285,607,226,30]
+          - button "한국 65세 이상 1인 가구 재택의료 SaaS" [ref=e59] [cursor=pointer] [box=519,607,224,30]
+          - button "Z세대 친환경 패션 D2C 브랜드" [ref=e60] [cursor=pointer] [box=751,607,178,30]
+          - button "AI 코딩 어시스턴트 기업용 보안 게이트웨이" [ref=e61] [cursor=pointer] [box=937,607,239,30]

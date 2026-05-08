@@ -67,7 +67,7 @@ class HITLAdapter:
                 status="approved",
                 comments=[f"auto-approved gate: {gate_name}"],
                 gate_id=f"{gate_name}-auto",
-                synthetic=True,
+                synthetic=False,
             )
         if self.mode == "plannotator":
             return self._plannotator_gate(gate_name, payload)

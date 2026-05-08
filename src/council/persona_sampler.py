@@ -14,10 +14,127 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 DEFAULT_SEED_DIR = Path("vault/personas/seeds/korea")
+NEMOTRON_KOREA_NGC_URL = (
+    "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemotron-personas/"
+    "resources/nemotron-personas-dataset-ko_kr?version=0.0.1"
+)
+NEMOTRON_KOREA_HF_DATASET_ID = "nvidia/Nemotron-Personas-Korea"
+NEMOTRON_KOREA_HF_URL = f"https://huggingface.co/datasets/{NEMOTRON_KOREA_HF_DATASET_ID}"
+NEMOTRON_KOREA_NGC_VERSION = "0.0.1"
+NEMOTRON_KOREA_NGC_LICENSE = "NVIDIA Dataset License Agreement"
+NEMOTRON_KOREA_HF_LICENSE = "cc-by-4.0"
+NEMOTRON_KOREA_HF_DOWNLOAD_SIZE_BYTES = 1_982_395_106
+NEMOTRON_KOREA_HF_DATASET_SIZE_BYTES = 4_195_142_595
+NEMOTRON_KOREA_NGC_COMPRESSED_SIZE_BYTES_APPROX = 2_660_000_000
 
-# Nemotron parquet에서 기대하는 26개 필드 이름. 실제 upstream 컬럼명이 달라질 수 있어
-# sampler는 이 목록을 강제하지 않고, 누락 필드는 fallback/profile text로 보완한다.
-NEMOTRON_KOREA_FIELDS = (
+NEMOTRON_KOREA_HF_FIELDS = (
+    "uuid",
+    "professional_persona",
+    "sports_persona",
+    "arts_persona",
+    "travel_persona",
+    "culinary_persona",
+    "family_persona",
+    "persona",
+    "cultural_background",
+    "skills_and_expertise",
+    "skills_and_expertise_list",
+    "hobbies_and_interests",
+    "hobbies_and_interests_list",
+    "career_goals_and_ambitions",
+    "sex",
+    "age",
+    "marital_status",
+    "military_status",
+    "family_type",
+    "housing_type",
+    "education_level",
+    "bachelors_field",
+    "occupation",
+    "district",
+    "province",
+    "country",
+)
+
+NEMOTRON_KOREA_NGC_EXTENDED_FIELDS_OBSERVED = (
+    "uuid",
+    "professional_persona",
+    "finance_persona",
+    "healthcare_persona",
+    "sports_persona",
+    "arts_persona",
+    "travel_persona",
+    "culinary_persona",
+    "family_persona",
+    "persona",
+    "detailed_persona",
+    "openness",
+    "conscientiousness",
+    "extraversion",
+    "agreeableness",
+    "neuroticism",
+    "cultural_background",
+    "career_goals_and_ambitions",
+    "skills_and_expertise",
+    "skills_and_expertise_list",
+    "hobbies_and_interests",
+    "hobbies_and_interests_list",
+    "sex",
+    "age",
+    "marital_status",
+    "education_level",
+    "bachelors_field",
+    "occupation",
+    "military_status",
+    "family_type",
+    "housing_type",
+    "housing_tenure",
+    "economic_activity_status",
+    "income_bracket",
+    "bmi_status",
+    "blood_pressure_status",
+    "blood_sugar_status",
+    "waist_status",
+    "smoking_status",
+    "drinking_status",
+    "province",
+    "district",
+    "country",
+)
+
+# Sampler output contract keeps legacy Muchanipo aliases while preserving the
+# public Hugging Face and NGC field names. Missing fields are allowed because
+# this module can operate on small exported fixtures without downloading the
+# full NGC/HF dataset.
+NEMOTRON_KOREA_FIELDS = tuple(
+    dict.fromkeys(
+        (
+            *NEMOTRON_KOREA_HF_FIELDS,
+            *NEMOTRON_KOREA_NGC_EXTENDED_FIELDS_OBSERVED,
+            # Muchanipo legacy/canonical aliases
+            "persona_id",
+            "city",
+            "sigungu",
+            "gender",
+            "industry",
+            "education",
+            "income_band",
+            "household_type",
+            "household_size",
+            "region_type",
+            "mobility_pattern",
+            "digital_literacy",
+            "media_preference",
+            "policy_interest",
+            "purchase_channel",
+            "technology_attitude",
+            "pain_points",
+            "goals",
+        )
+    )
+)
+
+LEGACY_NEMOTRON_KOREA_FIELDS = (
     "persona_id",
     "country",
     "province",
@@ -187,6 +304,12 @@ class KoreaPersonaSampler:
     def _normalize(cls, record: Dict[str, Any]) -> Dict[str, Any]:
         normalized = {field: record.get(field, "") for field in NEMOTRON_KOREA_FIELDS}
         normalized.update(record)
+        normalized["persona_id"] = normalized.get("persona_id") or normalized.get("uuid") or ""
+        normalized["gender"] = normalized.get("gender") or normalized.get("sex") or ""
+        normalized["sigungu"] = normalized.get("sigungu") or normalized.get("district") or ""
+        normalized["city"] = normalized.get("city") or normalized.get("sigungu") or ""
+        normalized["education"] = normalized.get("education") or normalized.get("education_level") or ""
+        normalized["goals"] = normalized.get("goals") or normalized.get("career_goals_and_ambitions") or ""
         normalized.setdefault("source", "Nemotron-Personas-Korea")
         normalized["persona"] = cls._persona_text(normalized)
         return normalized
@@ -228,3 +351,48 @@ class KoreaPersonaSampler:
             }
             personas.append(cls._normalize(record))
         return personas
+
+
+def nemotron_korea_dataset_metadata() -> Dict[str, Any]:
+    """Return static provenance for the Korean Nemotron persona source.
+
+    This is intentionally metadata-only. The NGC resource is large and
+    license-gated differently from the public Hugging Face mirror, so runtime
+    code must not download or silently treat either location as already
+    integrated evidence.
+    """
+
+    return {
+        "ngc": {
+            "url": NEMOTRON_KOREA_NGC_URL,
+            "resource": "nemotron-personas-dataset-ko_kr",
+            "team": "nemotron-personas",
+            "org": "nvidia",
+            "version": NEMOTRON_KOREA_NGC_VERSION,
+            "license": NEMOTRON_KOREA_NGC_LICENSE,
+            "compressed_size_bytes_approx": NEMOTRON_KOREA_NGC_COMPRESSED_SIZE_BYTES_APPROX,
+        },
+        "huggingface": {
+            "url": NEMOTRON_KOREA_HF_URL,
+            "dataset_id": NEMOTRON_KOREA_HF_DATASET_ID,
+            "license": NEMOTRON_KOREA_HF_LICENSE,
+            "gated": False,
+            "private": False,
+            "download_size_bytes": NEMOTRON_KOREA_HF_DOWNLOAD_SIZE_BYTES,
+            "dataset_size_bytes": NEMOTRON_KOREA_HF_DATASET_SIZE_BYTES,
+        },
+        "schema": {
+            "hf_feature_count": len(NEMOTRON_KOREA_HF_FIELDS),
+            "hf_fields": list(NEMOTRON_KOREA_HF_FIELDS),
+            "ngc_extended_documented_field_count": 51,
+            "ngc_extended_fields_observed": list(NEMOTRON_KOREA_NGC_EXTENDED_FIELDS_OBSERVED),
+            "canonical_output_fields": list(NEMOTRON_KOREA_FIELDS),
+        },
+        "access": {
+            "download_required": False,
+            "large_dataset_bytes": NEMOTRON_KOREA_NGC_COMPRESSED_SIZE_BYTES_APPROX,
+            "approved_for_auto_download": False,
+        },
+        "integration_boundary": "metadata_adapter_only_no_dataset_download",
+        "product_verdict_boundary": "does_not_satisfy_source_facet_council_report_pass",
+    }

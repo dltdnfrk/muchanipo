@@ -18,9 +18,13 @@ KNOWN_EVENTS = frozenset(
         "phase_change",
         "run_started",
         "pipeline_heartbeat",
+        "stage_started",
+        "stage_completed",
         "deep_interview_progress",
         "deep_interview_artifacts",
+        "interview_ontology_delta",
         "interview_question",
+        "hitl_gate",
         "research_progress",
         "council_round_start",
         "council_turn",
@@ -28,6 +32,7 @@ KNOWN_EVENTS = frozenset(
         "council_round_done",
         "report_chunk",
         "done",
+        "warning",
         "error",
     }
 )
@@ -36,6 +41,7 @@ KNOWN_ACTIONS = frozenset(
     {
         "interview_answer",
         "approve_designdoc",
+        "hitl_decision",
         "abort",
     }
 )

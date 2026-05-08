@@ -27,6 +27,7 @@ class ResearchBrief:
     feature_hierarchy: list[dict[str, Any]] = field(default_factory=list)
     user_flow: dict[str, Any] = field(default_factory=dict)
     planning_review_policy: dict[str, Any] = field(default_factory=dict)
+    original_topic: str = ""
 
     @property
     def id(self) -> str:
@@ -46,6 +47,7 @@ class ResearchBrief:
         data: dict[str, Any] = {
             "raw_idea": self.raw_idea,
             "research_question": self.research_question,
+            "original_topic": self.original_topic,
             "purpose": self.purpose,
             "context": self.context,
             "known_facts": self.known_facts,
@@ -77,6 +79,7 @@ class ResearchBrief:
         return cls(
             raw_idea=data.get("raw_idea", ""),
             research_question=data.get("research_question", ""),
+            original_topic=data.get("original_topic", ""),
             purpose=data.get("purpose", ""),
             context=data.get("context", ""),
             known_facts=_list_or_empty(data.get("known_facts")),

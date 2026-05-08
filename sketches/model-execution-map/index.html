@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Muchanipo 실시간 모델 실행 지도 와이어프레임</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#111a33; --line:#5b6b92; --active:#7dd3fc; --ok:#86efac; --bad:#fca5a5; --text:#e5eefb; --muted:#9fb0cc; }
+    body { margin:0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:radial-gradient(circle at top left,#172554,var(--bg) 42%); color:var(--text); }
+    main { max-width:1240px; margin:0 auto; padding:28px; }
+    h1 { margin:0 0 6px; font-size:26px; }
+    p { margin:0 0 20px; color:var(--muted); }
+    .grid { display:grid; grid-template-columns: 1fr 340px; gap:18px; }
+    .canvas,.side { background:rgba(17,26,51,.82); border:1px solid rgba(125,211,252,.25); border-radius:20px; box-shadow:0 20px 70px rgba(0,0,0,.35); }
+    .canvas { padding:18px; overflow:auto; }
+    .side { padding:18px; display:grid; gap:14px; }
+    svg { min-width:850px; width:100%; height:560px; }
+    .node rect { fill:#0f172a; stroke:#3b82f6; stroke-width:1.4; rx:14; }
+    .node.active rect { fill:#082f49; stroke:var(--active); stroke-width:3; filter:drop-shadow(0 0 12px rgba(125,211,252,.45)); }
+    .node.done rect { stroke:var(--ok); }
+    .node.warn rect { stroke:#fbbf24; }
+    .node text { fill:var(--text); font-size:13px; font-weight:700; }
+    .node .meta { fill:var(--muted); font-size:11px; font-weight:500; }
+    .edge { stroke:var(--line); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .loop { stroke:#fbbf24; stroke-dasharray:6 5; }
+    .pill { display:inline-flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:#0f172a; border:1px solid rgba(159,176,204,.22); border-radius:14px; }
+    .pill strong { font-size:20px; }
+    .cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .persona { background:#0f172a; border:1px solid rgba(125,211,252,.18); border-radius:14px; padding:10px; min-height:70px; }
+    .persona b { display:block; margin-bottom:6px; }
+    .small { font-size:12px; color:var(--muted); line-height:1.45; }
+    .audit { display:grid; gap:8px; }
+    .audit div { border-left:3px solid var(--ok); padding-left:10px; }
+    .audit div.reject { border-color:var(--bad); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Muchanipo 실시간 모델 실행 지도</h1>
+  <p>런 단위 topic_anchor와 stdout JSONL 이벤트를 연결해 현재 활성 노드, 검색/감사/갭/카운슬/PRD 근거 흐름을 한 화면에 보여주는 와이어프레임입니다.</p>
+  <section class="grid">
+    <div class="canvas">
+      <svg viewBox="0 0 1040 560" role="img" aria-label="Muchanipo execution pipeline map">
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#5b6b92" /></marker></defs>
+        <path class="edge" d="M155 80 H255"/><path class="edge" d="M405 80 H505"/><path class="edge" d="M655 80 H755"/>
+        <path class="edge" d="M855 125 V205"/><path class="edge" d="M755 250 H655"/><path class="edge" d="M505 250 H405"/>
+        <path class="edge loop" d="M330 295 C330 385 690 385 690 295"/><path class="edge" d="M255 250 H155"/><path class="edge" d="M155 295 V420 H315"/>
+        <path class="edge" d="M455 445 H555"/><path class="edge" d="M695 445 H795"/>
+        <g class="node done" transform="translate(20,42)"><rect width="135" height="76"/><text x="16" y="29">User Topic</text><text class="meta" x="16" y="52">딸기·분자진단·시장성</text></g>
+        <g class="node active" transform="translate(255,42)"><rect width="150" height="76"/><text x="16" y="29">Topic Anchor</text><text class="meta" x="16" y="52">original_topic 고정</text></g>
+        <g class="node" transform="translate(505,42)"><rect width="150" height="76"/><text x="16" y="29">Deep Interview</text><text class="meta" x="16" y="52">stale answer 격리</text></g>
+        <g class="node" transform="translate(755,42)"><rect width="160" height="76"/><text x="16" y="29">Research Planner</text><text class="meta" x="16" y="52">첫 query anchor 검사</text></g>
+        <g class="node" transform="translate(755,205)"><rect width="160" height="90"/><text x="16" y="29">Live Source Search</text><text class="meta" x="16" y="52">OpenAlex/Crossref/DOI</text><text class="meta" x="16" y="70">searching count</text></g>
+        <g class="node" transform="translate(505,205)"><rect width="150" height="90"/><text x="16" y="29">Source Audit</text><text class="meta" x="16" y="52">accepted/rejected</text><text class="meta" x="16" y="70">facet + reason</text></g>
+        <g class="node warn" transform="translate(255,205)"><rect width="150" height="90"/><text x="16" y="29">Knowledge Gaps</text><text class="meta" x="16" y="52">현재 gap</text><text class="meta" x="16" y="70">re-search trigger</text></g>
+        <g class="node" transform="translate(20,205)"><rect width="135" height="90"/><text x="16" y="29">Re-search Loop</text><text class="meta" x="16" y="52">gap별 추가검색</text></g>
+        <g class="node" transform="translate(315,405)"><rect width="140" height="80"/><text x="16" y="29">MiMo Council</text><text class="meta" x="16" y="52">round/turn telemetry</text></g>
+        <g class="node" transform="translate(555,405)"><rect width="140" height="80"/><text x="16" y="29">Personas</text><text class="meta" x="16" y="52">농가·구매·규제</text></g>
+        <g class="node" transform="translate(795,405)"><rect width="150" height="80"/><text x="16" y="29">PRD / Report</text><text class="meta" x="16" y="52">evidence linked</text></g>
+      </svg>
+    </div>
+    <aside class="side">
+      <div class="pill"><span>활성 노드</span><strong>Topic Anchor</strong></div>
+      <div class="pill"><span>MiMo call count</span><strong>—</strong></div>
+      <div class="pill"><span>검색/근거 이벤트</span><strong>search 0 · evidence 0</strong></div>
+      <div class="pill"><span>Source audit</span><strong style="color:var(--ok)">0</strong><strong style="color:var(--bad)">0</strong></div>
+      <div class="pill"><span>Council rounds</span><strong>0</strong></div>
+      <div class="audit small">
+        <div>Accepted: scientific/diagnostic, field_validation, market/pricing/adoption, korea_adoption facet 표시</div>
+        <div class="reject">Rejected: entrepreneurship/waterfront/ship/arxiv/math 등 off-topic 사유 노출</div>
+      </div>
+      <div class="cards">
+        <div class="persona"><b>한국 딸기 농가</b><span class="small">현장 사용성·가격 민감도</span></div>
+        <div class="persona"><b>구매/유통 채널</b><span class="small">판로·검사 결과 신뢰</span></div>
+        <div class="persona"><b>규제/인증</b><span class="small">진단키트 허가·검증</span></div>
+        <div class="persona"><b>시장성 검증</b><span class="small">WTP·채택 장벽</span></div>
+      </div>
+      <div class="pill"><span>현재 gap</span><strong>field validation</strong></div>
+      <div class="pill"><span>PRD 연결 근거</span><strong>0 sources</strong></div>
+    </aside>
+  </section>
+</main>
+</body>
+</html>

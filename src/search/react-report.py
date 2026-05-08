@@ -60,12 +60,13 @@ def _extract_topics_from_consensus(consensus: str | list) -> list[str]:
     """consensus에서 핵심 주제 추출."""
     topics = []
     if isinstance(consensus, str):
-        # 문장 단위로 분리, 각 문장을 주제 후보로
-        sentences = re.split(r"[.。\n]", consensus)
-        for s in sentences:
-            s = s.strip()
-            if len(s) > 10:
-                topics.append(s)
+        # Council consensus is line/bullet oriented. Splitting on periods
+        # cuts quoted criteria such as "구체 숫자 + 출처." into orphan
+        # fragments, so keep each line intact.
+        for line in consensus.splitlines():
+            cleaned = line.strip().lstrip("-•* ").strip()
+            if len(cleaned) > 10 and not _is_meta_placeholder(cleaned):
+                topics.append(cleaned)
     elif isinstance(consensus, list):
         for item in consensus:
             if isinstance(item, str) and len(item.strip()) > 5:
@@ -81,14 +82,18 @@ def _extract_dissent_points(dissent: list | str) -> list[str]:
     if isinstance(dissent, str):
         for line in dissent.split("\n"):
             line = line.strip()
-            if len(line) > 5:
+            if len(line) > 5 and not _is_meta_placeholder(line):
                 points.append(line)
     elif isinstance(dissent, list):
         for item in dissent:
             if isinstance(item, str):
-                points.append(item.strip())
+                cleaned = item.strip()
+                if cleaned and not _is_meta_placeholder(cleaned):
+                    points.append(cleaned)
             elif isinstance(item, dict):
-                points.append(item.get("text", item.get("point", str(item))))
+                cleaned = str(item.get("text", item.get("point", str(item)))).strip()
+                if cleaned and not _is_meta_placeholder(cleaned):
+                    points.append(cleaned)
     return points
 
 
@@ -97,16 +102,34 @@ def _extract_recommendations(recommendations: list | str) -> list[str]:
     items = []
     if isinstance(recommendations, str):
         for line in recommendations.split("\n"):
-            line = line.strip().lstrip("-•* ")
-            if len(line) > 5:
+            line = _normalize_recommendation_text(line.strip().lstrip("-•* "))
+            if len(line) > 5 and not _is_meta_placeholder(line):
                 items.append(line)
     elif isinstance(recommendations, list):
         for item in recommendations:
             if isinstance(item, str):
-                items.append(item.strip())
+                cleaned = _normalize_recommendation_text(item.strip())
+                if cleaned and not _is_meta_placeholder(cleaned):
+                    items.append(cleaned)
             elif isinstance(item, dict):
-                items.append(item.get("text", item.get("action", str(item))))
+                cleaned = _normalize_recommendation_text(str(item.get("text", item.get("action", str(item)))))
+                if cleaned and not _is_meta_placeholder(cleaned):
+                    items.append(cleaned)
     return items
+
+
+def _normalize_recommendation_text(text: str) -> str:
+    return re.sub(r"^\s*Resolve open question:\s*", "", text, flags=re.IGNORECASE).strip()
+
+
+def _is_meta_placeholder(text: str) -> bool:
+    lowered = " ".join(text.lower().split())
+    return lowered in {
+        "what evidence should be collected next?",
+        "what evidence should be collected next",
+        "resolve open question: what evidence should be collected next?",
+        "resolve open question what evidence should be collected next",
+    }
 
 
 def plan_sections(
@@ -128,34 +151,40 @@ def plan_sections(
     # 1. consensus 기반 핵심 발견 섹션
     topics = _extract_topics_from_consensus(report["consensus"])
     for i, topic in enumerate(topics[:max_sections]):
-        sections.append({
+        section = {
             "title": _generate_section_title(topic),
             "type": "finding",
             "source_text": topic,
-            "react": _build_react_plan(topic, "finding"),
-        })
+        }
+        section["search_query"] = _section_search_query(section, report)
+        section["react"] = _build_react_plan(str(section["search_query"]), "finding")
+        sections.append(section)
 
     # 2. dissent 기반 반론 섹션 (최소 1개 확보)
     dissent_points = _extract_dissent_points(report["dissent"])
     if dissent_points and len(sections) < max_sections + 1:
         combined_dissent = "; ".join(dissent_points[:3])
-        sections.append({
+        section = {
             "title": "반론 및 리스크",
             "type": "dissent",
             "source_text": combined_dissent,
-            "react": _build_react_plan(combined_dissent, "dissent"),
-        })
+        }
+        section["search_query"] = _section_search_query(section, report)
+        section["react"] = _build_react_plan(str(section["search_query"]), "dissent")
+        sections.append(section)
 
     # 3. recommendations 기반 권고 섹션 (최소 1개 확보)
     rec_items = _extract_recommendations(report["recommendations"])
     if rec_items and len(sections) < max_sections + 2:
         combined_recs = "; ".join(rec_items[:5])
-        sections.append({
+        section = {
             "title": "권고사항",
             "type": "recommendation",
             "source_text": combined_recs,
-            "react": _build_react_plan(combined_recs, "recommendation"),
-        })
+        }
+        section["search_query"] = _section_search_query(section, report)
+        section["react"] = _build_react_plan(str(section["search_query"]), "recommendation")
+        sections.append(section)
 
     # 최소 2개, 최대 max_sections + 2개 섹션 보장
     return sections[:max_sections + 2]
@@ -163,6 +192,9 @@ def plan_sections(
 
 def _generate_section_title(topic: str) -> str:
     """주제 텍스트에서 간결한 섹션 제목 생성."""
+    focus = _extract_section_focus(topic)
+    if 4 <= len(focus) <= 40:
+        return focus
     # 앞 40자 이내로 자르되 단어 경계에서
     if len(topic) <= 40:
         return topic
@@ -171,6 +203,58 @@ def _generate_section_title(topic: str) -> str:
     if last_space > 20:
         truncated = truncated[:last_space]
     return truncated + "..."
+
+
+def _section_search_query(section: dict[str, Any], report: dict[str, Any]) -> str:
+    topic = str(report.get("topic") or report.get("query") or "").strip()
+    focus = _extract_section_focus(
+        " ".join(
+            str(value)
+            for value in (section.get("title"), section.get("source_text"))
+            if value
+        )
+    )
+    combined = " ".join(part for part in (topic, focus) if part)
+    return combined or str(section.get("source_text") or section.get("title") or "")
+
+
+def _extract_section_focus(text: str) -> str:
+    text = " ".join(str(text or "").split())
+    match = re.search(r"조건부\s*권고:\s*([^은']+)", text)
+    if match:
+        return match.group(1).strip()
+    match = re.match(r"(.+?)(?:은|는)\s*확보된\s*직접\s*근거\s*범위", text)
+    if match:
+        return match.group(1).strip()
+    match = re.match(r"(.+?)(?:은|는)\s*직접\s*출처가\s*아직\s*부족", text)
+    if match:
+        return match.group(1).strip()
+    text = re.sub(r"조건부\s*권고[:：]?", " ", text)
+    text = re.sub(r"확보\s*출처\s*기반의\s*조건부\s*판단.*", " ", text)
+    text = re.sub(r"확보된\s*직접\s*근거\s*범위.*", " ", text)
+    text = re.sub(r"직접\s*출처가\s*아직\s*부족.*", " ", text)
+    text = re.sub(r"Evidence\s+Index|Claim\s+Grounding\s+Matrix", " ", text, flags=re.IGNORECASE)
+    words = [word for word in re.findall(r"[\w가-힣]+", text) if not _is_generic_search_word(word)]
+    return " ".join(words[:10])
+
+
+def _is_generic_search_word(word: str) -> bool:
+    return word.lower() in {
+        "조건부",
+        "권고",
+        "출처",
+        "근거",
+        "판단",
+        "가능",
+        "부족한",
+        "범위",
+        "별도",
+        "검증",
+        "gate",
+        "source",
+        "backed",
+        "evidence",
+    }
 
 
 def _build_react_plan(source_text: str, section_type: str) -> dict[str, str]:
@@ -547,7 +631,7 @@ def execute_react_section(
     planned_tools = _planned_react_tools(available_tools, min_calls, max_calls)
     tool_calls: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
-    query = str(section.get("source_text") or report.get("topic") or report.get("query") or "")
+    query = str(section.get("search_query") or _section_search_query(section, report))
 
     for tool_name in planned_tools:
         response = _scripted_tool_call_response(tool_name, query)
@@ -664,8 +748,17 @@ def _run_react_tool(call: dict[str, Any], report: dict[str, Any]) -> dict[str, A
     if not snippets:
         fallback_reason = "backend_empty_or_unavailable"
         matched = _find_related_evidence(query, report.get("evidence", []), max_results=3)
+        matched = [
+            item
+            for item in matched
+            if not _is_unsafe_observation(_extract_evidence_source(item), _extract_evidence_text(item), query=query)
+        ]
         if not matched:
-            matched = list(report.get("evidence", []))[:2]
+            matched = [
+                item
+                for item in list(report.get("evidence", []))
+                if not _is_unsafe_observation(_extract_evidence_source(item), _extract_evidence_text(item), query=query)
+            ][:2]
         snippets = [
             {
                 "source": _extract_evidence_source(item),
@@ -706,7 +799,7 @@ def _execute_react_tool_backend(name: str, query: str) -> list[dict[str, str]]:
             continue
         text = str(item.get("text") or item.get("content") or item.get("quote") or "").strip()
         source = str(item.get("source") or item.get("file") or item.get("wing") or name).strip()
-        if text:
+        if text and not _is_unsafe_observation(source, text, query=query):
             snippets.append({"source": source, "text": text})
     return snippets
 
@@ -732,9 +825,91 @@ def _execute_web_search_backend(query: str) -> list[dict[str, str]]:
                 or getattr(ref, "id", None)
                 or "web_search"
             ).strip()
-        if text:
+        if text and not _is_unsafe_observation(source, text, query=query):
             snippets.append({"source": source, "text": text})
     return snippets
+
+
+def _is_mock_polluted(source: str, text: str) -> bool:
+    return _is_unsafe_observation(source, text)
+
+
+def _is_unsafe_observation(source: str, text: str, *, query: str = "") -> bool:
+    haystack = f"{source}\n{text}".lower()
+    if any(
+        marker in haystack
+        for marker in (
+            "mock-evidence-",
+            "[mock-",
+            "mock research evidence",
+            "mock evidence",
+            "offline mock",
+            "offline demonstration run",
+            "not source-backed",
+            "trusted evidence: 0",
+            "verified claim ratio: 0.0",
+        )
+    ):
+        return True
+    normalized_source = source.replace("\\", "/").lower()
+    if any(marker in normalized_source for marker in (".trash/", ".omx/", "projects/muchanipo/", "product/with-agent/muchanipo-p5int/")):
+        return True
+    if "council/" in normalized_source and "muchanipo" in haystack:
+        return True
+    if query and not _has_query_overlap(query, f"{source} {text}"):
+        return True
+    return False
+
+
+def _has_query_overlap(query: str, text: str) -> bool:
+    query_terms = {term for term in _content_terms(query) if not _is_generic_search_word(term)}
+    if not query_terms:
+        return True
+    text_terms = _content_terms(text)
+    domain_terms = {term for term in query_terms if not _is_framework_search_word(term)}
+    if domain_terms and not (domain_terms & text_terms):
+        return False
+    return bool(query_terms & text_terms)
+
+
+def _content_terms(text: str) -> set[str]:
+    return {term.lower() for term in re.findall(r"[A-Za-z0-9]+|[가-힣]{2,}", str(text or ""))}
+
+
+def _is_framework_search_word(word: str) -> bool:
+    return word.lower() in {
+        "tam",
+        "sam",
+        "som",
+        "시장",
+        "시장성",
+        "규모",
+        "컨텍스트",
+        "경쟁",
+        "지형",
+        "반론",
+        "리스크",
+        "권고사항",
+        "직접",
+        "간접",
+        "대체",
+        "가격",
+        "채널",
+        "성능",
+        "약점",
+        "수집",
+        "검증",
+        "공식",
+        "통계",
+        "구매의향",
+        "사용",
+        "빈도",
+        "결과",
+        "인터뷰",
+        "실증",
+        "데이터",
+        "제품",
+    }
 
 
 def _load_insight_forge_module() -> Any | None:
@@ -759,8 +934,9 @@ def _build_final_answer(
     previous_sections: list[str],
 ) -> str:
     source_text = str(section.get("source_text") or "").strip()
+    display_claim = _display_claim(section, source_text)
     lines = [
-        f"**핵심 주장:** {source_text or section.get('title') or '추가 검증 필요'}",
+        f"**핵심 주장:** {display_claim}",
         "",
         "**도구 관찰:**",
     ]
@@ -778,12 +954,52 @@ def _build_final_answer(
         lines.append("- 근거 관찰이 충분하지 않아 추가 수집이 필요합니다.")
     if previous_sections:
         lines.extend(["", f"**중복 방지:** 이전 {len(previous_sections)}개 섹션과 구분해 작성했습니다."])
-    lines.extend([
-        "",
-        "**작성 결과:**",
-        f"{source_text or section.get('title') or '이 섹션'}에 대해 위 관찰을 근거로 판단합니다.",
-    ])
+    lines.extend(["", "**작성 결과:**"])
+    lines.extend(_section_result_lines(section, display_claim, observations))
     return "\n".join(lines)
+
+
+def _display_claim(section: dict[str, Any], source_text: str) -> str:
+    section_type = str(section.get("type") or "")
+    title = str(section.get("title") or "").strip()
+    focus = _extract_section_focus(source_text or title)
+    if section_type == "recommendation":
+        return "다음 검증 액션을 실행 backlog로 고정한다."
+    if section_type == "dissent":
+        return "출처 범위 밖의 시장성 주장은 확정하지 않고 검증 리스크로 분리한다."
+    if "조건부" in source_text or "확보 출처" in source_text:
+        target = focus or title or "이 섹션"
+        return f"{target}는 확보된 출처 범위 안에서만 조건부 판단한다."
+    return source_text or title or "추가 검증 필요"
+
+
+def _section_result_lines(
+    section: dict[str, Any],
+    display_claim: str,
+    observations: list[dict[str, Any]],
+) -> list[str]:
+    source_text = str(section.get("source_text") or "").strip()
+    section_type = str(section.get("type") or "")
+    if section_type in {"recommendation", "dissent"}:
+        actions = [item.strip() for item in re.split(r";\s*", source_text) if item.strip()]
+        if actions:
+            return [f"- {item}" for item in actions[:5]]
+    cited = _first_observation_sources(observations)
+    if cited:
+        return [f"{display_claim} 근거 후보: {', '.join(cited)}."]
+    return [f"{display_claim} 추가 출처 수집이 필요하다."]
+
+
+def _first_observation_sources(observations: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    for observation in observations:
+        for snippet in observation.get("snippets", []) or []:
+            source = str(snippet.get("source") or "").strip()
+            if source and source not in out:
+                out.append(source)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +1198,12 @@ def _find_related_evidence(
 
 def _extract_evidence_source(evidence: Any) -> str:
     """근거 항목에서 출처 추출."""
+    if isinstance(evidence, str):
+        if ": " in evidence:
+            return evidence.split(": ", 1)[0].strip() or "unknown"
+        if ":" in evidence:
+            return evidence.split(":", 1)[0].strip() or "unknown"
+        return "unknown"
     if isinstance(evidence, dict):
         return evidence.get("source", evidence.get("file", evidence.get("wing", "unknown")))
     return "unknown"

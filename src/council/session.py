@@ -1,7 +1,11 @@
 """Council session for report-derived debate agents."""
 from __future__ import annotations
 
+import concurrent.futures
+import json
 import os
+import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -17,10 +21,19 @@ from src.council.oasis_camel_runtime import build_protocol_trace
 from src.council.parsers import RoundResult, parse_council_response
 from src.council.round_layers import RoundLayer
 from src.execution.gateway_v2 import GatewayV2
-from src.execution.models import ModelGateway
+from src.execution.models import ModelGateway, ModelResult
+from src.runtime.live_mode import LiveModeViolation
 
 
 ProgressCallback = Callable[[dict], None]
+
+_SECRETS_RE = re.compile(
+    r"(?i)(api[_-]?key|token|authorization|bearer|password|secret)\s*[:=]\s*[^\s,}]+"
+)
+
+
+class CouncilProviderCallTimeout(TimeoutError):
+    """Raised when a council model call exceeds the session watchdog."""
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,7 @@ class Session:
         gateway: GatewayV2,
         layers: list[RoundLayer],
         personas: list[Any],
+        evidence_refs: list[Any] | None = None,
         plateau: PlateauDetector | None = None,
         active_persona_count: int | None = None,
         progress_callback: ProgressCallback | None = None,
@@ -89,6 +103,7 @@ class Session:
         self.gateway = gateway
         self.layers = list(layers)
         self.personas = list(personas)
+        self.evidence_refs = list(evidence_refs or [])
         self.plateau = plateau or PlateauDetector(window=11, tolerance=0.05)
         if active_persona_count is not None and active_persona_count < 1:
             raise ValueError("active_persona_count must be >= 1")
@@ -208,8 +223,38 @@ class Session:
         opinions: dict[str, IndividualOpinion] = {}
         for idx, persona in enumerate(personas, start=1):
             persona_id = _persona_id(persona, idx)
-            prompt = build_individual_prompt(persona, layer, prev_summary)
-            result = self.gateway.call("council", prompt, council_stage="individual", layer_id=layer.layer_id)
+            prompt = build_individual_prompt(
+                persona,
+                layer,
+                prev_summary,
+                evidence_refs=self.evidence_refs,
+            )
+            try:
+                result = self._call_gateway_with_progress(
+                    round_no,
+                    layer,
+                    "individual",
+                    persona_id,
+                    prompt,
+                )
+            except Exception as exc:
+                if _council_call_failure_kind(exc) in {"auth_or_policy_failure", "mock_live_output"}:
+                    raise
+                self._emit_progress(
+                    {
+                        "event": "council_persona_skipped",
+                        "stage": "council_progress",
+                        "pipeline_stage": "council",
+                        "round": round_no,
+                        "layer": layer.layer_id,
+                        "council_stage": "individual",
+                        "persona": persona_id,
+                        "error_class": exc.__class__.__name__,
+                        "error": _redact_text(exc),
+                        "reason": "persona_call_failed",
+                    }
+                )
+                continue
             self._record_turn(round_no, layer, "individual", persona_id, prompt, result)
             parsed = parse_council_response(getattr(result, "text", str(result)), layer)
             opinions[persona_id] = IndividualOpinion(
@@ -241,8 +286,38 @@ class Session:
                 for other_id, opinion in individuals.items()
                 if other_id != persona_id
             ]
-            prompt = build_peer_review_prompt(persona, blinded, layer)
-            result = self.gateway.call("council", prompt, council_stage="peer_review", layer_id=layer.layer_id)
+            prompt = build_peer_review_prompt(
+                persona,
+                blinded,
+                layer,
+                evidence_refs=self.evidence_refs,
+            )
+            try:
+                result = self._call_gateway_with_progress(
+                    round_no,
+                    layer,
+                    "peer_review",
+                    persona_id,
+                    prompt,
+                )
+            except Exception as exc:
+                if _council_call_failure_kind(exc) in {"auth_or_policy_failure", "mock_live_output"}:
+                    raise
+                self._emit_progress(
+                    {
+                        "event": "council_persona_skipped",
+                        "stage": "council_progress",
+                        "pipeline_stage": "council",
+                        "round": round_no,
+                        "layer": layer.layer_id,
+                        "council_stage": "peer_review",
+                        "persona": persona_id,
+                        "error_class": exc.__class__.__name__,
+                        "error": _redact_text(exc),
+                        "reason": "persona_call_failed",
+                    }
+                )
+                continue
             self._record_turn(round_no, layer, "peer_review", persona_id, prompt, result)
             text = getattr(result, "text", str(result))
             reviews[persona_id] = [_parse_peer_comment(persona_id, text)]
@@ -254,9 +329,50 @@ class Session:
         peer_reviews: dict[str, list[PeerComment]],
         layer: RoundLayer,
     ) -> RoundResult:
-        prompt = build_chairman_prompt(individuals, peer_reviews, layer)
-        result = self.gateway.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
-        self._record_turn(len(self.rounds) + 1, layer, "chairman", "chairman", prompt, result)
+        prompt = build_chairman_prompt(
+            individuals,
+            peer_reviews,
+            layer,
+            evidence_refs=self.evidence_refs,
+        )
+        round_no = len(self.rounds) + 1
+        try:
+            result = self._call_gateway_with_progress(
+                round_no,
+                layer,
+                "chairman",
+                "chairman",
+                prompt,
+            )
+        except CouncilProviderCallTimeout as exc:
+            if not _chairman_timeout_fallback_enabled():
+                raise
+            fallback_text = _fallback_chairman_json(individuals, peer_reviews)
+            timeout_note = f"chairman provider timed out; local synthesis fallback used: {_redact_text(exc)}"
+            fallback_payload = json.loads(fallback_text)
+            fallback_payload["next_actions"] = list(fallback_payload.get("next_actions") or []) + [timeout_note]
+            fallback_payload["timeout_fallback"] = True
+            fallback_text = json.dumps(fallback_payload, ensure_ascii=False)
+            result = ModelResult(
+                text=fallback_text,
+                provider="local_timeout_fallback",
+                model="deterministic_chairman_timeout_fallback",
+            )
+            self._emit_progress(
+                {
+                    "event": "council_chairman_timeout_fallback",
+                    "stage": "council_progress",
+                    "pipeline_stage": "council",
+                    "round": round_no,
+                    "layer": layer.layer_id,
+                    "council_stage": "chairman",
+                    "persona": "chairman",
+                    "provider": "local_timeout_fallback",
+                    "blocks_product_pass": True,
+                    "reason": timeout_note,
+                }
+            )
+        self._record_turn(round_no, layer, "chairman", "chairman", prompt, result)
         text = getattr(result, "text", str(result)) if result else _fallback_chairman_json(individuals, peer_reviews)
         parsed = parse_council_response(text, layer)
         if not parsed.disagreements:
@@ -274,6 +390,146 @@ class Session:
                 framework_output=parsed.framework_output,
             )
         return parsed
+
+    def _call_gateway_with_progress(
+        self,
+        round_no: int,
+        layer: RoundLayer,
+        council_stage: str,
+        persona_id: str,
+        prompt: str,
+    ) -> Any:
+        timeout_sec = _council_call_timeout_sec()
+        provider_route = _council_provider_route(self.gateway)
+        base_event = {
+            "round": round_no,
+            "layer": layer.layer_id,
+            "stage": "council_progress",
+            "pipeline_stage": "council",
+            "council_stage": council_stage,
+            "persona": persona_id,
+            "provider_route": provider_route,
+            "timeout_sec": timeout_sec,
+            "prompt_chars": len(prompt),
+        }
+        self._emit_progress({"event": "council_provider_call_start", **base_event})
+        started_at = time.monotonic()
+        call_kwargs = {
+            "council_stage": council_stage,
+            "layer_id": layer.layer_id,
+            "max_tokens": _council_stage_max_tokens(council_stage),
+        }
+        if timeout_sec > 0:
+            call_kwargs["timeout"] = timeout_sec
+
+        try:
+            result = self._call_gateway_with_watchdog(prompt, timeout_sec, call_kwargs)
+        except Exception as exc:
+            failure_kind = _council_call_failure_kind(exc)
+            if _is_empty_or_timeout_live_output(exc) and _compact_retry_enabled():
+                elapsed_sec = round(time.monotonic() - started_at, 3)
+                self._emit_progress(
+                    {
+                        "event": "council_provider_call_error",
+                        **base_event,
+                        "elapsed_sec": elapsed_sec,
+                        "error_class": exc.__class__.__name__,
+                        "error": _redact_text(exc),
+                        "failure_kind": failure_kind,
+                        "blocks_product_pass": True,
+                        "retry": "compact_council_prompt",
+                    }
+                )
+                retry_model = (
+                    _opencode_empty_retry_model(self.gateway, provider_route, call_kwargs.get("model"))
+                    if failure_kind == "empty_live_output"
+                    else None
+                )
+                compact_prompt = _compact_council_retry_prompt(
+                    council_stage=council_stage,
+                    persona_id=persona_id,
+                    layer=layer,
+                    evidence_refs=self.evidence_refs,
+                )
+                retry_call_kwargs = dict(call_kwargs)
+                if retry_model:
+                    retry_call_kwargs["model"] = retry_model
+                retry_event = dict(base_event)
+                retry_event["prompt_chars"] = len(compact_prompt)
+                retry_event["retry"] = "compact_council_prompt"
+                if retry_model:
+                    retry_event["retry_model"] = retry_model
+                self._emit_progress({"event": "council_provider_call_start", **retry_event})
+                retry_started_at = time.monotonic()
+                try:
+                    result = self._call_gateway_with_watchdog(compact_prompt, timeout_sec, retry_call_kwargs)
+                    base_event = retry_event
+                    started_at = retry_started_at
+                except Exception as retry_exc:
+                    self._emit_call_failure(retry_exc, retry_started_at, retry_event)
+                    raise
+            else:
+                self._emit_call_failure(exc, started_at, base_event)
+                raise
+
+        elapsed_sec = round(time.monotonic() - started_at, 3)
+        response_text = getattr(result, "text", str(result)) if result else ""
+        self._emit_progress(
+            {
+                "event": "council_provider_call_done",
+                **base_event,
+                "elapsed_sec": elapsed_sec,
+                "provider": str(getattr(result, "provider", "")),
+                "model": str(getattr(result, "model", "")),
+                "response_chars": len(response_text),
+            }
+        )
+        return result
+
+    def _call_gateway_with_watchdog(
+        self,
+        prompt: str,
+        timeout_sec: float,
+        call_kwargs: dict[str, Any],
+    ) -> Any:
+        if timeout_sec > 0:
+            return _call_with_watchdog(
+                self.gateway,
+                "council",
+                prompt,
+                _chain_watchdog_timeout_sec(self.gateway, "council", timeout_sec),
+                call_kwargs,
+            )
+        return self.gateway.call("council", prompt, **call_kwargs)
+
+    def _emit_call_failure(
+        self,
+        exc: Exception,
+        started_at: float,
+        base_event: dict[str, Any],
+    ) -> None:
+        elapsed_sec = round(time.monotonic() - started_at, 3)
+        if isinstance(exc, CouncilProviderCallTimeout):
+            self._emit_progress(
+                {
+                    "event": "council_provider_call_timeout",
+                    **base_event,
+                    "elapsed_sec": elapsed_sec,
+                    "blocks_product_pass": True,
+                }
+            )
+            return
+        self._emit_progress(
+            {
+                "event": "council_provider_call_error",
+                **base_event,
+                "elapsed_sec": elapsed_sec,
+                "error_class": exc.__class__.__name__,
+                "error": _redact_text(exc),
+                "failure_kind": _council_call_failure_kind(exc),
+                "blocks_product_pass": True,
+            }
+        )
 
     def _record_turn(
         self,
@@ -470,6 +726,195 @@ def _load_council_runner() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _council_call_timeout_sec() -> float:
+    raw = (
+        os.environ.get("MUCHANIPO_COUNCIL_PROVIDER_TIMEOUT_SEC")
+        or os.environ.get("MUCHANIPO_COUNCIL_CALL_TIMEOUT_SEC")
+        or ""
+    )
+    try:
+        timeout_sec = float(raw)
+    except (TypeError, ValueError):
+        # Default: 20s per council call keeps serial 6-persona rounds under
+        # ~2 minutes even with occasional retries, well inside the 15-minute
+        # deep-profile budget.
+        return 20.0
+    return max(0.0, timeout_sec)
+
+
+def _council_stage_max_tokens(council_stage: str) -> int:
+    env_stage = f"MUCHANIPO_COUNCIL_{council_stage.upper()}_MAX_TOKENS"
+    raw = (
+        os.environ.get(env_stage)
+        or os.environ.get("MUCHANIPO_OPENCODE_COUNCIL_MAX_TOKENS")
+        or os.environ.get("MUCHANIPO_COUNCIL_MAX_TOKENS")
+        or "4096"
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 4096
+    return max(1024, min(value, 8192))
+
+
+def _chairman_timeout_fallback_enabled() -> bool:
+    raw = (
+        os.environ.get("MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK")
+        or os.environ.get("MUCHANIPO_COUNCIL_CHAIRMAN_TIMEOUT_FALLBACK")
+        or ""
+    )
+    return raw.strip().casefold() in {"1", "true", "yes", "on", "allow", "enabled"}
+
+
+def _council_provider_route(gateway: GatewayV2) -> str:
+    stage_routes = getattr(gateway, "stage_routes", {}) or {}
+    route = stage_routes.get("council")
+    if route:
+        return str(route)
+    fallback_chain = getattr(gateway, "fallback_chain", {}) or {}
+    chain = fallback_chain.get("council") or []
+    return str(chain[0]) if chain else ""
+
+
+def _chain_watchdog_timeout_sec(gateway: Any, stage: str, per_provider_timeout_sec: float) -> float:
+    """Let each fallback provider consume its own bounded timeout plus handoff grace."""
+
+    try:
+        names = list((getattr(gateway, "fallback_chain", {}) or {}).get(stage) or [])
+    except Exception:
+        names = []
+    candidate_count = max(1, len(names))
+    if candidate_count <= 1:
+        return float(per_provider_timeout_sec)
+    grace = max(2.0, min(10.0, float(per_provider_timeout_sec) * 0.25))
+    return float(per_provider_timeout_sec) * candidate_count + grace
+
+
+def _compact_retry_enabled() -> bool:
+    raw = os.environ.get("MUCHANIPO_COUNCIL_COMPACT_RETRY", "1")
+    return raw.strip().casefold() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _is_empty_or_timeout_live_output(exc: Exception) -> bool:
+    text = str(exc).casefold()
+    if isinstance(exc, LiveModeViolation):
+        return "empty or too-short" in text
+    return (
+        "empty or too-short" in text
+        or "read operation timed out" in text
+        or "council provider call timed out" in text
+    )
+
+
+def _council_call_failure_kind(exc: Exception) -> str:
+    text = str(exc).casefold()
+    if "empty or too-short" in text:
+        return "empty_live_output"
+    if isinstance(exc, CouncilProviderCallTimeout) or "timed out" in text:
+        return "provider_timeout"
+    if any(
+        marker in text
+        for marker in (
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "invalid key",
+            "invalid_key",
+            "api key is not configured",
+            "missing_credential",
+            "mock_or_offline",
+            "no live provider",
+        )
+    ):
+        return "auth_or_policy_failure"
+    if "rejected mock model result" in text or "placeholder model output" in text:
+        return "mock_live_output"
+    return "provider_error"
+
+
+def _opencode_empty_retry_model(gateway: Any, provider_route: str, current_model: Any = None) -> str | None:
+    if provider_route != "opencode":
+        return None
+    current = str(current_model or _provider_model(gateway, "opencode") or "")
+    raw = os.environ.get("MUCHANIPO_COUNCIL_EMPTY_RETRY_MODELS", "opencode/mimo-v2.5-pro")
+    candidates = [
+        value.strip()
+        for value in raw.split(",")
+        if value.strip().startswith(("opencode/", "opencode-go/"))
+    ]
+    for candidate in candidates:
+        if candidate != current:
+            return candidate
+    return None
+
+
+def _provider_model(gateway: Any, provider_name: str) -> str:
+    providers = getattr(gateway, "providers", {}) or {}
+    provider = providers.get(provider_name) if isinstance(providers, dict) else None
+    return str(getattr(provider, "model", "") or "")
+
+
+def _compact_council_retry_prompt(
+    *,
+    council_stage: str,
+    persona_id: str,
+    layer: RoundLayer,
+    evidence_refs: list[Any],
+) -> str:
+    lines = [
+        "Return only valid JSON. No markdown.",
+        f"Council stage: {council_stage}",
+        f"Persona: {persona_id}",
+        f"Layer: {layer.layer_id} / {getattr(layer, 'chapter_title', getattr(layer, 'title', ''))}",
+        f"Question: {layer.focus_question}",
+        "Use the evidence IDs below; do not invent IDs.",
+    ]
+    for ref in evidence_refs[:3]:
+        ref_id = str(getattr(ref, "id", "") or "").strip()
+        if not ref_id:
+            continue
+        title = str(getattr(ref, "source_title", "") or "untitled source").strip()
+        quote = " ".join(str(getattr(ref, "quote", "") or "").split())[:160]
+        lines.append(f"- {ref_id}: {title}{f' — {quote}' if quote else ''}")
+    if council_stage == "peer_review":
+        lines.append(
+            'Schema: {"stance":"agree|challenge|mixed","critiques":["..."],'
+            '"agreements":["..."],"suggested_revision":"...","confidence_score":0.0}'
+        )
+    else:
+        lines.append(
+            'Schema: {"key_claim":"...","body_claims":["..."],'
+            '"evidence_ref_ids":["..."],"confidence_score":0.0,'
+            '"disagreements":["..."],"next_actions":["..."]}'
+        )
+    return "\n".join(lines)
+
+
+def _call_with_watchdog(
+    gateway: GatewayV2,
+    stage: str,
+    prompt: str,
+    timeout_sec: float,
+    call_kwargs: dict[str, Any],
+) -> Any:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(gateway.call, stage, prompt, **call_kwargs)
+    try:
+        return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise CouncilProviderCallTimeout(
+            f"council provider call timed out after {timeout_sec:.3g}s"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False)
+
+
+def _redact_text(value: Any) -> str:
+    return _SECRETS_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", str(value))
 
 
 def _model_result_to_round_record(

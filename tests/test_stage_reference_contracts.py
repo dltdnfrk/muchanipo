@@ -94,6 +94,8 @@ def test_reference_readiness_report_surfaces_gaps_and_license_warnings():
     mempalace = next(item for item in report["references"] if item["name"] == "MemPalace")
     assert mempalace["ready"] is True
     assert mempalace["claim_level"] == "runtime_ready"
+    assert mempalace["license"].startswith("MIT")
+    assert mempalace["source_url"] == "https://github.com/MemPalace/mempalace"
     assert "src/research/mempalace.py" in mempalace["code_paths"]
     oasis = next(item for item in report["references"] if item["name"] == "OASIS / CAMEL-AI")
     assert oasis["ready"] is True
@@ -114,11 +116,18 @@ def test_reference_readiness_report_surfaces_gaps_and_license_warnings():
     react = next(item for item in report["references"] if item["name"] == "ReACT 보고서 작성 패턴")
     assert react["ready"] is True
     assert react["claim_level"] == "runtime_ready"
+    assert react["source_url"] == "https://react-lm.github.io"
     assert "tests/test_react_report_executor.py" in react["test_paths"]
     wiki = next(item for item in report["references"] if item["name"] == "Karpathy LLM Wiki Pattern")
     assert wiki["ready"] is True
     assert wiki["claim_level"] == "runtime_ready"
     assert "src/wiki/governance.py" in wiki["code_paths"]
+    hachimi = next(item for item in report["references"] if item["name"] == "HACHIMI")
+    assert hachimi["license"] == "MIT"
+    assert hachimi["source_url"] == "https://github.com/ZeroLoss-Lab/HACHIMI"
+    assert "SimHash" in hachimi["implementation_notes"]
+    map_elites = next(item for item in report["references"] if item["name"] == "MAP-Elites")
+    assert map_elites["source_url"] == "https://github.com/EvoAgentX/EvoAgentX"
 
 
 def test_reference_inventory_paths_exist_for_runtime_backed_items():

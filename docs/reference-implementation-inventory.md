@@ -72,6 +72,12 @@ Dataset boundary:
 
 - `Nemotron-Personas-Korea` is CC-BY-4.0. Preserve attribution and mark local
   samples/filtered use when personas or outputs depend on it.
+- `HACHIMI` was rechecked against `ZeroLoss-Lab/HACHIMI` during the 2026-05-03
+  audit and its upstream `LICENSE` is MIT. Muchanipo treats it as a local
+  runtime adaptation, not a full student-profile generator.
+- `GStack`, `MemPalace`, and `EvoAgentX` were also rechecked during the
+  2026-05-03 audit and their upstream `LICENSE` files are MIT. Release claims
+  still need to distinguish local adapters from full vendored runtimes.
 
 Known gaps are intentionally surfaced by `muchanipo references` instead of
 being hidden behind broad "implemented" labels. A license warning by itself
@@ -148,7 +154,16 @@ Stage 3 research artifacts now distinguish runner existence from actual backend
 execution. `research_backend_trace`, `research_backend_kinds`, and
 `research_evidence_kinds` record what ran, and `research_memory_store` is set to
 `not_executed` unless the vault/InsightForge memory adapter actually runs or
-produces memory-backed evidence. MemPalace is a local clean-room runtime:
+produces memory-backed evidence. Karpathy Autoresearch is now a vendored
+MIT-declared source snapshot plus an executed local adapter:
+`third_party/karpathy-autoresearch/` preserves upstream `program.md`,
+`prepare.py`, `train.py`, and project metadata, while
+`src/research/karpathy_autoresearch.py` runs a scratch `program.md` /
+`results.tsv` keep-discard loop over `ResearchPlan.queries` whenever
+source-research mode is enabled. The local metric is
+`source_grounding_gap_score` (lower is better), and repo git reset is replaced
+by scratch retention so user work is not reverted. MemPalace is a local
+clean-room runtime:
 `src/research/mempalace.py` indexes markdown memory roots by wing, room, source
 path, score, and snippet, and `src/search/insight-forge.py` calls that engine
 for `mempalace_search`. It also persists source-backed memory notes into
@@ -191,6 +206,13 @@ rounds, and turn transcript. Pipeline artifacts expose
 event count, report-agent readiness, and deep-interaction readiness. This is a
 runtime adaptation under an AGPL compliance warning, not permission to copy more
 upstream code without review.
+
+Stage 5 HACHIMI now includes the upstream README's concrete control points:
+`src/council/persona_generator.py` runs propose, fast validation, bounded
+revise, deep validation, role quota telemetry, and SimHash-style deduplication
+before final persona admission. The implementation remains a Muchanipo-specific
+Council persona adapter; it does not claim to generate the full HACHIMI-1M
+student-profile corpus or run HACHIMI's provider pool/Streamlit UI.
 
 Stage 6 raw/wiki governance now has an explicit Karpathy-style dual-path
 record. `src/wiki/governance.py` builds a raw JSON path, compiled wiki markdown

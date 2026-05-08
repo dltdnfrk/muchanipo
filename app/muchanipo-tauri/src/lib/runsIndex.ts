@@ -12,6 +12,8 @@ export interface RunIndexEntry {
   topic: string;
   createdAt: number;
   status: "running" | "done" | "failed";
+  studioId?: string;
+  studioModel?: string;
 }
 
 export function listRuns(): RunIndexEntry[] {
@@ -45,11 +47,15 @@ function writeRuns(entries: RunIndexEntry[]): void {
   }
 }
 
-export function pushRun(runId: string, topic: string): void {
+export function pushRun(
+  runId: string,
+  topic: string,
+  options?: { studioId?: string; studioModel?: string },
+): void {
   const now = Date.now();
   const existing = listRuns().filter((e) => e.runId !== runId);
   writeRuns([
-    { runId, topic, createdAt: now, status: "running" },
+    { runId, topic, createdAt: now, status: "running", studioId: options?.studioId, studioModel: options?.studioModel },
     ...existing,
   ]);
 }
@@ -78,7 +84,12 @@ export function markRunRunning(runId: string): void {
 export function deleteRun(runId: string): void {
   writeRuns(listRuns().filter((e) => e.runId !== runId));
   // Best-effort cleanup of associated keys.
-  for (const suffix of ["topic", "report", "report_path", "chapter_count", "pending", "pending_at"]) {
+  for (const suffix of [
+    "topic", "report", "report_path", "chapter_count",
+    "pending", "pending_at",
+    "studioBrief", "studioModel", "studioId",
+    "gaps", "sources",
+  ]) {
     try {
       localStorage.removeItem(`run:${runId}:${suffix}`);
     } catch {

@@ -14,14 +14,35 @@ from src.evidence.provenance import Provenance
 
 
 DEFAULT_CONTACT_EMAIL = "research@muchanipo.local"
-DEFAULT_TIMEOUT = 10.0
-MAX_RETRIES = 3
+DEFAULT_TIMEOUT = float(os.getenv("MUCHANIPO_ACADEMIC_HTTP_TIMEOUT_SECONDS", "10.0"))
+MAX_RETRIES = max(1, int(os.getenv("MUCHANIPO_ACADEMIC_HTTP_MAX_RETRIES", "3")))
+
+
+def current_timeout() -> float:
+    raw = os.getenv("MUCHANIPO_ACADEMIC_HTTP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        return DEFAULT_TIMEOUT
+
+
+def current_max_retries() -> int:
+    raw = os.getenv("MUCHANIPO_ACADEMIC_HTTP_MAX_RETRIES", "").strip()
+    if not raw:
+        return MAX_RETRIES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return MAX_RETRIES
 
 
 def contact_email() -> str:
     return (
         os.getenv("MUCHANIPO_CONTACT_EMAIL")
         or os.getenv("UNPAYWALL_EMAIL")
+        or os.getenv("OPENALEX_EMAIL")
         or DEFAULT_CONTACT_EMAIL
     )
 
@@ -62,6 +83,7 @@ def evidence_ref(
     journal: str | None = None,
     institution: str | None = None,
     retrieved_at: str | None = None,
+    access_status: str | None = None,
 ) -> EvidenceRef:
     return EvidenceRef(
         id=f"{source}:{paper_id}",
@@ -80,6 +102,7 @@ def evidence_ref(
             institution=institution,
             retrieved_at=retrieved_at,
         ).as_dict(),
+        access_status=access_status,
     )
 
 
@@ -94,13 +117,13 @@ class AcademicHttpClient:
         max_concurrency: int = 1,
         min_interval_seconds: float = 0.0,
         client: httpx.AsyncClient | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: float | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.headers = dict(headers or {})
         self._client = client
         self._owns_client = client is None
-        self._timeout = timeout
+        self._timeout = current_timeout() if timeout is None else timeout
         self._semaphore = asyncio.Semaphore(max(1, max_concurrency))
         self._min_interval_seconds = max(0.0, min_interval_seconds)
         self._last_request_at = 0.0
@@ -136,7 +159,8 @@ class AcademicHttpClient:
         request_headers = {**self.headers, **dict(headers or {})}
         async with self._semaphore:
             await self._respect_interval()
-            for attempt in range(MAX_RETRIES):
+            max_retries = current_max_retries()
+            for attempt in range(max_retries):
                 try:
                     response = await self._ensure_client().get(
                         self._url(path),
@@ -153,7 +177,7 @@ class AcademicHttpClient:
                     response.raise_for_status()
                     return response
                 except (httpx.TimeoutException, httpx.HTTPStatusError):
-                    if attempt == MAX_RETRIES - 1:
+                    if attempt == max_retries - 1:
                         raise
                     await asyncio.sleep(0.25 * (2**attempt))
         raise RuntimeError("unreachable retry state")

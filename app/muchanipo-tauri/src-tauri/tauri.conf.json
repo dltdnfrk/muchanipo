@@ -2,23 +2,28 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Muchanipo",
   "version": "0.1.0",
-  "identifier": "ai.muchanipo.app",
+  "identifier": "ai.muchanipo.desktop",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Muchanipo",
+        "url": "index.html",
         "width": 1100,
         "height": 760,
         "minWidth": 720,
         "minHeight": 480,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#1b1b1a"
       }
     ],
     "security": {

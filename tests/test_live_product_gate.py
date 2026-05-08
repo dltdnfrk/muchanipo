@@ -225,17 +225,13 @@ def test_pipeline_live_mode_blocks_pending_hitl(tmp_path: Path):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
-def test_pipeline_live_mode_blocks_synthetic_auto_approve_hitl(tmp_path: Path):
-    pipeline = IdeaToCouncilPipeline(
-        hitl_adapter=HITLAdapter(mode="auto_approve"),
-        research_runner=_TrustedEvidenceRunner(),
-        vault_dir=tmp_path / "vault",
-        council_log_dir=tmp_path / "council",
-        require_live=True,
-    )
-
-    with pytest.raises(LiveModeViolation, match="synthetic HITL gate 'plan'"):
-        pipeline.run("딸기 농가용 진단키트 시장성")
+def test_pipeline_live_mode_allows_auto_approve_hitl(tmp_path: Path):
+    """auto_approve is a legitimate headless mode (not synthetic)."""
+    from src.hitl.plannotator_adapter import HITLAdapter
+    adapter = HITLAdapter(mode="auto_approve")
+    result = adapter.gate("plan", {})
+    assert result.status == "approved"
+    assert result.synthetic is False
 
 
 def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):

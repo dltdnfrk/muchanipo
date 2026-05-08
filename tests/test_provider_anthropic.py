@@ -6,11 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.council.karpathy_prompts import build_chairman_prompt, build_individual_prompt
+from src.council.karpathy_prompts import build_chairman_prompt, build_individual_prompt, build_peer_review_prompt
 from src.council.parsers import parse_council_response
 from src.council.persona_generator import Draft
 from src.council.persona_prompts import build_persona_deep_validate_prompt, parse_persona_validation_response
 from src.council.round_layers import DEFAULT_LAYERS
+from src.evidence.artifact import EvidenceRef
 from src.execution.providers.anthropic import (
     AnthropicProvider,
     _estimate_cost,
@@ -126,9 +127,59 @@ class TestAnthropicProviderOffline:
         result = provider.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
         parsed = parse_council_response(result.text, layer)
 
-        assert parsed.key_claim.startswith("조건부 권고")
-        assert "offline 실행" in parsed.body_claims[0]
+        assert parsed.key_claim.startswith("흐름 검증")
+        assert "실제 출처" in parsed.key_claim
+        assert "조건부 권고" not in parsed.key_claim
         assert parsed.framework == "Porter 5 Forces"
+
+    def test_offline_chairman_uses_source_backed_evidence_context(self):
+        provider = AnthropicProvider(offline=True, prefer_cli=False)
+        layer = DEFAULT_LAYERS[1]
+        evidence = [
+            EvidenceRef(
+                id="openalex:W123",
+                source_url="https://openalex.org/W123",
+                source_title="Plant disease diagnostics competitor pricing market evidence",
+                quote="Plant disease diagnostics competitor pricing evidence",
+                source_grade="A",
+                provenance={"kind": "openalex", "source": "https://openalex.org/W123"},
+            )
+        ]
+        prompt = build_chairman_prompt({}, {}, layer, evidence_refs=evidence)
+
+        result = provider.call("council", prompt, council_stage="chairman", layer_id=layer.layer_id)
+        parsed = parse_council_response(result.text, layer)
+
+        assert parsed.evidence_ref_ids == ["openalex:W123"]
+        assert "offline 실행" not in "\n".join(parsed.body_claims)
+        assert "조건부 권고" not in parsed.key_claim
+        assert parsed.framework_output["source_backed"] is True
+
+    def test_offline_peer_review_uses_source_backed_evidence_context(self):
+        provider = AnthropicProvider(offline=True, prefer_cli=False)
+        layer = DEFAULT_LAYERS[1]
+        evidence = [
+            EvidenceRef(
+                id="crossref-1-1-abcdef1234",
+                source_url="https://doi.org/10.1234/strawberry",
+                source_title="Strawberry diagnostics competitor pricing evidence",
+                quote="Strawberry disease diagnostics competitor pricing evidence",
+                source_grade="A",
+                provenance={"kind": "crossref", "source": "https://doi.org/10.1234/strawberry"},
+            )
+        ]
+        prompt = build_peer_review_prompt(
+            {"persona_id": "p1", "role": "market_researcher"},
+            [{"key_claim": "source-backed claim", "body_claims": ["support"]}],
+            layer,
+            evidence_refs=evidence,
+        )
+
+        result = provider.call("council", prompt, council_stage="peer_review", layer_id=layer.layer_id)
+        parsed = result.text
+
+        assert "crossref-1-1-abcdef1234" in parsed
+        assert "offline mock" not in parsed
 
     def test_offline_hachimi_validation_mock_preserves_entity_personas(self):
         provider = AnthropicProvider(offline=True, prefer_cli=False)

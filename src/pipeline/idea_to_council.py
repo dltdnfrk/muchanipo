@@ -1,10 +1,13 @@
 """End-to-end Idea-to-Council pipeline with offline and live-product modes."""
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
+import inspect
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +39,12 @@ from src.interview.product_planning import build_product_planning_projection, de
 from src.interview.session import InterviewSession
 from src.interview.show_me_the_prd_port import show_me_the_prd_artifacts
 from src.research.autoresearch_runtime import runtime_contract_for_profile
-from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
+from src.research.depth import ResearchDepthProfile, depth_profile, effective_query_limit, normalize_depth
+from src.research.karpathy_autoresearch import (
+    KarpathyAutoresearchRunner,
+    build_research_quality_audit,
+    iteration_budget_for_profile,
+)
 from src.research.planner import ResearchPlanner
 from src.research.runner import MockResearchRunner, build_runner
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
@@ -49,6 +57,7 @@ from src.runtime.live_mode import (
     assert_live_report,
     live_requested_from_env,
     require_live_mode,
+    source_research_requested_from_env,
 )
 from src.targeting import TargetingMap
 from src.targeting.builder import build_targeting_map
@@ -97,10 +106,22 @@ class IdeaToCouncilPipeline:
         depth: str = "deep",
     ) -> None:
         self.require_live = live_requested_from_env() if require_live is None else require_live
+        self.source_research = source_research_requested_from_env()
         self.depth = normalize_depth(depth)
         self.depth_profile = depth_profile(self.depth)
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
-        self.research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
+        base_research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
+        self.research_runner = (
+            KarpathyAutoresearchRunner(
+                base_research_runner,
+                iteration_budget=iteration_budget_for_profile(
+                    self.depth_profile,
+                    source_research=self.source_research,
+                ),
+            )
+            if self.source_research
+            else base_research_runner
+        )
         self.gateway_v2 = _coerce_gateway_v2(
             model_gateway,
             require_live_default=self.require_live,
@@ -115,12 +136,21 @@ class IdeaToCouncilPipeline:
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
         runtime_contract = runtime_contract_for_profile(self.depth_profile)
+        original_topic = _extract_original_topic_anchor(raw_idea)
+        state.record_artifact("topic_anchor", original_topic)
         state.record_artifact("research_depth", self.depth)
+        state.record_artifact("source_research_enabled", "true" if self.source_research else "false")
         state.record_artifact("research_depth_description", self.depth_profile.description)
-        state.record_artifact("research_query_limit", str(self.depth_profile.query_limit))
-        state.record_artifact("council_round_budget", str(self.depth_profile.council_round_budget))
+        query_limit = effective_query_limit(self.depth_profile, source_research=self.source_research)
+        state.record_artifact("research_profile_query_limit", str(self.depth_profile.query_limit))
+        state.record_artifact("research_query_limit", str(query_limit))
+        council_round_budget = _effective_council_round_budget(self.depth_profile)
+        active_persona_count = _effective_active_persona_count(self.depth_profile)
+        state.record_artifact("council_round_budget", str(council_round_budget))
+        state.record_artifact("council_profile_round_budget", str(self.depth_profile.council_round_budget))
         state.record_artifact("council_persona_pool_size", str(self.depth_profile.persona_pool_size))
-        state.record_artifact("active_council_persona_count", str(self.depth_profile.active_persona_count))
+        state.record_artifact("active_council_persona_count", str(active_persona_count))
+        state.record_artifact("active_council_profile_persona_count", str(self.depth_profile.active_persona_count))
         state.record_artifact("target_runtime_seconds", str(self.depth_profile.target_runtime_seconds))
         state.record_artifact(
             "extended_test_time_compute",
@@ -287,18 +317,21 @@ class IdeaToCouncilPipeline:
         self._emit(state, Stage.TARGETING)
 
         state.advance(Stage.RESEARCH)
-        plan = ResearchPlanner().plan(brief, max_queries=self.depth_profile.query_limit)
+        plan = ResearchPlanner().plan(brief, max_queries=query_limit)
+        if self.require_live or self.source_research:
+            _assert_research_plan_preserves_topic_anchor(plan, original_topic)
         state.record_artifact("research_query_count", str(len(plan.queries)))
         state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
         state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
         self._emit_research_plan_progress(plan)
         findings = list(self.research_runner.run(plan))
-        self._emit_research_source_progress(findings)
+        self._emit_research_source_progress(findings, plan)
         research_runtime = _research_runtime_artifacts(self.research_runner, findings)
         state.record_artifact("research_runner_kind", research_runtime["runner_kind"])
         state.record_artifact("research_backend_kinds", ",".join(research_runtime["backend_kinds"]))
         state.record_artifact("research_evidence_kinds", ",".join(research_runtime["evidence_kinds"]))
         state.record_artifact("research_backend_trace", json.dumps(research_runtime["backend_trace"], ensure_ascii=False, sort_keys=True))
+        _record_karpathy_autoresearch_artifacts(state, self.research_runner)
         state.record_artifact("research_memory_store", research_runtime["memory_store"])
         if research_runtime["memory_store"] != "not_executed":
             state.record_artifact("research_memory_key", brief.id)
@@ -339,9 +372,9 @@ class IdeaToCouncilPipeline:
             executive_summary=f"Initial report for: {brief.research_question}",
             findings=findings,
             evidence_refs=evidence_refs,
-            open_questions=["What evidence should be collected next?"],
+            open_questions=_source_backed_open_questions(brief.research_question),
             confidence=0.6,
-            limitations=_report_limitations(require_live=self.require_live),
+            limitations=_report_limitations(require_live=self.require_live, source_research=self.source_research),
         )
         state.record_artifact("report_id", report.id)
 
@@ -355,6 +388,7 @@ class IdeaToCouncilPipeline:
             targeting_map=targeting_map,
             depth_profile=self.depth_profile,
             require_live=self.require_live,
+            progress_callback=self.progress_callback,
         )
 
         state.advance(Stage.COUNCIL)
@@ -362,9 +396,10 @@ class IdeaToCouncilPipeline:
             state.record_artifact(key, str(value))
         council = KarpathySession(
             gateway=self.gateway_v2,
-            layers=list(DEFAULT_LAYERS[: self.depth_profile.council_round_budget]),
+            layers=list(DEFAULT_LAYERS[: council_round_budget]),
             personas=personas,
-            active_persona_count=self.depth_profile.active_persona_count,
+            evidence_refs=evidence_refs,
+            active_persona_count=active_persona_count,
             progress_callback=self.progress_callback,
         )
         council.run_all()
@@ -589,6 +624,8 @@ class IdeaToCouncilPipeline:
             else "mixed_user_office_hours"
         )
         setattr(brief, "interview_trace", trace)
+        brief.original_topic = _extract_original_topic_anchor(raw_text)
+        setattr(brief, "topic_anchor", brief.original_topic)
         setattr(brief, "interview_trace_source", trace_source)
         setattr(brief, "synthetic_interview_trace", user_answer_count == 0)
         setattr(brief, "mixed_interview_trace", user_answer_count > 0 and office_hours_fill_count > 0)
@@ -664,15 +701,18 @@ class IdeaToCouncilPipeline:
                     "stage": Stage.RESEARCH.value,
                     "status": "searching",
                     "query": query,
+                    "topic_anchor": getattr(plan, "topic_anchor", ""),
                     "query_index": index,
                     "query_count": len(queries),
                     "backends": backends,
                 }
             )
 
-    def _emit_research_source_progress(self, findings: list[Finding]) -> None:
+    def _emit_research_source_progress(self, findings: list[Finding], plan: Any) -> None:
         seen: set[str] = set()
         emitted = 0
+        audit = build_research_quality_audit(findings, plan)
+        evaluations_by_id = {item.source_id: item for item in audit.source_evaluations}
         for finding in findings:
             for ref in finding.support:
                 key = f"{ref.source_title}|{ref.source_url}|{ref.quote}"
@@ -686,19 +726,55 @@ class IdeaToCouncilPipeline:
                 claim_prefix = "Initial research direction for: "
                 if not query and finding.claim.startswith(claim_prefix):
                     query = finding.claim[len(claim_prefix):]
-                self._emit_progress(
-                    {
-                        "event": "research_progress",
-                        "stage": Stage.RESEARCH.value,
-                        "status": "source_found",
-                        "query": query,
-                        "source_title": ref.source_title,
-                        "source_url": ref.source_url,
-                        "source_grade": ref.source_grade,
-                    }
-                )
-                if emitted >= 8:
-                    return
+                evaluation = evaluations_by_id.get(ref.id)
+                base_event = {
+                    "event": "research_progress",
+                    "stage": Stage.RESEARCH.value,
+                    "query": query,
+                    "source_title": ref.source_title,
+                    "source_url": ref.source_url,
+                    "source_grade": ref.source_grade,
+                    "access_status": ref.access_status,
+                    "topic_anchor": getattr(plan, "topic_anchor", ""),
+                }
+                if evaluation is not None:
+                    base_event.update(
+                        {
+                            "source_kind": evaluation.source_kind,
+                            "accepted": evaluation.accepted,
+                            "facet_ids": list(evaluation.facet_ids),
+                            "relevance_score": evaluation.relevance_score,
+                            "reason": evaluation.reason,
+                        }
+                    )
+                self._emit_progress({**base_event, "status": "source_found"})
+                if evaluation is not None:
+                    self._emit_progress({**base_event, "status": "source_evaluated"})
+                max_emitted = int(os.getenv("MUCHANIPO_MAX_RESEARCH_PROGRESS_SOURCES", "24"))
+                if emitted >= max_emitted:
+                    break
+            if emitted >= max_emitted:
+                break
+        for gap in audit.gaps:
+            self._emit_progress(
+                {
+                    "event": "research_progress",
+                    "stage": Stage.RESEARCH.value,
+                    "status": "knowledge_gap",
+                    "topic_anchor": getattr(plan, "topic_anchor", ""),
+                    **gap.to_dict(),
+                }
+            )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": Stage.RESEARCH.value,
+                "status": "facet_summary",
+                "facets": audit.to_dict()["facets"],
+                "gap_count": len(audit.gaps),
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+            }
+        )
 
     def _emit_progress(self, event: dict[str, Any]) -> None:
         self.progress_events.append(event)
@@ -815,8 +891,7 @@ def _chapter_evidence_map(
     evidence_refs: list[EvidenceRef],
 ) -> dict[int, list[str]]:
     mapper = ChapterMapper()
-    fallback_ids = [ref.id for ref in evidence_refs]
-    known_ids = set(fallback_ids)
+    known_ids = {ref.id for ref in evidence_refs}
     out: dict[int, list[str]] = {}
     for digest in digests:
         chapter = mapper.layer_to_chapter.get(digest.layer_id.split("_", 1)[0])
@@ -824,7 +899,7 @@ def _chapter_evidence_map(
             continue
         ids = [evidence_id for evidence_id in digest.evidence_ref_ids if evidence_id in known_ids]
         out.setdefault(chapter, [])
-        out[chapter].extend(ids or fallback_ids)
+        out[chapter].extend(ids)
     for chapter, ids in list(out.items()):
         out[chapter] = _dedupe_strings(ids)
     return out
@@ -877,6 +952,8 @@ def _evidence_index_lines(ref: EvidenceRef) -> list[str]:
         f"  - Grade: {ref.source_grade}",
         f"  - Provenance: {provenance_kind}",
     ]
+    if ref.access_status:
+        lines.append(f"  - Access status: {ref.access_status}")
     if provenance_source and provenance_source != source:
         lines.append(f"  - Provenance source: {provenance_source}")
     if quote:
@@ -899,6 +976,8 @@ def _claim_with_evidence(
     cleaned = claim.strip()
     if not cleaned:
         cleaned = "추가 검증이 필요한 빈 주장"
+    if _is_gap_or_policy_claim(cleaned):
+        return f"{cleaned} (Evidence gap)"
     if not evidence_ids:
         return f"{cleaned} (Evidence: none)"
     evidence_kind_by_id = evidence_kind_by_id or {}
@@ -906,6 +985,18 @@ def _claim_with_evidence(
     if _mock_only_evidence(evidence_ids, evidence_kind_by_id):
         return f"{cleaned} (Mock evidence, not source-backed: {refs})"
     return f"{cleaned} (Evidence: {refs})"
+
+
+def _is_gap_or_policy_claim(claim: str) -> bool:
+    normalized = " ".join(str(claim or "").split())
+    return normalized.startswith(
+        (
+            "부족한 근거 범위:",
+            "외부 시장성 주장은",
+            "TAM/SAM/SOM, 경쟁 제품 가격, 구매의향은",
+            "확보된 출처가 직접 지지하는 관찰과",
+        )
+    )
 
 
 def _append_claim_grounding_matrix(
@@ -921,12 +1012,14 @@ def _append_claim_grounding_matrix(
         "| --- | --- | --- |",
     ])
     for chapter_no, claim, evidence_ids in grounding_rows:
-        evidence = _evidence_cell(evidence_ids, evidence_kind_by_id)
+        evidence = _evidence_cell(claim, evidence_ids, evidence_kind_by_id)
         lines.append(f"| {chapter_no} | {_table_cell(claim)} | {evidence} |")
     lines.append("")
 
 
-def _evidence_cell(evidence_ids: list[str], evidence_kind_by_id: dict[str, str]) -> str:
+def _evidence_cell(claim: str, evidence_ids: list[str], evidence_kind_by_id: dict[str, str]) -> str:
+    if _is_gap_or_policy_claim(claim):
+        return "evidence gap / backlog"
     if not evidence_ids:
         return "none"
     refs = ", ".join(f"`{evidence_id}`" for evidence_id in evidence_ids)
@@ -1056,20 +1149,34 @@ def _round_digests(
 ) -> list[RoundDigest]:
     evidence_ids = [ref.id for ref in evidence_refs]
     digests: list[RoundDigest] = []
-    for idx in range(1, 11):
+    required_round_count = len(getattr(council, "layers", []) or []) if require_live else 10
+    for idx in range(1, max(1, required_round_count) + 1):
         round_record = council.rounds[idx - 1] if idx <= len(council.rounds) else None
         if isinstance(round_record, RoundResult):
+            key_claim = _visible_report_claim(round_record.key_claim)
+            body_claims = [
+                claim
+                for claim in (_visible_report_claim(value) for value in list(round_record.body_claims))
+                if claim and claim != key_claim
+            ]
             digests.append(
                 RoundDigest(
                     layer_id=round_record.layer_id,
                     chapter_title=round_record.chapter_title,
-                    key_claim=round_record.key_claim,
-                    body_claims=list(round_record.body_claims) or [round_record.key_claim],
-                    evidence_ref_ids=list(round_record.evidence_ref_ids) or evidence_ids,
+                    key_claim=key_claim or _fallback_layer_claim(round_record.chapter_title),
+                    body_claims=body_claims,
+                    evidence_ref_ids=list(round_record.evidence_ref_ids),
                     confidence=round_record.confidence_score,
                     framework=round_record.framework,
                 )
             )
+            continue
+
+        if round_record is None:
+            if require_live:
+                raise LiveModeViolation(
+                    f"live mode requires structured council synthesis for layer L{idx}; got no round record"
+                )
             continue
 
         round_mapping = round_record if isinstance(round_record, dict) else {}
@@ -1080,19 +1187,67 @@ def _round_digests(
             raise LiveModeViolation(
                 f"live mode requires structured council synthesis for layer L{idx}; got synthetic fallback"
             )
-        analysis = analysis or f"Round {idx} synthesis"
-        key_points = [str(point) for point in first.get("key_points", []) if point]
+        analysis = _visible_report_claim(analysis)
+        if not analysis:
+            continue
+        key_points = [
+            claim
+            for claim in (_visible_report_claim(str(point)) for point in first.get("key_points", []) if point)
+            if claim and claim != analysis
+        ]
         digests.append(
             RoundDigest(
                 layer_id=f"L{idx}_fallback",
                 chapter_title=f"Layer {idx}",
                 key_claim=analysis,
-                body_claims=key_points or [analysis],
+                body_claims=key_points,
                 evidence_ref_ids=evidence_ids,
                 confidence=float(first.get("confidence") or round_mapping.get("confidence") or 0.6),
             )
         )
+    if digests and not any(digest.layer_id.startswith("L10") for digest in digests):
+        digests.append(_fallback_executive_digest(digests, evidence_ids))
     return digests
+
+
+def _visible_report_claim(value: str) -> str:
+    cleaned = " ".join(str(value or "").split())
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if re.fullmatch(r"round\s+\d+\s+synthesis", lowered):
+        return ""
+    if cleaned.startswith("조건부 권고:"):
+        return ""
+    if cleaned.startswith("성공 기준은"):
+        return ""
+    return cleaned
+
+
+def _fallback_layer_claim(title: str) -> str:
+    return f"{title}은 직접 근거 범위를 확인한 뒤에만 결론으로 승격한다."
+
+
+def _fallback_executive_digest(
+    digests: list[RoundDigest],
+    evidence_ids: list[str],
+) -> RoundDigest:
+    cited = _dedupe_strings([evidence_id for digest in digests for evidence_id in digest.evidence_ref_ids])
+    if not cited:
+        cited = list(evidence_ids[:4])
+    return RoundDigest(
+        layer_id="L10_executive_synthesis",
+        chapter_title="Executive Summary + Recommendation",
+        key_claim="현재 확보 근거로는 최종 결론을 확정하지 말고, 출처가 직접 지지하는 주장과 추가 검증이 필요한 주장을 분리해야 한다.",
+        body_claims=[
+            "확보된 출처가 직접 지지하는 관찰만 결론 후보로 승격한다.",
+            "근거가 부족한 범위는 후속 조사 질문과 검증 backlog로 남긴다.",
+            "다음 의사결정은 결론 확정이 아니라 보강할 출처·개념·반례를 정하는 것이다.",
+        ],
+        evidence_ref_ids=cited,
+        confidence=min(0.64, max((digest.confidence for digest in digests), default=0.6)),
+        framework="SCR",
+    )
 
 
 def _coerce_gateway_v2(
@@ -1132,8 +1287,211 @@ def _coerce_gateway_v2(
     )
 
 
+def _chain_watchdog_timeout_sec(gateway: Any, stage: str, per_provider_timeout_sec: float) -> float:
+    """Allow every live fallback candidate its own timeout plus a small handoff grace.
+
+    The council watchdog should catch true chain stalls, not preempt the fallback
+    chain at the exact moment the first provider's per-call timeout fires.  In
+    MIMO/opencode-only live runs this gives MIMO one bounded attempt and still
+    leaves time for the opencode-go fallback before declaring a product-blocking
+    council timeout.
+    """
+
+    try:
+        names = list((getattr(gateway, "fallback_chain", {}) or {}).get(stage) or [])
+    except Exception:
+        names = []
+    candidate_count = max(1, len(names))
+    if candidate_count <= 1:
+        return float(per_provider_timeout_sec)
+    grace = max(2.0, min(10.0, float(per_provider_timeout_sec) * 0.25))
+    return float(per_provider_timeout_sec) * candidate_count + grace
+
+
+class _CouncilProviderProgressGateway:
+    """Emit council provider-call progress around council preparation calls."""
+
+    def __init__(
+        self,
+        gateway: GatewayV2,
+        progress_callback: Callable[[dict], None] | None,
+    ) -> None:
+        self._gateway = gateway
+        self._progress_callback = progress_callback
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._gateway, name)
+
+    def call(self, stage: str, prompt: str, **kwargs: Any) -> Any:
+        if stage != "council":
+            return self._gateway.call(stage, prompt, **kwargs)
+
+        timeout_sec = _council_provider_call_timeout_sec()
+        council_stage = str(kwargs.get("council_stage") or "council_preparation")
+        layer_id = str(kwargs.get("layer_id") or "council_preparation")
+        provider_route = _provider_route_for_stage(self._gateway, "council")
+        base_event = {
+            "round": 0,
+            "layer": layer_id,
+            "stage": "council_progress",
+            "pipeline_stage": "council",
+            "council_stage": council_stage,
+            "persona": str(kwargs.get("persona") or "persona_generator"),
+            "provider_route": provider_route,
+            "timeout_sec": timeout_sec,
+            "prompt_chars": len(prompt),
+        }
+        self._emit({"event": "council_provider_call_start", **base_event})
+        kwargs.setdefault("max_tokens", _council_stage_max_tokens(council_stage))
+        if timeout_sec > 0:
+            kwargs.setdefault("timeout", timeout_sec)
+        started_at = time.monotonic()
+        try:
+            if timeout_sec > 0:
+                result = self._call_with_watchdog(
+                    stage,
+                    prompt,
+                    _chain_watchdog_timeout_sec(self._gateway, stage, timeout_sec),
+                    kwargs,
+                )
+            else:
+                result = self._gateway.call(stage, prompt, **kwargs)
+        except TimeoutError:
+            self._emit(
+                {
+                    "event": "council_provider_call_timeout",
+                    **base_event,
+                    "elapsed_sec": round(time.monotonic() - started_at, 3),
+                    "blocks_product_pass": True,
+                }
+            )
+            raise
+        except Exception as exc:
+            self._emit(
+                {
+                    "event": "council_provider_call_error",
+                    **base_event,
+                    "elapsed_sec": round(time.monotonic() - started_at, 3),
+                    "error_class": exc.__class__.__name__,
+                    "error": _redact_text(exc),
+                    "blocks_product_pass": True,
+                }
+            )
+            raise
+
+        response_text = getattr(result, "text", str(result)) if result else ""
+        self._emit(
+            {
+                "event": "council_provider_call_done",
+                **base_event,
+                "elapsed_sec": round(time.monotonic() - started_at, 3),
+                "provider": str(getattr(result, "provider", "")),
+                "model": str(getattr(result, "model", "")),
+                "response_chars": len(response_text),
+            }
+        )
+        return result
+
+    def _call_with_watchdog(
+        self,
+        stage: str,
+        prompt: str,
+        timeout_sec: float,
+        kwargs: dict[str, Any],
+    ) -> Any:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self._gateway.call, stage, prompt, **kwargs)
+        try:
+            return future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"council provider call timed out after {timeout_sec:.3g}s") from exc
+        finally:
+            executor.shutdown(wait=False)
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(event)
+
+
+def _council_provider_call_timeout_sec() -> float:
+    raw = (
+        os.environ.get("MUCHANIPO_COUNCIL_PROVIDER_TIMEOUT_SEC")
+        or os.environ.get("MUCHANIPO_COUNCIL_CALL_TIMEOUT_SEC")
+        or os.environ.get("MUCHANIPO_OPENCODE_CLI_TIMEOUT_SEC")
+        or ""
+    )
+    try:
+        timeout_sec = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return timeout_sec if timeout_sec > 0 else 0.0
+
+
+def _council_stage_max_tokens(council_stage: str) -> int:
+    env_stage = f"MUCHANIPO_COUNCIL_{council_stage.upper()}_MAX_TOKENS"
+    raw = (
+        os.environ.get(env_stage)
+        or os.environ.get("MUCHANIPO_OPENCODE_COUNCIL_MAX_TOKENS")
+        or os.environ.get("MUCHANIPO_COUNCIL_MAX_TOKENS")
+        or "4096"
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 4096
+    return max(1024, min(value, 8192))
+
+
+def _provider_route_for_stage(gateway: GatewayV2, stage: str) -> str:
+    stage_routes = getattr(gateway, "stage_routes", {}) or {}
+    route = stage_routes.get(stage)
+    if route:
+        return str(route)
+    fallback_chain = getattr(gateway, "fallback_chain", {}) or {}
+    chain = fallback_chain.get(stage) or []
+    return str(chain[0]) if chain else ""
+
+
+def _redact_text(value: Any) -> str:
+    return re.sub(
+        r"(?i)(api[_-]?key|token|authorization|bearer|password|secret)\s*[:=]\s*[^\s,}]+",
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        str(value),
+    )
+
+
 def _use_real_research_from_env() -> bool:
-    return live_requested_from_env()
+    return live_requested_from_env() or source_research_requested_from_env()
+
+
+def _effective_council_round_budget(profile: ResearchDepthProfile) -> int:
+    return _bounded_int_env(
+        "MUCHANIPO_COUNCIL_ROUND_BUDGET",
+        default=profile.council_round_budget,
+        lower=1,
+        upper=profile.council_round_budget,
+    )
+
+
+def _effective_active_persona_count(profile: ResearchDepthProfile) -> int:
+    return _bounded_int_env(
+        "MUCHANIPO_ACTIVE_PERSONA_COUNT",
+        default=profile.active_persona_count,
+        lower=1,
+        upper=profile.persona_pool_size,
+    )
+
+
+def _bounded_int_env(name: str, *, default: int, lower: int, upper: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(lower, min(upper, value))
 
 
 def _interview_answer_key(label: str) -> str:
@@ -1198,6 +1556,43 @@ def _extract_embedded_interview_answers(raw_text: str) -> dict[str, str]:
         if value:
             answers[key] = value
     return answers
+
+
+def _extract_original_topic_anchor(raw_text: str) -> str:
+    """Return the per-run user topic before embedded interview answers."""
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"^\[원 요청\]\s*(.+)$", text, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    first_q = re.search(r"^\[Q[1-6]_[^\]]+\]", text, re.MULTILINE)
+    if first_q:
+        return text[: first_q.start()].strip()
+    return text
+
+
+def _assert_research_plan_preserves_topic_anchor(plan: Any, topic_anchor: str) -> None:
+    anchor = str(getattr(plan, "topic_anchor", "") or topic_anchor or "").strip()
+    if not anchor:
+        return
+    queries = list(getattr(plan, "queries", []) or [])
+    first_query = str(queries[0] if queries else "")
+    if first_query.strip() == anchor:
+        return
+    anchor_tokens = _topic_anchor_terms(anchor)
+    if anchor_tokens and all(token in first_query for token in anchor_tokens):
+        return
+    raise LiveModeViolation(
+        "source/live research plan lost the run topic anchor before first search query: "
+        f"anchor={anchor!r}, first_query={first_query!r}"
+    )
+
+
+def _topic_anchor_terms(topic: str) -> list[str]:
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", topic or "")
+    stop = {"source", "backed", "deep", "research", "council", "persona"}
+    return [token for token in tokens if len(token) >= 2 and token.casefold() not in stop][:8]
 
 
 def _split_interview_list(value: str) -> list[str]:
@@ -1330,10 +1725,23 @@ def _targeting_academic_sources(targeting_map: TargetingMap) -> list[str]:
     return _dedupe_strings(sources) or ["none"]
 
 
-def _report_limitations(*, require_live: bool) -> list[str]:
+def _report_limitations(*, require_live: bool, source_research: bool = False) -> list[str]:
     if require_live:
         return ["live run; source coverage, recency, and rate-limit gaps must be reviewed before external use"]
+    if source_research:
+        return [
+            "source-backed research run with local/mock LLM synthesis; review source coverage before external use"
+        ]
     return ["offline demonstration run; not suitable as source-backed product research"]
+
+
+def _source_backed_open_questions(topic: str) -> list[str]:
+    subject = topic.strip() or "해당 주제"
+    return [
+        f"{subject}에 대해 직접 근거가 있는 핵심 정의·범위·맥락을 우선 확인한다.",
+        f"{subject}에 대한 주요 관점, 반례, 한계를 신뢰도 높은 출처로 교차 검증한다.",
+        f"{subject}를 설명하거나 판단하기 위해 추가로 필요한 데이터·문헌·사례를 식별한다.",
+    ]
 
 
 def _safe_filename(value: str) -> str:
@@ -1366,6 +1774,25 @@ def _research_runtime_artifacts(runner: Any, findings: list[Finding]) -> dict[st
             "status": str(item.get("status") or "unknown"),
             "count": int(item.get("count") or 0),
             **({"error": str(item.get("error"))} if item.get("error") else {}),
+            **(
+                {"autoresearch_iteration": int(item.get("autoresearch_iteration"))}
+                if item.get("autoresearch_iteration") is not None
+                else {}
+            ),
+            **(
+                {"autoresearch_candidate_id": str(item.get("autoresearch_candidate_id"))}
+                if item.get("autoresearch_candidate_id")
+                else {}
+            ),
+            **(
+                {
+                    "autoresearch_candidate_description": str(
+                        item.get("autoresearch_candidate_description")
+                    )
+                }
+                if item.get("autoresearch_candidate_description")
+                else {}
+            ),
         }
         for item in getattr(runner, "last_backend_trace", []) or []
         if isinstance(item, dict)
@@ -1401,6 +1828,36 @@ def _research_runtime_artifacts(runner: Any, findings: list[Finding]) -> dict[st
         "evidence_kinds": evidence_kinds or ["none"],
         "memory_store": memory_store,
     }
+
+
+def _record_karpathy_autoresearch_artifacts(state: PipelineState, runner: Any) -> None:
+    loop_result = getattr(runner, "last_loop_result", None)
+    if loop_result is None:
+        return
+    payload = loop_result.to_dict() if hasattr(loop_result, "to_dict") else {}
+    if not isinstance(payload, dict):
+        return
+    experiments = payload.get("experiments") if isinstance(payload.get("experiments"), list) else []
+    state.record_artifact(
+        "karpathy_autoresearch_runtime",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+    )
+    state.record_artifact("karpathy_autoresearch_source_revision", str(payload.get("source_revision") or "unknown"))
+    state.record_artifact("karpathy_autoresearch_source_path", str(payload.get("source_path") or "unknown"))
+    state.record_artifact("karpathy_autoresearch_program_path", str(payload.get("program_path") or ""))
+    state.record_artifact("karpathy_autoresearch_results_path", str(payload.get("results_path") or ""))
+    state.record_artifact("karpathy_autoresearch_metric", str(payload.get("metric_name") or ""))
+    state.record_artifact("karpathy_autoresearch_metric_direction", str(payload.get("metric_direction") or ""))
+    state.record_artifact("karpathy_autoresearch_iteration_count", str(len(experiments)))
+    state.record_artifact("karpathy_autoresearch_best_iteration", str(payload.get("best_iteration") or 0))
+    state.record_artifact(
+        "karpathy_autoresearch_retained_count",
+        str(payload.get("retained_iteration_count") or 0),
+    )
+    state.record_artifact(
+        "karpathy_autoresearch_discarded_count",
+        str(payload.get("discarded_iteration_count") or 0),
+    )
 
 
 def _research_backend_labels(runner: Any) -> list[str]:
@@ -1491,6 +1948,8 @@ def _detect_offline_mode() -> bool:
         "OPENAI_API_KEY",
         "KIMI_API_KEY",
         "MOONSHOT_API_KEY",
+        "XIAOMI_MIMO_API_KEY",
+        "MIMO_API_KEY",
     ):
         if os.environ.get(key):
             return False
@@ -1506,6 +1965,7 @@ def _generate_council_personas(
     targeting_map: TargetingMap,
     depth_profile: ResearchDepthProfile,
     require_live: bool = False,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     consensus_ontology = consensus_plan.to_ontology()
     ontology_entities = _build_mirofish_ontology_entities(
@@ -1549,7 +2009,11 @@ def _generate_council_personas(
         "value_axes": base_value_axes,
         "targeting_domains": list(targeting_map.domains),
     }
-    generator = PersonaGenerator(gateway=gateway)
+    generator = PersonaGenerator(
+        gateway=_CouncilProviderProgressGateway(gateway, progress_callback)
+        if progress_callback is not None
+        else gateway
+    )
     diversity_map = DiversityMap(
         bins_per_axis=_diversity_bins_for_pool(depth_profile.persona_pool_size)
     )
@@ -1560,23 +2024,31 @@ def _generate_council_personas(
         diversity_map=diversity_map,
         topic=report.title,
         allow_fallbacks=False,
+        repair_duplicate_drafts=True,
         revision_notes=[
             "mirofish_ontology_entity_profile",
             "schema_grounded",
         ],
     )
     remaining_target = max(depth_profile.persona_pool_size - len(mirofish_personas), 0)
-    seed_personas = _korean_agtech_seed_personas(
-        ontology=ontology,
-        report=report,
-        count=remaining_target,
-    )
+    seed_personas = None
+    if _vertical_seed_personas_enabled() and not require_live:
+        seed_personas = _korean_agtech_seed_personas(
+            ontology=ontology,
+            report=report,
+            count=remaining_target,
+        )
+    generate_kwargs = {
+        "target_count": remaining_target,
+        "seed_personas": seed_personas,
+        "diversity_map": diversity_map,
+        "topic": report.title,
+    }
+    if "allow_fallbacks" in inspect.signature(generator.generate).parameters:
+        generate_kwargs["allow_fallbacks"] = not require_live
     generated_personas, generated_telemetry = generator.generate(
         ontology,
-        target_count=remaining_target,
-        seed_personas=seed_personas,
-        diversity_map=diversity_map,
-        topic=report.title,
+        **generate_kwargs,
     )
     finals = (mirofish_personas + generated_personas)[: depth_profile.persona_pool_size]
     telemetry = _combine_persona_telemetry(
@@ -1795,6 +2267,19 @@ def _list_of_strings(value: Any) -> list[str]:
     return []
 
 
+def _vertical_seed_personas_enabled() -> bool:
+    """Return true only when a caller explicitly opts into vertical seed personas.
+
+    Muchanipo's core pipeline is a general-purpose research tool. Domain-specific
+    persona seeds (for example, Korea AgTech/farmer samples) should not be
+    inferred solely from topic keywords because they can override live LLM persona
+    proposal and produce fallback-only council pools.
+    """
+
+    raw = os.getenv("MUCHANIPO_ENABLE_VERTICAL_SEED_PERSONAS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_council_runner_module() -> Any:
     path = Path(__file__).resolve().parents[1] / "council" / "council-runner.py"
     spec = importlib.util.spec_from_file_location("src.council.council_runner_runtime", path)
@@ -1819,8 +2304,8 @@ def _korean_agtech_seed_personas(
         " ".join(str(role) for role in ontology.get("roles", []) or []),
         " ".join(str(intent) for intent in ontology.get("intents", []) or []),
     ]).lower()
-    agtech_signals = ("agtech", "농가", "농업", "딸기", "사과", "진단키트", "farmer", "orchard")
-    if not any(signal.lower() in text for signal in agtech_signals):
+    ag_signals = ("agtech", "농가", "농업", "farmer", "agriculture", "agricultural")
+    if not any(signal.lower() in text for signal in ag_signals):
         return None
     return KoreaPersonaSampler(
         data_path=Path("vault/personas/seeds/korea/agtech-farmers-sample500.jsonl"),

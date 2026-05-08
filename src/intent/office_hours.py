@@ -466,26 +466,60 @@ def reframe_with_context(
 
     options = build_question_options(dim_id, topic, prev_answers)
 
-    # base question text — dim별 PRD 톤
+    # base question text — dim별 ontology extraction 톤
     base_questions: Dict[str, str] = {
-        "Q1_research_question": "PRD 개요로 한 문장 제품 정의와 핵심 검증 질문을 적어주세요.",
-        "Q2_purpose": "핵심 가치는 무엇이고, 답을 얻으면 무엇을 결정하나요?",
-        "Q3_context": "타겟 사용자와 실제 사용 시나리오는 무엇인가요?",
-        "Q4_known": "이미 알고 있는 배경, 제약, 리스크는 무엇인가요?",
-        "Q5_deliverable": "요구사항→기능→상세기능 또는 원하는 산출물 형태는 무엇인가요?",
-        "Q6_quality": "성공 지표와 근거 품질 기준은 무엇인가요? (Source A-D)",
+        "Q1_research_question": "핵심 개체·행위·관계를 한 문장으로 좁혀주세요.",
+        "Q2_purpose": "서로 다른 해석 중 1차 질문과 제외 의미를 갈라주세요.",
+        "Q3_context": "행위자, 트리거, 신호, 행동, 결과 흐름을 알려주세요.",
+        "Q4_known": "정의가 흔들리는 용어, 참고근거, 제약을 알려주세요.",
+        "Q5_deliverable": "엔티티, 속성, 관계, 금지할 오해를 개념 지도로 적어주세요.",
+        "Q6_quality": "증거 경계와 반례 기준을 정해주세요.",
     }
-    question = base_questions.get(dim_id, dim_id)
+    question = _topic_specific_interview_question(dim_id, topic, prev_answers, base_questions.get(dim_id, dim_id))
 
-    # 이전 답변 기반 보정 — Q3이 이전에 답해졌으면 Q4에 연결
+    return {"dim_id": dim_id, "question": question, "options": options}
+
+
+def _topic_specific_interview_question(
+    dim_id: str,
+    topic: str,
+    prev_answers: Dict[str, str],
+    fallback: str,
+) -> str:
+    subject = _short_subject(topic)
     context_answer = prev_answers.get("Q3_context") or prev_answers.get("context")
     purpose_answer = prev_answers.get("Q2_purpose") or prev_answers.get("purpose")
     deliverable_answer = prev_answers.get("Q5_deliverable") or prev_answers.get("deliverable_type")
-    if dim_id == "Q4_known" and context_answer:
-        question = f"({context_answer} 맥락에서) 이미 알고 있는 배경·제약·리스크는 무엇인가요?"
-    elif dim_id == "Q5_deliverable" and purpose_answer:
-        question = f"({purpose_answer} 목적에 맞춰) 요구사항→기능→상세기능을 어떻게 쪼갤까요?"
-    elif dim_id == "Q6_quality" and deliverable_answer:
-        question = f"({deliverable_answer} 산출물에 맞는) 성공 지표와 근거 품질 기준은? (Source A-D)"
+    if dim_id == "Q1_research_question":
+        return f"'{subject}' 요청에서 핵심 명사와 대상은 무엇이며, 어떤 개체·행위·관계를 한 문장으로 고정해야 하나요?"
 
-    return {"dim_id": dim_id, "question": question, "options": options}
+    if dim_id == "Q2_purpose":
+        return f"'{subject}' 안에 섞인 서로 다른 해석은 무엇이고, 이번에는 어떤 의미를 포함하거나 제외해야 하나요?"
+
+    if dim_id == "Q3_context":
+        return f"'{subject}'가 실제로 발생하는 장면에서 행위자, 트리거, 신호, 행동, 결과는 어떻게 이어지나요?"
+
+    if dim_id == "Q4_known":
+        prefix = f"'{subject}'"
+        if context_answer:
+            prefix += f" / {context_answer} 맥락"
+        return f"{prefix}에서 이미 알고 있는 참고자료, 정의가 흔들리는 용어, 제약, 폐기한 해석은 무엇인가요?"
+
+    if dim_id == "Q5_deliverable":
+        if purpose_answer:
+            return f"'{subject}'를 {purpose_answer} 맥락으로 볼 때, 어떤 엔티티·속성·관계·제외 의미를 개념 지도로 고정해야 하나요?"
+        return f"'{subject}'를 개념 지도로 옮기면 어떤 엔티티·속성·관계·제외 의미를 먼저 고정해야 하나요?"
+
+    if dim_id == "Q6_quality":
+        if deliverable_answer:
+            return f"'{subject}'의 {deliverable_answer} 구조를 검증하려면 어떤 증거 경계, 최신성, 지역성, 반례 기준이 필요할까요?"
+        return f"'{subject}'에서 좋은 답과 나쁜 답을 가르는 증거 경계, 최신성, 지역성, 반례 기준은 무엇인가요?"
+
+    return fallback
+
+
+def _short_subject(topic: str, limit: int = 48) -> str:
+    subject = " ".join(str(topic or "").split()).strip()
+    if not subject:
+        return "이 요청"
+    return subject if len(subject) <= limit else subject[: limit - 1].rstrip() + "…"

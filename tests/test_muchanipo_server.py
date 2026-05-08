@@ -239,6 +239,8 @@ def test_detect_offline_mode_treats_local_cli_as_online(monkeypatch):
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.delenv("XIAOMI_MIMO_API_KEY", raising=False)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
     monkeypatch.setenv("MUCHANIPO_PREFER_CLI", "1")
 
     import shutil
@@ -288,6 +290,8 @@ def test_detect_offline_mode_can_disable_cli_preference(monkeypatch):
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.delenv("XIAOMI_MIMO_API_KEY", raising=False)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
 
     import shutil
 

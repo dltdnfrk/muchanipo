@@ -14,6 +14,7 @@ class EvidenceRef:
     quote: str | None
     source_grade: str
     provenance: dict
+    access_status: str | None = None
 
     def __post_init__(self) -> None:
         self.validate()

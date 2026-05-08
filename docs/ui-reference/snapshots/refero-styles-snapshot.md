@@ -1,0 +1,64 @@
+- generic [active] [ref=e1] [box=0,0,1440,3784]:
+  - banner [ref=e2] [box=0,0,1440,81]:
+    - navigation "Breadcrumb" [ref=e4] [box=16,16,147,48]:
+      - link "Refero Styles" [ref=e5] [cursor=pointer] [box=16,16,48,48]:
+        - /url: https://refero.design
+      - generic [ref=e6] [box=76,24,10,32]: /
+      - link "Styles" [ref=e7] [cursor=pointer] [box=98,24,65,32]:
+        - /url: /
+  - generic [ref=e8] [box=0,81,1440,3703]:
+    - generic [ref=e10] [box=403,81,635,501]:
+      - generic [ref=e12] [box=707,164,26,20]: Beta
+      - heading "Design taste, extracted." [level=1] [ref=e13] [box=403,202,635,72]
+      - paragraph [ref=e14] [box=440,288,560,48]: Search curated references by brand, mood, color, typography, or URL. Open any style for colors, type, spacing, components, and a DESIGN.md your agent can use.
+      - generic [ref=e78] [box=403,382,635,160]:
+        - generic [ref=e79] [box=403,382,635,60]
+        - generic [ref=e81] [box=403,454,635,88]
+    - generic [ref=e106] [box=96,602,1248,3118]:
+      - tablist [ref=e109] [box=96,602,271,40]:
+        - tab "Trending" [selected] [ref=e110] [box=96,602,91,40]
+        - tab "Popular" [ref=e111] [box=195,602,83,40]
+        - tab "Newest" [ref=e112] [box=285,602,82,40]
+      - generic [ref=e113] [box=96,662,1248,3037]:
+        - link "ElevenLabs ElevenLabs ElevenLabs Architect's blueprint on warm…" [ref=e114] [cursor=pointer] [box=96,662,395,339]:
+          - /url: /style/031056ff-7af1-46db-8daa-115f731c5d26
+        - link "Apple Apple Apple Gallery wall at natural light —…" [ref=e124] [cursor=pointer] [box=523,662,395,339]:
+          - /url: /style/c9cabb96-32fa-4896-837a-f2497ce1c856
+        - 'link "Linear Linear Linear Midnight Command Center: A dark,…" [ref=e134] [cursor=pointer] [box=949,662,395,339]':
+          - /url: /style/90ce5883-bb24-4466-93f7-801cd617b0d1
+        - link "Cursor Cursor Cursor Warm ivory software studio." [ref=e144] [cursor=pointer] [box=96,1041,395,339]:
+          - /url: /style/4e3b4717-84c8-4599-baaf-a343c3d619b6
+        - link "Mercury Mercury Mercury Mountain Top Command Center" [ref=e154] [cursor=pointer] [box=523,1041,395,339]:
+          - /url: /style/3172cd4d-118a-4a16-a259-6b634d32322e
+        - link "Stripe Stripe Stripe Architectural blueprint on white…" [ref=e164] [cursor=pointer] [box=949,1041,395,339]:
+          - /url: /style/48e5de76-05d5-4c4e-a269-c7c245b291ec
+        - link "monopo saigon monopo saigon Shifting gradient depths on…" [ref=e174] [cursor=pointer] [box=96,1419,395,339]:
+          - /url: /style/3e52dd36-6ab1-48c6-bc40-47ef6d33abc2
+        - link "Hyperstudio Hyperstudio Hyperstudio Monochrome terminal with amber…" [ref=e183] [cursor=pointer] [box=523,1419,395,339]:
+          - /url: /style/8eb9c53e-d69c-497a-b640-610856cf3a60
+        - link "General Intelligence Company General Intelligence Company General Intelligence Company Architectural Night Sky" [ref=e193] [cursor=pointer] [box=949,1419,395,339]:
+          - /url: /style/34baa524-5d5b-4165-bbab-d01f05e6d6b9
+        - link "Family Family Family Pixar storyboard on cream paper —…" [ref=e203] [cursor=pointer] [box=96,1798,395,339]:
+          - /url: /style/1bcae895-2245-4d33-aa43-1c1e80719554
+        - link "Superhuman Superhuman Superhuman Cinematic cockpit behind warm…" [ref=e213] [cursor=pointer] [box=523,1798,395,339]:
+          - /url: /style/418b374a-be64-44f0-b17e-1d45308c7e62
+        - link "Antimetal Antimetal Antimetal Electric storm over a blueprint —…" [ref=e223] [cursor=pointer] [box=949,1798,395,339]:
+          - /url: /style/9f9a4a4f-1a27-47ca-a65b-68b9850a84e4
+        - link "Raycast Raycast Raycast Obsidian command terminal — a…" [ref=e233] [cursor=pointer] [box=96,2177,395,339]:
+          - /url: /style/3b6a17f0-3bdf-418c-a95e-0b89e5a8b2f8
+        - link "Dia Browser Dia Browser Dia Browser Prism on white stationery — light…" [ref=e243] [cursor=pointer] [box=523,2177,395,339]:
+          - /url: /style/b458ca1a-70f0-4f85-b745-f879a4d08457
+        - link "Authkit Authkit Authkit Midnight Command Center. Imagine a…" [ref=e253] [cursor=pointer] [box=949,2177,395,339]:
+          - /url: /style/e80231a2-e4d6-406a-a2c9-2e6109679690
+        - link "Minimalissimo Minimalissimo Minimalissimo White gallery canvas." [ref=e263] [cursor=pointer] [box=96,2555,395,339]:
+          - /url: /style/35ff063b-1fcc-48a2-83b3-56da01e23880
+        - link "Acctual Acctual Acctual Architectural blueprint on white…" [ref=e273] [cursor=pointer] [box=523,2555,395,339]:
+          - /url: /style/aeefc294-a8f7-443d-b76a-538dddc29afe
+        - link "Anthropic Anthropic Anthropic Research journal printed on warm…" [ref=e283] [cursor=pointer] [box=949,2555,395,339]:
+          - /url: /style/d469cba4-c448-4a43-a033-883f8bfcdc42
+        - generic [ref=e294] [box=96,2934,1248,386]
+        - link "Titan Titan Titan monochrome financial ledger" [ref=e309] [cursor=pointer] [box=96,3360,395,339]:
+          - /url: /style/964b9215-396b-492c-abec-7bd778d7b1c9
+        - link "Column Column Column Architectural blueprint on white…" [ref=e319] [cursor=pointer] [box=523,3360,395,339]:
+          - /url: /style/a76ec6ba-20b3-495c-9d89-1e58281e79e7
+  - alert [ref=e77] [box=-1,-1,1,1]

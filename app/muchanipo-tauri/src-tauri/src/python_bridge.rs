@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::events::{BackendAction, BackendEvent};
@@ -19,6 +20,7 @@ pub struct PythonBridge {
     child_pid: Arc<Mutex<Option<u32>>>,
     child_started_at: Arc<Mutex<Option<Instant>>>,
     last_event_at: Arc<Mutex<Option<Instant>>>,
+    active_app_run_id: Arc<Mutex<Option<String>>>,
     // In-memory log of every JSON-line event emitted by the active Python
     // pipeline. RunProgress (or any listener that mounts after the pipeline
     // has already emitted some events) calls `get_buffered_events` on mount
@@ -51,6 +53,7 @@ pub async fn start_pipeline(
     topic: String,
     pipeline: Option<String>,
     depth: Option<String>,
+    app_run_id: Option<String>,
     envs: Option<HashMap<String, String>>,
     app: AppHandle,
     bridge: State<'_, PythonBridge>,
@@ -82,6 +85,16 @@ pub async fn start_pipeline(
     if let Ok(mut pid) = bridge.child_pid.lock() {
         *pid = None;
     }
+    if let Ok(mut active_app_run_id) = bridge.active_app_run_id.lock() {
+        *active_app_run_id = None;
+    }
+    // If we synchronously killed the previous child above, do not wait for the
+    // background waiter thread to eventually close the old stdin handle. A
+    // quick consecutive run from the UI should start cleanly rather than be
+    // misclassified as "already running" by stale bridge state.
+    if let Ok(mut stdin) = bridge.stdin.lock() {
+        *stdin = None;
+    }
 
     {
         let stdin = bridge.stdin.lock().map_err(lock_error)?;
@@ -96,6 +109,7 @@ pub async fn start_pipeline(
         _ => "full",
     };
     let research_depth = normalize_pipeline_depth(depth.as_deref())?;
+    let app_run_id = normalize_app_run_id(app_run_id.as_deref());
 
     // Resolve python3 by capability, not just existence: GUI .app launches
     // may find a Homebrew Python that lacks the project dependency set.
@@ -114,6 +128,7 @@ pub async fn start_pipeline(
     // <NAME>_BIN env vars so the Python providers can find them no matter
     // what the parent environment looks like.
     command.env("PATH", merged_cli_path());
+    command.env("MUCHANIPO_APP_RUN_ID", &app_run_id);
 
     for (cli_name, env_var) in [
         ("claude", "CLAUDE_BIN"),
@@ -150,6 +165,10 @@ pub async fn start_pipeline(
         .ok_or_else(|| "failed to open python stdin".to_string())?;
 
     {
+        let mut slot = bridge.active_app_run_id.lock().map_err(lock_error)?;
+        *slot = Some(app_run_id.clone());
+    }
+    {
         let mut slot = bridge.stdin.lock().map_err(lock_error)?;
         *slot = Some(stdin);
     }
@@ -172,21 +191,48 @@ pub async fn start_pipeline(
     let wait_app = app.clone();
     let bridge_for_wait = bridge.inner().clone();
     let bridge_for_stdout = bridge.inner().clone();
+    let stdout_app_run_id = app_run_id.clone();
+    let stderr_app_run_id = app_run_id.clone();
+    let wait_app_run_id = app_run_id.clone();
 
     thread::spawn(move || {
+        use std::io::Write;
+        let log_path = stdout_log_path_for_app_run_id(&stdout_app_run_id);
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+        if let Some(ref mut f) = log {
+            let _ = writeln!(
+                f,
+                "--- new run app_run_id={} @ {:?} ---",
+                stdout_app_run_id,
+                std::time::SystemTime::now()
+            );
+        }
         for line in BufReader::new(stdout).lines() {
             match line {
                 Ok(line) if line.trim().is_empty() => {}
                 Ok(line) => {
-                    mark_backend_event_seen(&bridge_for_stdout);
-                    if should_buffer_backend_line(&line) {
-                        push_event_buffer(&bridge_for_stdout, &line);
+                    if let Some(ref mut f) = log {
+                        let _ = writeln!(f, "{}", line);
                     }
-                    emit_backend_line(&stdout_app, &line);
+                    mark_backend_event_seen(&bridge_for_stdout);
+                    if let Some(tagged_line) =
+                        emit_backend_line(&stdout_app, &line, &stdout_app_run_id)
+                    {
+                        if should_buffer_backend_line(&line) {
+                            push_event_buffer(&bridge_for_stdout, &tagged_line);
+                        }
+                    }
                 }
                 Err(error) => emit_backend_event(
                     &stdout_app,
-                    BackendEvent::error(format!("failed to read python stdout: {error}")),
+                    with_app_run_id(
+                        BackendEvent::error(format!("failed to read python stdout: {error}")),
+                        &stdout_app_run_id,
+                    ),
                 ),
             }
         }
@@ -194,14 +240,19 @@ pub async fn start_pipeline(
 
     thread::spawn(move || {
         use std::io::Write;
-        let log_path = std::env::temp_dir().join("muchanipo-python-stderr.log");
+        let log_path = stderr_log_path_for_app_run_id(&stderr_app_run_id);
         let mut log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .ok();
         if let Some(ref mut f) = log {
-            let _ = writeln!(f, "--- new run @ {:?} ---", std::time::SystemTime::now());
+            let _ = writeln!(
+                f,
+                "--- new run app_run_id={} @ {:?} ---",
+                stderr_app_run_id,
+                std::time::SystemTime::now()
+            );
         }
         for line in BufReader::new(stderr).lines() {
             match line {
@@ -212,12 +263,15 @@ pub async fn start_pipeline(
                     }
                     emit_backend_event(
                         &stderr_app,
-                        BackendEvent::warning(format!("python stderr: {line}")),
+                        with_app_run_id(stderr_line_to_backend_event(&line), &stderr_app_run_id),
                     );
                 }
                 Err(error) => emit_backend_event(
                     &stderr_app,
-                    BackendEvent::error(format!("failed to read python stderr: {error}")),
+                    with_app_run_id(
+                        BackendEvent::error(format!("failed to read python stderr: {error}")),
+                        &stderr_app_run_id,
+                    ),
                 ),
             }
         }
@@ -232,28 +286,51 @@ pub async fn start_pipeline(
                         Ok(status) if status.success() => {}
                         Ok(status) => emit_backend_event(
                             &wait_app,
-                            BackendEvent::error(format!("python pipeline exited with {status}")),
+                            with_app_run_id(
+                                BackendEvent::error(format!(
+                                    "python pipeline exited with {status}"
+                                )),
+                                &wait_app_run_id,
+                            ),
                         ),
                         Err(error) => emit_backend_event(
                             &wait_app,
-                            BackendEvent::error(format!(
-                                "failed to wait for python pipeline: {error}"
-                            )),
+                            with_app_run_id(
+                                BackendEvent::error(format!(
+                                    "failed to wait for python pipeline: {error}"
+                                )),
+                                &wait_app_run_id,
+                            ),
                         ),
                     }
                 }
             }
         }
 
-        if let Ok(mut stdin) = bridge_for_wait.stdin.lock() {
-            *stdin = None;
-        }
-        if let Ok(mut pid) = bridge_for_wait.child_pid.lock() {
-            *pid = None;
-        }
+        clear_runtime_state_for_app_run_id(&bridge_for_wait, &wait_app_run_id);
     });
 
     Ok(())
+}
+
+fn clear_runtime_state_for_app_run_id(bridge: &PythonBridge, app_run_id: &str) {
+    let Ok(mut active_app_run_id) = bridge.active_app_run_id.lock() else {
+        return;
+    };
+    if active_app_run_id.as_deref() != Some(app_run_id) {
+        return;
+    }
+
+    if let Ok(mut stdin) = bridge.stdin.lock() {
+        *stdin = None;
+    }
+    if let Ok(mut pid) = bridge.child_pid.lock() {
+        *pid = None;
+    }
+    if let Ok(mut started_at) = bridge.child_started_at.lock() {
+        *started_at = None;
+    }
+    *active_app_run_id = None;
 }
 
 fn normalize_pipeline_depth(depth: Option<&str>) -> Result<&'static str, String> {
@@ -309,16 +386,33 @@ fn is_allowed_renderer_env(key: &str) -> bool {
     matches!(
         key,
         "MUCHANIPO_USE_CLI"
+            | "OPENCODE_USE_CLI"
             | "MUCHANIPO_OFFLINE"
+            | "MUCHANIPO_SOURCE_RESEARCH"
             | "MUCHANIPO_ONLINE"
             | "MUCHANIPO_REQUIRE_LIVE"
+            | "MUCHANIPO_VERIFICATION_ROUTING"
+            | "MUCHANIPO_API_ROUTING"
+            | "MUCHANIPO_MODEL_ROUTING"
+            | "MUCHANIPO_PROVIDER_CHAIN"
+            | "MUCHANIPO_OPENCODE_MODEL"
+            | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_PREFER_CLI"
             | "ANTHROPIC_API_KEY"
             | "GEMINI_API_KEY"
             | "KIMI_API_KEY"
             | "OPENAI_API_KEY"
             | "OPENCODE_API_KEY"
             | "OPENCODE_GO_API_KEY"
+            | "XIAOMI_MIMO_API_KEY"
+            | "MIMO_API_KEY"
+            | "MIMO_BASE_URL"
+            | "XIAOMI_MIMO_BASE_URL"
+            | "MIMO_MODEL"
+            | "MUCHANIPO_MIMO_MODEL"
             | "OPENALEX_EMAIL"
+            | "MUCHANIPO_CONTACT_EMAIL"
+            | "UNPAYWALL_EMAIL"
             | "PLANNOTATOR_API_KEY"
             | "MUCHANIPO_VAULT_ROOT"
             | "MUCHANIPO_COUNCIL_VISUALIZER"
@@ -329,7 +423,14 @@ fn is_allowed_renderer_env(key: &str) -> bool {
 fn is_boolean_renderer_env(key: &str) -> bool {
     matches!(
         key,
-        "MUCHANIPO_USE_CLI" | "MUCHANIPO_OFFLINE" | "MUCHANIPO_ONLINE" | "MUCHANIPO_REQUIRE_LIVE"
+        "MUCHANIPO_USE_CLI"
+            | "OPENCODE_USE_CLI"
+            | "MUCHANIPO_OFFLINE"
+            | "MUCHANIPO_ONLINE"
+            | "MUCHANIPO_REQUIRE_LIVE"
+            | "MUCHANIPO_SOURCE_RESEARCH"
+            | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_PREFER_CLI"
     )
 }
 
@@ -359,6 +460,7 @@ fn python_bin_candidates() -> Vec<String> {
         push_unique_candidate(&mut candidates, override_bin.trim());
     }
     for candidate in [
+        "python",
         "/usr/local/bin/python3",
         "/opt/homebrew/bin/python3",
         "/usr/bin/python3",
@@ -392,7 +494,7 @@ where
 }
 
 fn python_candidate_exists(bin: &str) -> bool {
-    bin == "python3" || std::path::Path::new(bin).exists()
+    matches!(bin, "python" | "python3") || std::path::Path::new(bin).exists()
 }
 
 fn python_imports_pipeline_deps(bin: &str) -> bool {
@@ -408,9 +510,22 @@ fn python_imports_pipeline_deps(bin: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn get_buffered_events(bridge: State<'_, PythonBridge>) -> Result<Vec<String>, String> {
+pub async fn get_buffered_events(
+    app_run_id: Option<String>,
+    bridge: State<'_, PythonBridge>,
+) -> Result<Vec<String>, String> {
     let buf = bridge.event_buffer.lock().map_err(lock_error)?;
-    Ok(buf.clone())
+    let Some(app_run_id) = app_run_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(buf.clone());
+    };
+    Ok(buf
+        .iter()
+        .filter(|line| backend_line_matches_app_run_id(line, &app_run_id))
+        .cloned()
+        .collect())
 }
 
 #[derive(serde::Serialize)]
@@ -420,6 +535,7 @@ pub struct PipelineRuntimeStatus {
     pub child_tracked: bool,
     pub buffered_event_count: usize,
     pub child_pid: Option<u32>,
+    pub app_run_id: Option<String>,
     pub runtime_age_ms: Option<u128>,
     pub last_event_elapsed_ms: Option<u128>,
     pub app_binary_path: Option<String>,
@@ -431,9 +547,10 @@ pub async fn pipeline_runtime_status(
     bridge: State<'_, PythonBridge>,
 ) -> Result<PipelineRuntimeStatus, String> {
     let stdin_open = bridge.stdin.lock().map_err(lock_error)?.is_some();
-    let mut child_tracked = false;
     let mut child_running = false;
+    let mut child_tracked = false;
     let mut child_exited = false;
+    let mut exited_app_run_id = None;
 
     match bridge.child.try_lock() {
         Ok(mut child_slot) => {
@@ -442,6 +559,11 @@ pub async fn pipeline_runtime_status(
                 match child.try_wait() {
                     Ok(Some(_status)) => {
                         child_exited = true;
+                        exited_app_run_id = bridge
+                            .active_app_run_id
+                            .lock()
+                            .ok()
+                            .and_then(|active| active.clone());
                         *child_slot = None;
                     }
                     Ok(None) => {
@@ -463,19 +585,14 @@ pub async fn pipeline_runtime_status(
     }
 
     if child_exited {
-        if let Ok(mut stdin_slot) = bridge.stdin.lock() {
-            *stdin_slot = None;
-        }
-        if let Ok(mut pid_slot) = bridge.child_pid.lock() {
-            *pid_slot = None;
-        }
-        if let Ok(mut started_at_slot) = bridge.child_started_at.lock() {
-            *started_at_slot = None;
+        if let Some(app_run_id) = exited_app_run_id.as_deref() {
+            clear_runtime_state_for_app_run_id(&bridge, app_run_id);
         }
     }
 
     let buffered_event_count = bridge.event_buffer.lock().map_err(lock_error)?.len();
     let child_pid = *bridge.child_pid.lock().map_err(lock_error)?;
+    let app_run_id = bridge.active_app_run_id.lock().map_err(lock_error)?.clone();
     let runtime_age_ms = bridge
         .child_started_at
         .lock()
@@ -494,6 +611,7 @@ pub async fn pipeline_runtime_status(
         child_tracked,
         buffered_event_count,
         child_pid,
+        app_run_id,
         runtime_age_ms,
         last_event_elapsed_ms,
         app_binary_path: std::env::current_exe()
@@ -961,19 +1079,120 @@ pub async fn send_action(
         .map_err(|error| format!("failed to write backend action: {error}"))
 }
 
-fn emit_backend_line(app: &AppHandle, line: &str) {
+fn emit_backend_line(app: &AppHandle, line: &str, app_run_id: &str) -> Option<String> {
     match BackendEvent::from_json_line(line) {
-        Ok(event) => emit_backend_event(app, event),
-        Err(error) => emit_backend_event(
-            app,
-            BackendEvent::warning(format!("invalid backend event JSON: {error}; line={line}")),
-        ),
+        Ok(event) => {
+            let event = with_app_run_id(event, app_run_id);
+            let tagged_line = serde_json::to_string(&event).ok();
+            emit_backend_event(app, event);
+            tagged_line
+        }
+        Err(error) => {
+            emit_backend_event(
+                app,
+                with_app_run_id(
+                    BackendEvent::warning(format!(
+                        "invalid backend event JSON: {error}; line={line}"
+                    )),
+                    app_run_id,
+                ),
+            );
+            None
+        }
     }
 }
 
 fn emit_backend_event(app: &AppHandle, event: BackendEvent) {
     if let Err(error) = app.emit("backend_event", event) {
         eprintln!("failed to emit backend_event: {error}");
+    }
+}
+
+fn with_app_run_id(mut event: BackendEvent, app_run_id: &str) -> BackendEvent {
+    if !app_run_id.trim().is_empty() {
+        event.fields.insert(
+            "app_run_id".to_string(),
+            Value::String(app_run_id.to_string()),
+        );
+    }
+    event
+}
+
+fn backend_line_matches_app_run_id(line: &str, app_run_id: &str) -> bool {
+    BackendEvent::from_json_line(line)
+        .ok()
+        .and_then(|event| {
+            event
+                .fields
+                .get("app_run_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .as_deref()
+        == Some(app_run_id)
+}
+
+fn stderr_line_to_backend_event(line: &str) -> BackendEvent {
+    if line.starts_with("muchanipo provider_call_start ") {
+        let mut fields = serde_json::Map::new();
+        fields.insert("message".to_string(), Value::String(line.to_string()));
+        fields.insert(
+            "source".to_string(),
+            Value::String("python_stderr".to_string()),
+        );
+        return BackendEvent {
+            event: "provider_activity".to_string(),
+            fields,
+        };
+    }
+    BackendEvent::warning(format!("python stderr: {line}"))
+}
+
+fn normalize_app_run_id(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default();
+            format!("run-tauri-{millis}")
+        })
+}
+
+fn stdout_log_path_for_app_run_id(app_run_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "muchanipo-python-{}-stdout.jsonl",
+        sanitize_app_run_id_for_filename(app_run_id)
+    ))
+}
+
+fn stderr_log_path_for_app_run_id(app_run_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "muchanipo-python-{}-stderr.log",
+        sanitize_app_run_id_for_filename(app_run_id)
+    ))
+}
+
+fn sanitize_app_run_id_for_filename(app_run_id: &str) -> String {
+    let sanitized: String = app_run_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "run".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -1069,25 +1288,42 @@ mod tests {
     fn sanitize_renderer_envs_allows_only_expected_app_keys() {
         let sanitized = sanitize_renderer_envs(env_map(&[
             ("MUCHANIPO_USE_CLI", "1"),
+            ("OPENCODE_USE_CLI", "0"),
             ("MUCHANIPO_OFFLINE", "true"),
+            ("MUCHANIPO_SOURCE_RESEARCH", "1"),
             ("MUCHANIPO_ONLINE", "1"),
             ("MUCHANIPO_REQUIRE_LIVE", "yes"),
+            ("MUCHANIPO_VERIFICATION_ROUTING", "mimo_opencode_go_only"),
+            ("MUCHANIPO_API_ROUTING", "mimo_opencode_go_only"),
+            ("MUCHANIPO_MODEL_ROUTING", "mimo_opencode_go_only"),
+            ("MUCHANIPO_PROVIDER_CHAIN", "opencode"),
+            ("MUCHANIPO_OPENCODE_MODEL", "opencode/mimo-v2.5-pro"),
+            ("MUCHANIPO_INTERVIEW_COUNSELLING", "1"),
+            ("MUCHANIPO_PREFER_CLI", "0"),
             ("ANTHROPIC_API_KEY", "sk-ant"),
             ("GEMINI_API_KEY", "g-key"),
             ("KIMI_API_KEY", "k-key"),
             ("OPENAI_API_KEY", "sk-openai"),
             ("OPENCODE_API_KEY", "oc-key"),
             ("OPENCODE_GO_API_KEY", "oc-go-key"),
+            ("XIAOMI_MIMO_API_KEY", "tp-key"),
+            ("MIMO_BASE_URL", "https://token-plan-ams.xiaomimimo.com/v1"),
+            ("MIMO_MODEL", "mimo-v2.5-pro"),
             ("OPENALEX_EMAIL", "dev@example.com"),
+            ("MUCHANIPO_CONTACT_EMAIL", "dev@example.com"),
+            ("UNPAYWALL_EMAIL", "dev@example.com"),
             ("PLANNOTATOR_API_KEY", "p-key"),
             ("MUCHANIPO_COUNCIL_VISUALIZER", "ollama"),
             ("MUCHANIPO_COUNCIL_VISUALIZER_MODEL", "qwen3.6-a3b:latest"),
         ]))
         .expect("expected allowlisted envs");
 
-        assert_eq!(sanitized.len(), 14);
+        assert_eq!(sanitized.len(), 28);
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_USE_CLI"));
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_OFFLINE"));
+        assert!(sanitized
+            .iter()
+            .any(|(key, _)| key == "MUCHANIPO_SOURCE_RESEARCH"));
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_ONLINE"));
         assert!(sanitized
             .iter()
@@ -1115,6 +1351,9 @@ mod tests {
     fn sanitize_renderer_envs_rejects_invalid_cli_flag_values() {
         let err = sanitize_renderer_envs(env_map(&[("MUCHANIPO_USE_CLI", "maybe")])).unwrap_err();
         assert!(err.contains("MUCHANIPO_USE_CLI"));
+
+        let err = sanitize_renderer_envs(env_map(&[("OPENCODE_USE_CLI", "maybe")])).unwrap_err();
+        assert!(err.contains("OPENCODE_USE_CLI"));
     }
 
     #[test]
@@ -1270,6 +1509,107 @@ mod tests {
             event.fields.get("message").and_then(|value| value.as_str()),
             Some("heads up")
         );
+    }
+
+    #[test]
+    fn app_run_id_is_injected_without_overwriting_backend_run_id() {
+        let event = BackendEvent::from_json_line(
+            r#"{"event":"run_started","run_id":"python-run","stage":"intake"}"#,
+        )
+        .expect("valid backend event");
+
+        let event = with_app_run_id(event, "run-ui-123");
+
+        assert_eq!(
+            event.fields.get("run_id").and_then(|value| value.as_str()),
+            Some("python-run")
+        );
+        assert_eq!(
+            event
+                .fields
+                .get("app_run_id")
+                .and_then(|value| value.as_str()),
+            Some("run-ui-123")
+        );
+    }
+
+    #[test]
+    fn app_run_scoped_stderr_log_path_is_unique_and_sanitized() {
+        let first = stderr_log_path_for_app_run_id("run-one");
+        let second = stderr_log_path_for_app_run_id("../run two!!");
+        let stdout = stdout_log_path_for_app_run_id("../run two!!");
+
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .contains("run-one"));
+        assert_eq!(
+            second.file_name().and_then(|value| value.to_str()),
+            Some("muchanipo-python-run-two-stderr.log")
+        );
+        assert_eq!(
+            stdout.file_name().and_then(|value| value.to_str()),
+            Some("muchanipo-python-run-two-stdout.jsonl")
+        );
+    }
+
+    #[test]
+    fn stale_waiter_does_not_clear_newer_app_run_runtime_state() {
+        let bridge = PythonBridge::default();
+        {
+            let mut active = bridge
+                .active_app_run_id
+                .lock()
+                .expect("active app run lock");
+            *active = Some("run-new".to_string());
+        }
+        {
+            let mut pid = bridge.child_pid.lock().expect("child pid lock");
+            *pid = Some(4242);
+        }
+        {
+            let mut started_at = bridge.child_started_at.lock().expect("child started lock");
+            *started_at = Some(Instant::now());
+        }
+
+        clear_runtime_state_for_app_run_id(&bridge, "run-old");
+
+        assert_eq!(
+            bridge
+                .active_app_run_id
+                .lock()
+                .expect("active app run lock")
+                .as_deref(),
+            Some("run-new")
+        );
+        assert_eq!(
+            *bridge.child_pid.lock().expect("child pid lock"),
+            Some(4242)
+        );
+        assert!(bridge
+            .child_started_at
+            .lock()
+            .expect("child started lock")
+            .is_some());
+
+        clear_runtime_state_for_app_run_id(&bridge, "run-new");
+
+        assert_eq!(
+            bridge
+                .active_app_run_id
+                .lock()
+                .expect("active app run lock")
+                .as_deref(),
+            None
+        );
+        assert_eq!(*bridge.child_pid.lock().expect("child pid lock"), None);
+        assert!(bridge
+            .child_started_at
+            .lock()
+            .expect("child started lock")
+            .is_none());
     }
 
     #[test]

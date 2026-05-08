@@ -56,6 +56,7 @@ class CoreClient:
         doi = normalize_doi(item.get("doi"))
         source_url = item.get("downloadUrl") or item.get("fullTextLink") or item.get("doi")
         quote = compact_text([item.get("abstract"), item.get("fullText")])
+        access_status = _access_status_from_core(item)
         return evidence_ref(
             source="core",
             paper_id=paper_id,
@@ -65,7 +66,17 @@ class CoreClient:
             quote=quote,
             source_grade=source_grade_for_paper(doi=doi),
             doi=doi,
+            access_status=access_status,
         )
+
+
+def _access_status_from_core(item: dict[str, Any]) -> str | None:
+    """Map CORE metadata to deterministic access_status."""
+    if item.get("downloadUrl") or item.get("fullTextLink"):
+        return "full_text_available"
+    if item.get("abstract"):
+        return "abstract_only"
+    return "blocked"
 
 
 async def search(query: str, limit: int = 10, **kwargs: Any) -> list[EvidenceRef]:

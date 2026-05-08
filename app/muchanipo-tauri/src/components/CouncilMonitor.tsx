@@ -2,11 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type {
   BackendEvent,
-  CouncilRoundEndEvent,
-  CouncilRoundStartEvent,
-  CouncilTokenEvent,
   LayerName,
 } from "../lib/types";
+import { backendEventName } from "../lib/types";
 import { cn } from "../lib/utils";
 import {
   Card,
@@ -49,22 +47,94 @@ interface CouncilMonitorProps {
   className?: string;
 }
 
+interface CouncilRoundInput {
+  round: number;
+  layer: LayerName;
+  summary?: string;
+}
+
+interface CouncilTokenInput {
+  round: number;
+  persona: string;
+  delta: string;
+}
+
+function isLayerName(value: unknown): value is LayerName {
+  return typeof value === "string" && LAYERS.includes(value as LayerName);
+}
+
+function layerName(value: unknown, fallback: LayerName = "council"): LayerName {
+  return isLayerName(value) ? value : fallback;
+}
+
+function numberField(value: unknown): number {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function stringField(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function councilTokenDelta(event: BackendEvent, name: string): string {
+  const direct = stringField(event.delta, event.text, event.summary);
+  if (direct) return direct;
+  if (name === "council_turn") {
+    const stage = stringField(event.council_stage, event.stage);
+    const provider = stringField(event.provider);
+    return [stage, provider].filter(Boolean).join(" · ");
+  }
+  return "";
+}
+
 function applyCouncilEvent(rounds: RoundState[], event: BackendEvent): RoundState[] {
-  if (event.type === "council_round_start") {
-    return upsertRound(rounds, event, {
+  const name = backendEventName(event);
+
+  if (name === "council_round_start") {
+    const round = numberField(event.round);
+    if (round <= 0) return rounds;
+    const input = {
+      round,
+      layer: layerName(event.layer),
+    };
+    return upsertRound(rounds, input, {
       status: "active",
-      personas: event.personas.map((persona) => ({ persona, text: "" })),
+      personas: stringArray(event.personas ?? event.active_persona_ids).map((persona) => ({
+        persona,
+        text: "",
+      })),
     });
   }
 
-  if (event.type === "council_token") {
-    return appendToken(rounds, event);
+  if (["council_token", "council_persona_token", "council_turn"].includes(name)) {
+    const delta = councilTokenDelta(event, name);
+    if (!delta) return rounds;
+    return appendToken(rounds, {
+      round: numberField(event.round),
+      persona: stringField(event.persona, event.persona_id) || "persona",
+      delta,
+    });
   }
 
-  if (event.type === "council_round_end") {
-    return upsertRound(rounds, event, {
+  if (name === "council_round_end" || name === "council_round_done") {
+    const round = numberField(event.round);
+    if (round <= 0) return rounds;
+    const existing = rounds.find((item) => item.round === round);
+    return upsertRound(rounds, {
+      round,
+      layer: layerName(event.layer, existing?.layer),
+    }, {
       status: "done",
-      summary: event.summary,
+      summary: stringField(event.summary, event.stop_reason),
     });
   }
 
@@ -73,7 +143,7 @@ function applyCouncilEvent(rounds: RoundState[], event: BackendEvent): RoundStat
 
 function upsertRound(
   rounds: RoundState[],
-  event: CouncilRoundStartEvent | CouncilRoundEndEvent,
+  event: CouncilRoundInput,
   patch: Partial<RoundState>,
 ): RoundState[] {
   const existing = rounds.find(
@@ -98,8 +168,11 @@ function upsertRound(
   );
 }
 
-function appendToken(rounds: RoundState[], event: CouncilTokenEvent): RoundState[] {
-  const targetIndex = rounds.findIndex((round) => round.round === event.round);
+function appendToken(rounds: RoundState[], event: CouncilTokenInput): RoundState[] {
+  let targetIndex = rounds.findIndex((round) => round.round === event.round);
+  if (targetIndex === -1 && event.round <= 0) {
+    targetIndex = rounds.length - 1;
+  }
   if (targetIndex === -1) {
     return rounds;
   }

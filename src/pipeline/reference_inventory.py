@@ -133,7 +133,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="GStack office-hours",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown",
+        license="MIT",
         stages=(1,),
         code_paths=("src/intent/office_hours.py",),
         test_paths=("tests/intent/test_office_hours.py", "tests/test_office_hours.py"),
@@ -143,7 +143,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="GStack plan-review",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown",
+        license="MIT",
         stages=(2,),
         code_paths=("src/intent/plan_review.py", "src/targeting/builder.py"),
         test_paths=("tests/test_plan_review.py", "tests/targeting/test_builder.py", "tests/test_pipeline_reference_artifacts.py"),
@@ -240,12 +240,33 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ),
     ReferenceInventoryItem(
         name="Karpathy Autoresearch",
-        category=CATEGORY_CLEAN_ROOM,
-        license="MIT",
+        category=CATEGORY_PARTIAL_PORT,
+        license="MIT declared in upstream README; no standalone LICENSE in pinned snapshot",
         stages=(3,),
-        code_paths=("src/research/planner.py", "src/runtime/iteration_hooks.py", "src/eval/evolve_runner.py"),
-        test_paths=("tests/test_iteration_hooks.py", "tests/test_evolve_runner.py", "tests/test_pipeline_reference_artifacts.py"),
-        implementation_notes="Local research plans, stop conditions, and improvement hooks implement the iterative research loop.",
+        code_paths=(
+            "third_party/karpathy-autoresearch/program.md",
+            "third_party/karpathy-autoresearch/prepare.py",
+            "third_party/karpathy-autoresearch/train.py",
+            "src/research/karpathy_autoresearch.py",
+        ),
+        test_paths=(
+            "tests/test_research_real_wire.py",
+            "tests/test_pipeline_runner.py",
+            "tests/test_pipeline_reference_artifacts.py",
+        ),
+        implementation_notes=(
+            "Pinned upstream source is vendored under third_party, and source-research "
+            "mode executes a faithful local keep/discard adapter: write program.md and "
+            "results.tsv, evaluate a fixed lower-is-better grounding metric, keep strict "
+            "improvements, and discard non-improvements. The experiment surface is "
+            "ResearchPlan.queries rather than upstream train.py; git reset is replaced "
+            "with scratch retention to protect the user's worktree."
+        ),
+        license_warning=(
+            "Pinned upstream README declares MIT, but the local snapshot has no standalone "
+            "LICENSE file. Preserve third_party/karpathy-autoresearch/UPSTREAM.md and "
+            "review external release packaging."
+        ),
         source_url="https://github.com/karpathy/autoresearch",
     ),
     ReferenceInventoryItem(
@@ -275,7 +296,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="MemPalace",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown upstream; local stdlib implementation",
+        license="MIT upstream; local stdlib implementation",
         stages=(3,),
         code_paths=("src/research/mempalace.py", "src/research/runner.py", "src/search/insight-forge.py"),
         test_paths=(
@@ -291,7 +312,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
             "memory notes into wing/room storage and build a searchable manifest with "
             "hashes, rooms, wings, and record metadata."
         ),
-        source_url="https://github.com/mempalace",
+        source_url="https://github.com/MemPalace/mempalace",
     ),
     ReferenceInventoryItem(
         name="GBrain 현재 결론 + 사건 기록",
@@ -396,22 +417,29 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="HACHIMI",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown",
+        license="MIT",
         stages=(5,),
         aliases=("HACHIMI 페르소나 생성",),
         code_paths=("src/council/persona_generator.py", "src/council/persona_prompts.py"),
         test_paths=("tests/test_persona_generator.py", "tests/test_persona_generator_llm.py", "tests/test_pipeline_reference_artifacts.py"),
-        implementation_notes="Persona propose/validate/repair loop is implemented locally.",
+        implementation_notes=(
+            "Local HACHIMI runtime implements propose/fast-validate/revise/deep-validate, "
+            "schema/value-axis checks, optional LLM judge prompts, Korean PII/name safety "
+            "guards, role quota telemetry, and SimHash-style deduplication before final "
+            "persona admission."
+        ),
+        source_url="https://github.com/ZeroLoss-Lab/HACHIMI",
     ),
     ReferenceInventoryItem(
         name="MAP-Elites",
         category=CATEGORY_CLEAN_ROOM,
-        license="algorithmic pattern",
+        license="algorithmic pattern; EvoAgentX source MIT",
         stages=(5,),
         aliases=("EvoAgentX / MAP-Elites 다양성",),
         code_paths=("src/council/diversity_mapper.py",),
         test_paths=("tests/test_diversity_mapper.py", "tests/test_pipeline_reference_artifacts.py"),
         implementation_notes="Local diversity grid keeps representative personas across risk and innovation axes.",
+        source_url="https://github.com/EvoAgentX/EvoAgentX",
     ),
     ReferenceInventoryItem(
         name="ReACT 보고서 작성 패턴",
@@ -428,6 +456,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
             "gateway into the ReACT responder, records execution modes and LLM response "
             "counts, and requires live provider results when the run is live-gated."
         ),
+        source_url="https://react-lm.github.io",
     ),
     ReferenceInventoryItem(
         name="Karpathy LLM Wiki Pattern",
@@ -478,7 +507,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="GStack retro",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown",
+        license="MIT",
         stages=(6,),
         aliases=("GStack", "retro"),
         code_paths=("src/intent/retro.py",),
@@ -489,7 +518,7 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
     ReferenceInventoryItem(
         name="GStack learnings_log",
         category=CATEGORY_CLEAN_ROOM,
-        license="unknown",
+        license="MIT",
         stages=(6,),
         aliases=("GStack", "learnings_log"),
         code_paths=("src/intent/learnings_log.py",),

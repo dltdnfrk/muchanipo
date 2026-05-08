@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import neobioLogoWhite from "../assets/neobio-logo-white.svg";
 import {
   deleteRun,
   listRuns,
@@ -19,24 +20,33 @@ function groupByDay(runs: RunIndexEntry[]): { label: string; items: RunIndexEntr
 
   for (const r of runs) {
     let label: string;
-    if (r.createdAt >= today) label = "오늘";
-    else if (r.createdAt >= yesterday) label = "어제";
-    else if (r.createdAt >= weekAgo) label = "지난 7일";
-    else if (r.createdAt >= monthAgo) label = "지난 30일";
-    else label = "이전";
+    if (r.createdAt >= today) label = "Recents";
+    else if (r.createdAt >= yesterday) label = "Yesterday";
+    else if (r.createdAt >= weekAgo) label = "Last 7 days";
+    else if (r.createdAt >= monthAgo) label = "Last 30 days";
+    else label = "Older";
     const arr = groups.get(label) ?? [];
     arr.push(r);
     groups.set(label, arr);
   }
-  const order = ["오늘", "어제", "지난 7일", "지난 30일", "이전"];
+  const order = ["Recents", "Yesterday", "Last 7 days", "Last 30 days", "Older"];
   return order
     .filter((l) => groups.has(l))
     .map((l) => ({ label: l, items: groups.get(l)! }));
 }
 
 function parseActiveRunId(pathname: string): string | undefined {
-  const m = pathname.match(/^\/(?:run|report)\/([^/]+)/);
+  const m = pathname.match(/^\/(?:run|report|browser)\/([^/]+)/);
   return m?.[1];
+}
+
+function formatRunMeta(entry: RunIndexEntry): string {
+  const date = entry.createdAt ? new Date(entry.createdAt) : null;
+  const time = date
+    ? date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })
+    : "시간 없음";
+  const state = entry.status === "running" ? "진행 중" : entry.status === "done" ? "완료" : "확인 필요";
+  return `${state} · ${time}`;
 }
 
 function PanelLeftIcon({ className }: { className?: string }) {
@@ -48,12 +58,25 @@ function PanelLeftIcon({ className }: { className?: string }) {
   );
 }
 
-function NewChatIcon({ className }: { className?: string }) {
+function SearchIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4 12.5-12.5z" />
+      <circle cx="11" cy="11" r="6" />
+      <path strokeLinecap="round" d="M16 16l4 4" />
     </svg>
   );
+}
+
+function NavRow({ icon, label, badge, to }: { icon: string; label: string; badge?: string; to?: string }) {
+  const inner = (
+    <>
+      <span className="cowork-side-icon">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge && <span className="cowork-side-badge">{badge}</span>}
+    </>
+  );
+  const cls = "cowork-side-row";
+  return to ? <Link to={to} className={cls}>{inner}</Link> : <div className={cls}>{inner}</div>;
 }
 
 export default function Sidebar() {
@@ -90,12 +113,11 @@ export default function Sidebar() {
     if (activeRunId === runId) navigate("/");
   }
 
-  // Collapsed: render only a floating expand button on the very left edge.
   if (collapsed) {
     return (
       <button
         onClick={toggleCollapsed}
-        className="fixed left-2 top-2 z-40 flex h-8 w-8 items-center justify-center rounded-lg text-tertiary transition hover:bg-white/5 hover:text-white"
+        className="fixed left-4 top-10 z-50 flex h-8 w-8 items-center justify-center rounded-lg text-tertiary transition hover:bg-white/5 hover:text-white"
         title="사이드바 열기"
         aria-label="사이드바 열기"
       >
@@ -105,119 +127,88 @@ export default function Sidebar() {
   }
 
   const groups = groupByDay(runs);
+  const isCowork =
+    location.pathname.startsWith("/browser") ||
+    location.pathname.startsWith("/run") ||
+    location.pathname.startsWith("/report");
 
   return (
-    <aside className="flex h-screen w-[260px] shrink-0 flex-col bg-[#171717]">
-      {/* Top bar: collapse + new chat */}
-      <div className="flex items-center justify-between px-2 pt-2">
-        <button
-          onClick={toggleCollapsed}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-tertiary transition hover:bg-white/5 hover:text-white"
-          title="사이드바 닫기"
-          aria-label="사이드바 닫기"
-        >
-          <PanelLeftIcon className="h-5 w-5" />
-        </button>
-        <Link
-          to="/"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-tertiary transition hover:bg-white/5 hover:text-white"
-          title="새 리서치"
-          aria-label="새 리서치"
-        >
-          <NewChatIcon className="h-[18px] w-[18px]" />
+    <aside className="sidebar-shell cowork-sidebar flex h-screen w-[300px] shrink-0 flex-col">
+      <div data-tauri-drag-region className="h-7 w-full shrink-0" />
+
+      <div className="cowork-sidebar-top">
+        <Link to="/studio" className="cowork-brand-link" aria-label="Neobio Studio 홈">
+          <img src={neobioLogoWhite} alt="Neobio" className="cowork-brand-logo" />
         </Link>
+        <div className="cowork-sidebar-actions">
+          <button onClick={toggleCollapsed} className="cowork-icon-button" title="사이드바 닫기" aria-label="사이드바 닫기">
+            <PanelLeftIcon className="h-5 w-5" />
+          </button>
+          <button className="cowork-icon-button" title="검색" aria-label="검색">
+            <SearchIcon className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
-      {/* "+ 새 리서치" pill row */}
-      <div className="px-2 pt-1">
-        <Link
-          to="/"
-          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[14px] text-secondary transition hover:bg-white/5 hover:text-white"
-        >
-          <NewChatIcon className="h-4 w-4" />
-          <span>새 리서치</span>
-        </Link>
+      <div className="cowork-mode-switch two-up">
+        <Link to="/studio" className={!isCowork ? "active" : ""}>Studio</Link>
+        <Link to="/browser" className={isCowork ? "active" : ""}>Browser</Link>
       </div>
 
-      {/* History */}
-      <nav className="mt-2 flex-1 overflow-y-auto px-2 pb-2">
+      <nav className="cowork-primary-nav">
+        <NavRow icon="＋" label="New task" to="/studio" />
+        <NavRow icon="▰" label="Projects" to="/browser" />
+        <NavRow icon="◷" label="Scheduled" />
+        <NavRow icon="⌁" label="Live artifacts" to="/browser" />
+        <NavRow icon="▣" label="Dispatch" badge="베타" />
+        <NavRow icon="▤" label="Customize" to="/settings" />
+      </nav>
+
+      <section className="cowork-sidebar-section">
+        <p>Pinned</p>
+        <div className="cowork-muted-row">♙ Drag to pin</div>
+      </section>
+
+      <nav className="cowork-history flex-1 overflow-y-auto">
         {runs.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[12px] text-tertiary">
-            아직 리서치 기록이 없어요
-          </div>
+          <section className="cowork-sidebar-section">
+            <p>Recents</p>
+            <div className="cowork-muted-row">○ Starting fresh new session</div>
+          </section>
         ) : (
           groups.map((g) => (
-            <div key={g.label} className="mt-3 first:mt-0">
-              <p className="px-3 pb-1 text-[11px] font-medium text-tertiary">
-                {g.label}
-              </p>
+            <section key={g.label} className="cowork-sidebar-section">
+              <p>{g.label}</p>
               <ul>
                 {g.items.map((r) => {
-                  const targetPath =
-                    r.status === "done" ? `/report/${r.runId}` : `/run/${r.runId}`;
+                  const targetPath = r.status === "done" ? `/browser/${r.runId}/report` : `/browser/${r.runId}`;
                   const isActive = activeRunId === r.runId;
-                  const statusLabel =
-                    r.status === "failed" ? "실패" : r.status === "running" ? "진행" : "";
+                  const statusIcon = r.status === "failed" ? "⚠" : r.status === "running" ? "◉" : "○";
                   return (
                     <li key={r.runId}>
-                      <Link
-                        to={targetPath}
-                        className={`group relative flex items-center rounded-lg pl-3 pr-2 py-2 text-[14px] leading-tight transition ${
-                          isActive
-                            ? "bg-white/[0.07] text-white"
-                            : "text-secondary hover:bg-white/[0.04] hover:text-white"
-                        }`}
-                        title={r.topic}
-                      >
-                        <span className="truncate flex-1">{r.topic || "(주제 없음)"}</span>
-                        {statusLabel && (
-                          <span
-                            className={`ml-2 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] ${
-                              r.status === "failed"
-                                ? "border-red-400/20 text-red-300"
-                                : "border-amber-400/20 text-amber-200"
-                            }`}
-                          >
-                            {statusLabel}
-                          </span>
-                        )}
-                        <button
-                          onClick={(e) => handleDelete(e, r.runId)}
-                          className="ml-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-tertiary transition hover:bg-white/10 hover:text-white group-hover:flex"
-                          title="삭제"
-                          aria-label="리서치 삭제"
-                        >
-                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M3 7h18M9 7V4a2 2 0 012-2h2a2 2 0 012 2v3" />
-                          </svg>
-                        </button>
+                      <Link to={targetPath} title={r.topic} className={`cowork-recent-task ${isActive ? "active" : ""}`}>
+                        <span className={r.status}>{statusIcon}</span>
+                        <span className="cowork-recent-copy">
+                          <strong>{r.topic || "(주제 없음)"}</strong>
+                          <small>{formatRunMeta(r)}</small>
+                        </span>
+                        {r.status === "running" && <em>진행</em>}
+                        <button onClick={(e) => handleDelete(e, r.runId)} title="삭제" aria-label="Run 삭제">×</button>
                       </Link>
                     </li>
                   );
                 })}
               </ul>
-            </div>
+            </section>
           ))
         )}
       </nav>
 
-      {/* Footer */}
-      <div className="px-2 pb-2">
-        <Link
-          to="/settings"
-          className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[14px] transition ${
-            location.pathname === "/settings"
-              ? "bg-white/[0.07] text-white"
-              : "text-secondary hover:bg-white/[0.04] hover:text-white"
-          }`}
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-          <span>설정</span>
-        </Link>
-      </div>
+      <footer className="cowork-sidebar-footer">
+        <div className="cowork-avatar">현</div>
+        <span>현준 · Max</span>
+        <Link to="/settings" aria-label="설정">⚙</Link>
+      </footer>
     </aside>
   );
 }

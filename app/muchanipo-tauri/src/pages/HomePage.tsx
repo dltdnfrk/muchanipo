@@ -28,12 +28,12 @@ export default function HomePage() {
         <CardHeader>
           <CardTitle>Muchanipo</CardTitle>
           <CardDescription>
-            Autonomous Second Brain — 토픽을 입력하면 인터뷰 → council → 리포트로 이어집니다.
+            Studio에서 Goal과 Unknown을 정리하고 Browser에서 Evidence, Run, Report를 확인합니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea
-            placeholder="조사하고 싶은 주제를 입력하세요. 예: 'Karpathy autoresearch 패턴이 SaaS 제품 디스커버리에 주는 시사점'"
+            placeholder="조사하고 싶은 주제를 입력하세요. 예: '신규 진입자가 기존 시장을 재편하는 패턴과 근거'"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             className="min-h-[200px]"
