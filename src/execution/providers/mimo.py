@@ -1,8 +1,9 @@
 """Xiaomi MiMo provider — API-first OpenAI-compatible chat completions.
 
-MiMo keys can be used through Xiaomi's OpenAI-compatible endpoint. Token Plan
-is a billing plan, not a different default base URL; Muchanipo only switches
-base URLs when the user explicitly sets ``MIMO_BASE_URL``/``XIAOMI_MIMO_BASE_URL``.
+MiMo keys can be used through Xiaomi's OpenAI-compatible endpoints. The Python
+provider defaults to Xiaomi's official API URL, while the Tauri desktop settings
+may explicitly pass a Token Plan regional URL via ``MIMO_BASE_URL`` or
+``XIAOMI_MIMO_BASE_URL``.
 Muchanipo treats MiMo as an API provider, not a CLI provider: credentials come
 only from explicit env vars or constructor injection and are never read from local
 tool auth files.
@@ -95,7 +96,7 @@ class MiMoProvider:
             "stop": kwargs.pop("stop", None),
             "frequency_penalty": float(kwargs.pop("frequency_penalty", 0)),
             "presence_penalty": float(kwargs.pop("presence_penalty", 0)),
-            "thinking": kwargs.pop("thinking", {"type": "disabled"}),
+            "thinking": kwargs.pop("thinking", {"disabled": True}),
         }
         system = kwargs.pop("system", None)
         if system:
@@ -108,7 +109,12 @@ class MiMoProvider:
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
             headers={
-                "Api-Key": self.api_key or "",
+                # The dedicated Token Plan endpoint is documented as
+                # OpenAI-compatible, so authenticate like OpenAI clients do.
+                # Keep Api-Key as a compatibility alias for older/internal
+                # MiMo endpoints that accepted it.
+                "Authorization": f"Bearer {self.api_key or ''}",
+                "api-key": self.api_key or "",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": _MIMO_USER_AGENT,

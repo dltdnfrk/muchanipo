@@ -74,8 +74,11 @@ function readEnvsFromSettings(): Record<string, string> {
       envs.XIAOMI_MIMO_API_KEY = mimoKey;
       envs.MIMO_API_KEY = mimoKey;
       envs.MIMO_MODEL = readCredential("mimo_model").trim() || "mimo-v2.5-pro";
+      envs.MUCHANIPO_MIMO_MODEL = envs.MIMO_MODEL;
       const mimoBaseUrl = readCredential("mimo_base_url").trim() || "https://token-plan-sgp.xiaomimimo.com/v1";
       envs.MIMO_BASE_URL = mimoBaseUrl;
+      envs.XIAOMI_MIMO_BASE_URL = mimoBaseUrl;
+      envs.MUCHANIPO_PROVIDER_CHAIN = opencodeGoKey ? "mimo,opencode" : "mimo";
     }
     if (opencodeGoKey) {
       envs.OPENCODE_API_KEY = opencodeGoKey;
@@ -187,6 +190,7 @@ interface CouncilActivity {
   timeoutSec?: number;
   elapsedSec?: number;
   errorClass?: string;
+  blocksProductPass?: boolean;
 }
 
 interface StudioProvenance {
@@ -331,6 +335,16 @@ function formatElapsed(ms?: number | null): string {
 
 function isStage(value: unknown): value is Stage {
   return typeof value === "string" && STAGES.includes(value as Stage);
+}
+
+export function parseEventBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
+  }
+  return false;
 }
 
 function stringList(value: unknown): string[] {
@@ -693,6 +707,23 @@ function pushCouncilActivity(
   return [activity, ...withoutDuplicate].slice(0, 12);
 }
 
+export function deriveLiveE2eStatus({
+  runId,
+  runtimeRunId,
+  runtimeHeartbeatStage,
+  hasVisibleBackendHeartbeat,
+}: {
+  runId?: string;
+  runtimeRunId?: string;
+  runtimeHeartbeatStage?: string;
+  hasVisibleBackendHeartbeat: boolean;
+}): string {
+  if ((runtimeRunId === runId && runtimeHeartbeatStage) || hasVisibleBackendHeartbeat) {
+    return "Backend run signals observed";
+  }
+  return "Not proven in this UI session";
+}
+
 export default function RunProgress() {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
@@ -741,6 +772,7 @@ export default function RunProgress() {
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [hitlError, setHitlError] = useState<string | null>(null);
   const [runtimeEvidence, setRuntimeEvidence] = useState<RuntimeEvidence | null>(null);
+  const [hasReceivedHeartbeat, setHasReceivedHeartbeat] = useState(false);
   const [aborting, setAborting] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -824,6 +856,7 @@ export default function RunProgress() {
         setHitlError(null);
         setHitlSubmitting(false);
         setRuntimeEvidence(null);
+        setHasReceivedHeartbeat(false);
         try {
           for (const suffix of ["report", "report_path", "vault_path", "chapter_count", "pending", "pending_at"]) {
             localStorage.removeItem(`run:${runId}:${suffix}`);
@@ -937,6 +970,7 @@ export default function RunProgress() {
       }
 
       if (event.event === "pipeline_heartbeat") {
+        setHasReceivedHeartbeat(true);
         const stage = isStage(event.stage) ? event.stage : null;
         if (stage) {
           setStages((prev) => {
@@ -1326,6 +1360,7 @@ export default function RunProgress() {
         const timeoutSec = Number(event.timeout_sec ?? 0) || undefined;
         const errorClass = String(event.error_class ?? "");
         const errorText = String(event.error ?? "").trim();
+        const blocksProductPass = parseEventBoolean(event.blocks_product_pass);
         setStages((prev) => ({
           ...prev,
           council: {
@@ -1366,6 +1401,7 @@ export default function RunProgress() {
             elapsedSec,
             timeoutSec,
             errorClass: errorClass || undefined,
+            blocksProductPass,
             text: errorText || undefined,
           }),
         );
@@ -1521,6 +1557,7 @@ export default function RunProgress() {
           hasRuntimeEvidence = Boolean(status.running && status.app_run_id === runId);
           setRuntimeEvidence((prev) => ({
             ...(prev ?? {}),
+            runId: status.app_run_id ?? prev?.runId,
             childPid: status.child_pid ?? null,
             appBinaryPath: status.app_binary_path ?? null,
             workspaceRoot: status.workspace_root,
@@ -1574,6 +1611,7 @@ export default function RunProgress() {
         lastEventElapsedMs = status.last_event_elapsed_ms ?? null;
         setRuntimeEvidence((prev) => ({
           ...(prev ?? {}),
+          runId: status.app_run_id ?? prev?.runId,
           childPid: status.child_pid ?? null,
           appBinaryPath: status.app_binary_path ?? null,
           workspaceRoot: status.workspace_root,
@@ -1652,11 +1690,14 @@ export default function RunProgress() {
   const selectedPersonaRows = browserPersonaRows(councilPersonas);
   const runtimeRunId = runtimeEvidence?.runId;
   const runtimeHeartbeatStage = runtimeEvidence?.heartbeatStage;
+  const hasVisibleBackendHeartbeat = hasReceivedHeartbeat;
   const desktopRuntimeStatus = runtimeEvidence ? "Observed" : "Not observed yet";
-  const liveE2eStatus =
-    runtimeRunId === runId && runtimeHeartbeatStage
-      ? "Backend run signals observed"
-      : "Not proven in this UI session";
+  const liveE2eStatus = deriveLiveE2eStatus({
+    runId,
+    runtimeRunId,
+    runtimeHeartbeatStage,
+    hasVisibleBackendHeartbeat,
+  });
   const sourceAccessEvidenceStatus =
     discoveredSources.size > 0
       ? `${discoveredSources.size} source event${discoveredSources.size === 1 ? "" : "s"}`
@@ -2621,6 +2662,7 @@ export default function RunProgress() {
                                     {item.elapsedSec !== undefined ? ` · elapsed ${item.elapsedSec}s` : ""}
                                     {item.responseChars ? ` · ${item.responseChars} chars` : ""}
                                     {item.errorClass ? ` · ${item.errorClass}` : ""}
+                                    {item.blocksProductPass ? " · blocks product pass" : ""}
                                   </p>
                                   {item.text && (
                                     <p className="break-words text-[11px] leading-relaxed text-tertiary">

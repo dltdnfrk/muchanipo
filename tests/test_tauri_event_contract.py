@@ -19,11 +19,23 @@ def test_api_mode_allows_either_mimo_or_opencode_go_without_other_providers() ->
 
     assert "if (!mimoKey && !opencodeGoKey)" in source
     assert 'envs.MUCHANIPO_VERIFICATION_ROUTING = "mimo_opencode_go_only";' in source
+    assert 'envs.MIMO_MODEL = readCredential("mimo_model").trim() || "mimo-v2.5-pro";' in source
+    assert 'envs.MUCHANIPO_MIMO_MODEL = envs.MIMO_MODEL;' in source
+    assert 'envs.XIAOMI_MIMO_BASE_URL = mimoBaseUrl;' in source
+    assert 'envs.MUCHANIPO_PROVIDER_CHAIN = opencodeGoKey ? "mimo,opencode" : "mimo";' in source
     assert 'envs.OPENCODE_USE_CLI = "0";' in source
     assert 'ANTHROPIC_API_KEY' not in source
     assert 'GEMINI_API_KEY' not in source
     assert 'KIMI_API_KEY' not in source
     assert 'OPENAI_API_KEY' not in source
+
+
+def test_api_settings_use_documented_mimo_token_plan_defaults() -> None:
+    source = (TAURI_SRC / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+
+    assert 'const DEFAULT_MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1";' in source
+    assert 'const DEFAULT_MIMO_MODEL = "mimo-v2.5-pro";' in source
+    assert 'hint: "기본: mimo-v2.5-pro"' in source
 
 
 def test_streaming_components_use_backend_event_discriminator() -> None:
@@ -176,6 +188,49 @@ def test_browser_header_surfaces_desktop_live_e2e_evidence_gap() -> None:
     assert "Live e2e" in source
     assert "Not observed yet" in source
     assert "Not proven in this UI session" in source
+
+
+def test_browser_live_e2e_status_uses_runtime_status_app_run_id() -> None:
+    source = (TAURI_SRC / "pages" / "RunProgress.tsx").read_text(encoding="utf-8")
+
+    assert "runId: status.app_run_id ?? prev?.runId" in source
+    assert "setHasReceivedHeartbeat(true)" in source
+    assert "const hasVisibleBackendHeartbeat = hasReceivedHeartbeat" in source
+    assert "Backend run signals observed" in source
+
+
+def test_dev_autostart_reaches_studio_before_existing_runs_redirect_to_browser() -> None:
+    source = (TAURI_SRC / "App.tsx").read_text(encoding="utf-8")
+
+    assert "VITE_MUCHANIPO_AUTOSTART_TOPIC" in source
+    assert "autostartTopic ? \"/studio\"" in source
+    assert "hasRun ? \"/browser\" : \"/studio\"" in source
+
+
+def test_browser_home_uses_real_run_topic_not_crop_placeholder() -> None:
+    source = (TAURI_SRC / "pages" / "BrowserHome.tsx").read_text(encoding="utf-8")
+
+    assert "runTopic" in source
+    assert "{runTopic}" in source
+    assert "RunProgress에서 heartbeat/source 확인" in source
+    assert "딸기 농가용 저비용 분자진단 키트" not in source
+    assert "completedCount" not in source
+    assert "/10 단계" not in source
+    assert "진행률" not in source
+    assert "summary.progress" not in source
+    assert "cowork-title-actions" not in source
+    assert "Tauri desktop" not in source
+    assert "Source research" not in source
+
+
+def test_run_progress_surfaces_provider_error_as_product_pass_blocker() -> None:
+    source = (TAURI_SRC / "pages" / "RunProgress.tsx").read_text(encoding="utf-8")
+
+    assert "blocks_product_pass" in source
+    assert "blocksProductPass" in source
+    assert "blocks product pass" in source
+    assert "provider_call_error" in source
+    assert "errorClass" in source
 
 
 def test_evidence_index_exposes_safe_source_access_status_contract() -> None:

@@ -374,12 +374,10 @@ class GatewayV2(ModelGateway):
             # Mark providers dead from fallback events even in the no-budget path,
             # but only when alternatives exist.
             if len(chain_providers) > 1:
-                for ev in self._fallback_events:
-                    if ev.get("stage") == stage and "error" in ev:
-                        err_text = str(ev["error"])
-                        if self._is_auth_error(RuntimeError(err_text)):
-                            self._mark_provider_dead(str(ev.get("provider", "")), RuntimeError(err_text))
+                self._mark_auth_failures_from_events(stage)
             raise
+        if len(chain_providers) > 1:
+            self._mark_auth_failures_from_events(stage)
 
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
         if reservation_id and self.budget is not None:
@@ -447,7 +445,7 @@ class GatewayV2(ModelGateway):
     def _is_auth_error(exc: Exception) -> bool:
         """Detect permanent auth failures (401/403) so we can skip the dead provider."""
         text = str(exc).lower()
-        auth_markers = ("401", "403", "unauthorized", "invalid key", "authentication")
+        auth_markers = ("401", "403", "unauthorized", "invalid key", "invalid_key", "authentication")
         return any(marker in text for marker in auth_markers)
 
     def _mark_provider_dead(self, name: str, exc: Exception) -> None:
@@ -459,6 +457,13 @@ class GatewayV2(ModelGateway):
                 RuntimeWarning,
                 stacklevel=3,
             )
+
+    def _mark_auth_failures_from_events(self, stage: str) -> None:
+        for ev in self._fallback_events:
+            if ev.get("stage") == stage and "error" in ev:
+                err_text = str(ev["error"])
+                if self._is_auth_error(RuntimeError(err_text)):
+                    self._mark_provider_dead(str(ev.get("provider", "")), RuntimeError(err_text))
 
 
 def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[str, Any]:
