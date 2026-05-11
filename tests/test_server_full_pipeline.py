@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.muchanipo.server import JSONLineHITLAdapter, serve_full, _PipelineHeartbeat, _build_demo_rounds
+from src.pipeline.idea_to_council import _max_plus_benchmark_decision
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
 from src.report.pyramid_formatter import PyramidFormatter
 from src.runtime.live_mode import (
@@ -26,6 +27,18 @@ from src.runtime.live_mode import (
 def _writable_tmp(name: str) -> Path:
     base = os.environ.get("TMPDIR") or "/tmp"
     return Path(base) / name
+
+
+def test_max_plus_benchmark_decision_treats_zero_weak_source_penalty_as_keep() -> None:
+    decision = _max_plus_benchmark_decision(
+        {
+            "expected_claim_recall": 1.0,
+            "evidence_quote_coverage": 1.0,
+            "weak_source_penalty": 0.0,
+        }
+    )
+
+    assert decision == "keep"
 
 
 def test_mimo_opencode_policy_credential_gate_uses_nonblank_approved_keys_only(monkeypatch):
@@ -138,16 +151,38 @@ def test_serve_full_emits_ten_council_rounds(tmp_path):
     assert [e["round"] for e in starts] == list(range(1, 11))
 
 
-def test_serve_full_streams_research_progress(tmp_path):
+def test_serve_full_streams_research_progress(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_MAX_PLUS_BENCHMARK_ID", "b1")
     stdout = io.StringIO()
-    serve_full("strawberry diagnostics", report_path=tmp_path / "R.md", stdout=stdout)
+    serve_full(
+        "B-1 fluorescent probe diagnosis for Erwinia amylovora fire blight",
+        report_path=tmp_path / "R.md",
+        stdout=stdout,
+    )
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     progress = [event for event in events if event["event"] == "research_progress"]
 
     assert progress
     assert any(event["status"] == "searching" and event["query"] for event in progress)
     assert any(event["status"] == "source_found" and event["source_title"] for event in progress)
-    assert all(event["stage"] == "research" for event in progress)
+    assert all(
+        event["stage"] == "research"
+        for event in progress
+        if event["status"] in {"searching", "source_found", "source_evaluated", "knowledge_gap", "facet_summary"}
+    )
+    assert any(event["stage"] == "quality_gate" for event in progress)
+    benchmark_events = [event for event in progress if event.get("status") == "max_plus_benchmark_scored"]
+    assert benchmark_events
+    benchmark = benchmark_events[-1]
+    assert benchmark["benchmark_id"] == "muchanipo-deep-research-max-plus-b1"
+    assert set(benchmark["metrics"]) >= {
+        "source_authority_score",
+        "weak_source_penalty",
+        "expected_claim_recall",
+        "evidence_quote_coverage",
+        "claim_traceability",
+    }
+    assert benchmark["decision"] in {"keep", "blocked"}
 
 
 def test_serve_full_streams_council_debate_progress(tmp_path):
@@ -214,6 +249,66 @@ def test_serve_full_emits_done_at_end(tmp_path):
     events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
     assert events[-1]["event"] == "done"
     assert events[-1]["pipeline"] == "full"
+
+
+def test_serve_full_completion_evidence_is_substantive_and_session_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_APP_RUN_ID", "app-run-substantive-123")
+    stdout = io.StringIO()
+
+    rc = serve_full("substantive evidence topic", report_path=tmp_path / "R.md", stdout=stdout)
+
+    assert rc == 0
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    started = next(event for event in events if event["event"] == "run_started")
+    expected_session = started["research_session_id"]
+    substantive_events = [
+        event
+        for event in events
+        if event["event"] in {"council_turn", "report_chunk", "final_report", "done"}
+    ]
+    names = {event["event"] for event in substantive_events}
+
+    assert {"council_turn", "report_chunk", "final_report", "done"}.issubset(names)
+    assert all(event["research_session_id"] == expected_session for event in substantive_events)
+    assert all(event["app_run_id"] == "app-run-substantive-123" for event in substantive_events)
+    assert any(str(event.get("council_stage") or "").strip() for event in substantive_events if event["event"] == "council_turn")
+    assert any(str(event.get("markdown") or "").strip() for event in substantive_events if event["event"] == "report_chunk")
+    final_report = next(event for event in substantive_events if event["event"] == "final_report")
+    done = next(event for event in substantive_events if event["event"] == "done")
+    assert final_report["chapter_count"] >= 1
+    assert "## Chapter" in final_report["markdown"]
+    assert done["council_turn_count"] > 0
+    assert done.get("aborted") is not True
+
+
+def test_serve_full_research_quality_only_stops_after_quality_gates_before_council(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_RESEARCH_QUALITY_ONLY", "1")
+    stdout = io.StringIO()
+    report = tmp_path / "R.md"
+
+    rc = serve_full("strawberry diagnostics market evidence", report_path=report, stdout=stdout)
+
+    assert rc == 0
+    events = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    quality_events = [
+        event
+        for event in events
+        if event["event"] == "research_progress" and event.get("stage") == "quality_gate"
+    ]
+    terminal_events = [event["event"] for event in events]
+    assert terminal_events.count("research_quality_ready") + terminal_events.count("research_quality_needs_review") == 1
+    assert {event["status"] for event in quality_events} >= {
+        "source_audit_gate",
+        "claim_evidence_gate",
+    }
+    assert not any(event.get("stage") == "council" for event in events if event["event"] == "stage_started")
+    done = events[-1]
+    assert done["event"] == "done"
+    assert done["status"] in {"research_quality_ready", "research_quality_needs_review"}
+    assert done["research_quality_only"] is True
+    assert done["research_quality_stop"] in {"before_council", "needs_review_before_council", "blocked_before_council"}
+    assert done.get("aborted") is False
+    assert not report.exists()
 
 
 def test_serve_full_waits_for_jsonline_interview_answers(tmp_path, monkeypatch):
@@ -479,7 +574,11 @@ def test_serve_full_emits_terminal_error_on_live_mode_violation(tmp_path, monkey
     assert events[-2]["event"] == "error"
     assert events[-2]["kind"] == "live_mode_violation"
     assert "live evidence missing" in events[-2]["message"]
-    assert events[-1] == {"event": "done", "pipeline": "full", "aborted": True}
+    assert events[-1]["event"] == "done"
+    assert events[-1]["pipeline"] == "full"
+    assert events[-1]["aborted"] is True
+    assert events[-1]["memory_policy"] == "no_implicit_cross_session_memory"
+    assert events[-1]["imported_knowledge_refs"] == []
     assert not (tmp_path / "R.md").exists()
 
 
@@ -500,7 +599,11 @@ def test_serve_full_emits_terminal_error_on_pipeline_exception(tmp_path, monkeyp
     assert events[-2]["kind"] == "pipeline_error"
     assert events[-2]["error_class"] == "RuntimeError"
     assert "provider unavailable" in events[-2]["message"]
-    assert events[-1] == {"event": "done", "pipeline": "full", "aborted": True}
+    assert events[-1]["event"] == "done"
+    assert events[-1]["pipeline"] == "full"
+    assert events[-1]["aborted"] is True
+    assert events[-1]["memory_policy"] == "no_implicit_cross_session_memory"
+    assert events[-1]["imported_knowledge_refs"] == []
     assert not (tmp_path / "R.md").exists()
 
 

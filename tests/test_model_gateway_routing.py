@@ -94,6 +94,17 @@ def test_default_gateway_routes_council_to_anthropic_class(monkeypatch):
     assert gw.stage_routes["council"] == "anthropic"
 
 
+def test_default_gateway_promotes_live_mimo_when_key_is_present(monkeypatch):
+    _clear_mimo_opencode_policy_env(monkeypatch)
+    monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "tp-test")
+
+    gw = default_gateway(prefer_cli=False)
+
+    assert gw.stage_routes["council"] == "mimo"
+    assert gw.stage_routes["report"] == "mimo"
+    assert gw.fallback_chain["council"][0] == "mimo"
+
+
 def test_mimo_opencode_only_policy_overrides_explicit_verification_routes(monkeypatch):
     monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
     monkeypatch.delenv("MUCHANIPO_PROVIDER_CHAIN", raising=False)
@@ -178,11 +189,24 @@ class _FailProvider:
         raise RuntimeError(f"{self.name} failed")
 
 
+class _AuthFailProvider:
+    def __init__(self, name: str, message: str):
+        self.name = name
+        self.message = message
+        self.calls = 0
+
+    def call(self, stage: str, prompt: str, **kwargs):
+        self.calls += 1
+        raise RuntimeError(self.message)
+
+
 class _SuccessProvider:
     def __init__(self, name: str):
         self.name = name
+        self.calls = 0
 
     def call(self, stage: str, prompt: str, **kwargs):
+        self.calls += 1
         return ModelResult(text=f"ok-{self.name}", provider=self.name, model="mock")
 
 
@@ -262,6 +286,24 @@ def test_gateway_v2_records_fallback_events_when_primary_fails():
     assert result.text == "ok-secondary"
     assert len(gw.fallback_events) == 1
     assert gw.fallback_events[0]["provider"] == "primary"
+
+
+def test_gateway_v2_marks_invalid_key_provider_dead_after_successful_fallback():
+    primary = _AuthFailProvider("mimo", "MiMo API HTTP 401: invalid_key")
+    secondary = _SuccessProvider("opencode")
+    gw = GatewayV2(
+        providers={"mimo": primary, "opencode": secondary},
+        stage_routes={"council": "mimo"},
+        fallback_chain={"council": ["mimo", "opencode"]},
+    )
+
+    first = gw.call("council", "prompt")
+    second = gw.call("council", "prompt")
+
+    assert first.provider == "opencode"
+    assert second.provider == "opencode"
+    assert primary.calls == 1
+    assert secondary.calls == 2
 
 
 def test_gateway_v2_disables_anthropic_provider_fallback_in_chain():

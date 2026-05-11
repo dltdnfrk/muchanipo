@@ -1,0 +1,120 @@
+{
+  "benchmark_id": "muchanipo-deep-research-max-plus-b1",
+  "probe": "B-1",
+  "reference_report": {
+    "path": "/tmp/muchanipo-deep-research-max/report.md",
+    "prompt_path": "/tmp/muchanipo_deep_research_prompt.txt",
+    "latest_response_path": "/tmp/muchanipo-deep-research-max/latest_response.json",
+    "must_not_call_paid_max_again": true,
+    "copy_report_into_repo": false
+  },
+  "source_discovery": {
+    "queries": [
+      "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "B-1 Erwinia amylovora STAR Protocols detection protocol 10.1016/j.xpro.2023.102412"
+    ]
+  },
+  "rubric": {
+    "metrics": [
+      "source_authority_score",
+      "weak_source_penalty",
+      "expected_claim_recall",
+      "evidence_quote_coverage",
+      "claim_traceability",
+      "material_claim_support_coverage",
+      "expected_claim_traceability_score",
+      "quote_locator_coverage",
+      "citation_integrity_score",
+      "background_leak_count",
+      "unsupported_high_confidence_claim_count",
+      "unresolved_conflict_disclosure_rate"
+    ],
+    "expected_claims": [
+      {
+        "id": "b1-isci-anchor-probe",
+        "text": "B-1 is a turn-on fluorescent probe for detection of Erwinia amylovora, the fire blight pathogen, anchored to iScience DOI 10.1016/j.isci.2023.106557.",
+        "required_terms": [
+          "b",
+          "1",
+          "fluorescent",
+          "probe",
+          "erwinia",
+          "amylovora",
+          "fire",
+          "blight",
+          "10",
+          "1016",
+          "isci",
+          "2023",
+          "106557"
+        ],
+        "min_matched_terms": 6
+      },
+      {
+        "id": "b1-xpro-protocol-anchor",
+        "text": "The companion STAR Protocols paper describes a B-1 probe detection protocol for Erwinia amylovora, anchored to DOI 10.1016/j.xpro.2023.102412.",
+        "required_terms": [
+          "star",
+          "protocol",
+          "b",
+          "1",
+          "probe",
+          "erwinia",
+          "amylovora",
+          "10",
+          "1016",
+          "xpro",
+          "2023",
+          "102412"
+        ],
+        "min_matched_terms": 5
+      },
+      {
+        "id": "b1-field-validation-performance",
+        "text": "Field or sample-validation claims should cite performance evidence for B-1 detection, such as sensitivity, specificity, limit of detection, fluorescence response, or validation against infected plant samples.",
+        "required_terms": [
+          "field",
+          "sample",
+          "validation",
+          "sensitivity",
+          "specificity",
+          "limit",
+          "detection",
+          "fluorescence",
+          "infected",
+          "plant"
+        ],
+        "min_matched_terms": 3
+      }
+    ]
+  },
+  "source_backed_evidence": [
+    {
+      "id": "fixture-b1-isci-106557",
+      "query": "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "title": "A turn-on fluorescent probe for the detection of Erwinia amylovora and fire blight diagnosis",
+      "url": "https://doi.org/10.1016/j.isci.2023.106557",
+      "quote": "B-1 is a turn-on fluorescent probe for detection of Erwinia amylovora, the fire blight pathogen; the iScience paper DOI 10.1016/j.isci.2023.106557 reports fluorescence response and validation with infected plant samples.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
+      "id": "fixture-b1-xpro-102412",
+      "query": "B-1 Erwinia amylovora STAR Protocols detection protocol 10.1016/j.xpro.2023.102412",
+      "title": "Protocol for detection of Erwinia amylovora using the B-1 fluorescent probe",
+      "url": "https://doi.org/10.1016/j.xpro.2023.102412",
+      "quote": "The companion STAR Protocols article describes a B-1 probe detection protocol for Erwinia amylovora with DOI 10.1016/j.xpro.2023.102412, including sample handling and fluorescence detection steps.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
+      "id": "fixture-b1-isci-field-validation",
+      "query": "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "title": "B-1 fluorescent probe validation against infected plant samples for fire blight detection",
+      "url": "https://doi.org/10.1016/j.isci.2023.106557",
+      "quote": "Field and sample validation evidence for B-1 detection includes sensitivity, specificity, limit of detection, fluorescence response, and validation against infected plant samples for Erwinia amylovora fire blight.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    }
+  ]
+}

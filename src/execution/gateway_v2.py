@@ -86,6 +86,7 @@ class FallbackChain:
     on_fallback: Optional[Any] = None  # callback(stage, failed_provider, error)
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
+        validate_live_result = bool(kwargs.pop("_validate_live_result", False))
         last_error: Optional[Exception] = None
         for i, provider in enumerate(self.providers):
             try:
@@ -94,12 +95,24 @@ class FallbackChain:
                     prompt=prompt,
                     **_chain_call_kwargs(provider, kwargs),
                 )
+                if validate_live_result:
+                    assert_live_model_result(stage, result)
                 if i > 0:
                     result.is_fallback = True
                     result.fallback_reason = (
                         f"primary {self.providers[0].name} failed: {last_error}"
                     )
                 return result
+            except LiveModeViolation as exc:
+                if "empty or too-short" in str(exc) and i + 1 < len(self.providers):
+                    last_error = exc
+                    if self.on_fallback:
+                        try:
+                            self.on_fallback(stage, provider, exc)
+                        except Exception:  # pragma: no cover - 콜백 장애 무시
+                            pass
+                    continue
+                raise
             except Exception as exc:
                 last_error = exc
                 if self.on_fallback:
@@ -335,6 +348,8 @@ class GatewayV2(ModelGateway):
                         prompt=prompt,
                         **_chain_call_kwargs(provider, kwargs),
                     )
+                    if require_live:
+                        assert_live_model_result(stage, result)
                 except Exception as exc:
                     last_error = exc
                     self.budget.reconcile(reservation_id, actual_usd=0.0)
@@ -367,19 +382,22 @@ class GatewayV2(ModelGateway):
             on_fallback=self._record_fallback,
         )
         try:
-            result = chain.call(stage=stage, prompt=prompt, **kwargs)
+            result = chain.call(
+                stage=stage,
+                prompt=prompt,
+                _validate_live_result=require_live,
+                **kwargs,
+            )
         except Exception:
             if reservation_id and self.budget is not None:
                 self.budget.reconcile(reservation_id, actual_usd=0.0)
             # Mark providers dead from fallback events even in the no-budget path,
             # but only when alternatives exist.
             if len(chain_providers) > 1:
-                for ev in self._fallback_events:
-                    if ev.get("stage") == stage and "error" in ev:
-                        err_text = str(ev["error"])
-                        if self._is_auth_error(RuntimeError(err_text)):
-                            self._mark_provider_dead(str(ev.get("provider", "")), RuntimeError(err_text))
+                self._mark_auth_failures_from_events(stage)
             raise
+        if len(chain_providers) > 1:
+            self._mark_auth_failures_from_events(stage)
 
         actual_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
         if reservation_id and self.budget is not None:
@@ -447,7 +465,7 @@ class GatewayV2(ModelGateway):
     def _is_auth_error(exc: Exception) -> bool:
         """Detect permanent auth failures (401/403) so we can skip the dead provider."""
         text = str(exc).lower()
-        auth_markers = ("401", "403", "unauthorized", "invalid key", "authentication")
+        auth_markers = ("401", "403", "unauthorized", "invalid key", "invalid_key", "authentication")
         return any(marker in text for marker in auth_markers)
 
     def _mark_provider_dead(self, name: str, exc: Exception) -> None:
@@ -459,6 +477,13 @@ class GatewayV2(ModelGateway):
                 RuntimeWarning,
                 stacklevel=3,
             )
+
+    def _mark_auth_failures_from_events(self, stage: str) -> None:
+        for ev in self._fallback_events:
+            if ev.get("stage") == stage and "error" in ev:
+                err_text = str(ev["error"])
+                if self._is_auth_error(RuntimeError(err_text)):
+                    self._mark_provider_dead(str(ev.get("provider", "")), RuntimeError(err_text))
 
 
 def _chain_call_kwargs(provider: Provider, kwargs: Mapping[str, Any]) -> Dict[str, Any]:

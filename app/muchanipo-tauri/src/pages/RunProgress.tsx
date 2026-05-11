@@ -67,6 +67,10 @@ function readEnvsFromSettings(): Record<string, string> {
     envs.MUCHANIPO_API_ROUTING = "mimo_opencode_go_only";
     envs.MUCHANIPO_MODEL_ROUTING = "mimo_opencode_go_only";
     envs.MUCHANIPO_INTERVIEW_COUNSELLING = "1";
+    // Do not let a single slow chairman synthesis kill an otherwise successful
+    // live council run. The backend records a blocking timeout-fallback event so
+    // product PASS remains honest, but Markdown report generation can complete.
+    envs.MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK = "1";
     envs.MUCHANIPO_PREFER_CLI = "0";
     envs.OPENCODE_USE_CLI = "0";
     envs.MUCHANIPO_USE_CLI = "0";
@@ -74,8 +78,11 @@ function readEnvsFromSettings(): Record<string, string> {
       envs.XIAOMI_MIMO_API_KEY = mimoKey;
       envs.MIMO_API_KEY = mimoKey;
       envs.MIMO_MODEL = readCredential("mimo_model").trim() || "mimo-v2.5-pro";
+      envs.MUCHANIPO_MIMO_MODEL = envs.MIMO_MODEL;
       const mimoBaseUrl = readCredential("mimo_base_url").trim() || "https://token-plan-sgp.xiaomimimo.com/v1";
       envs.MIMO_BASE_URL = mimoBaseUrl;
+      envs.XIAOMI_MIMO_BASE_URL = mimoBaseUrl;
+      envs.MUCHANIPO_PROVIDER_CHAIN = opencodeGoKey ? "mimo,opencode" : "mimo";
     }
     if (opencodeGoKey) {
       envs.OPENCODE_API_KEY = opencodeGoKey;
@@ -102,7 +109,7 @@ function readEnvsFromSettings(): Record<string, string> {
 
 function readResearchDepth(): ResearchDepth {
   const value = localStorage.getItem("research_depth");
-  return value === "shallow" || value === "deep" || value === "max" ? value : "deep";
+  return value === "shallow" || value === "deep" || value === "max" || value === "superdeep" ? value : "deep";
 }
 
 type Stage =
@@ -138,7 +145,18 @@ interface TokenCard {
 
 interface ResearchActivity {
   id: string;
-  status: "searching" | "source_found" | "source_evaluated" | "knowledge_gap" | "facet_summary" | "done";
+  status:
+    | "research_plan_ready"
+    | "searching"
+    | "source_found"
+    | "source_evaluated"
+    | "knowledge_gap"
+    | "facet_summary"
+    | "source_audit_gate"
+    | "claim_evidence_gate"
+    | "max_plus_benchmark_scored"
+    | "research_quality_ready"
+    | "done";
   query?: string;
   queryIndex?: number;
   queryCount?: number;
@@ -157,7 +175,72 @@ interface ResearchActivity {
   acceptedCount?: number;
   minAcceptedSources?: number;
   gapCount?: number;
+  acceptedSourceCount?: number;
+  rejectedSourceCount?: number;
+  passed?: boolean;
+  decision?: string;
+  supportedClaimCount?: number;
+  partialClaimCount?: number;
+  unsupportedClaimCount?: number;
+  supportedRatio?: number;
+  benchmarkId?: string;
+  metrics?: Record<string, number>;
+  queries?: string[];
+  queryRoutes?: ResearchQueryRoute[];
+  topicAnchor?: string;
+  purpose?: string;
+  sourceClass?: string;
+  intent?: string;
+  backend?: string;
+  continueReason?: string;
+  authorityRequirement?: string;
+  acceptanceRules?: string[];
 }
+
+interface ResearchQueryRoute {
+  query?: string;
+  facetId?: string;
+  purpose?: string;
+  sourceClass?: string;
+  intent?: string;
+  backend?: string;
+  continueReason?: string;
+  authorityRequirement?: string;
+  acceptanceRules?: string[];
+}
+
+export interface ResearchPlanDisplayRow {
+  query: string;
+  routeDetails: string[];
+  continueReason?: string;
+  authorityRequirement?: string;
+  acceptanceRules: string[];
+}
+
+const RESEARCH_ACTIVITY_STATUSES: ResearchActivity["status"][] = [
+  "research_plan_ready",
+  "searching",
+  "source_found",
+  "source_evaluated",
+  "knowledge_gap",
+  "facet_summary",
+  "source_audit_gate",
+  "claim_evidence_gate",
+  "max_plus_benchmark_scored",
+  "research_quality_ready",
+  "done",
+];
+
+export interface ResearchContractState {
+  researchSessionId?: string;
+  appRunId?: string;
+  memoryPolicy?: string;
+  importedKnowledgeRefs: string[];
+}
+
+const EMPTY_RESEARCH_CONTRACT: ResearchContractState = {
+  importedKnowledgeRefs: [],
+};
 
 interface CouncilActivity {
   id: string;
@@ -187,6 +270,7 @@ interface CouncilActivity {
   timeoutSec?: number;
   elapsedSec?: number;
   errorClass?: string;
+  blocksProductPass?: boolean;
 }
 
 interface StudioProvenance {
@@ -333,9 +417,56 @@ function isStage(value: unknown): value is Stage {
   return typeof value === "string" && STAGES.includes(value as Stage);
 }
 
+export function parseEventBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
+  }
+  return false;
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item)).filter(Boolean);
+}
+
+export function normalizeImportedKnowledgeRefs(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item).trim()).filter(Boolean);
+    } catch {
+      // Fall through to a single explicit ref. Do not infer or split prose.
+    }
+    return [trimmed];
+  }
+  return [];
+}
+
+export function updateResearchContractFromEvent(
+  previous: ResearchContractState,
+  event: BackendEvent,
+): ResearchContractState {
+  const importedRefs = normalizeImportedKnowledgeRefs(event.imported_knowledge_refs);
+  return {
+    researchSessionId: String(event.research_session_id ?? previous.researchSessionId ?? "") || undefined,
+    appRunId: String(event.app_run_id ?? previous.appRunId ?? "") || undefined,
+    memoryPolicy: String(event.memory_policy ?? previous.memoryPolicy ?? "") || undefined,
+    importedKnowledgeRefs:
+      event.imported_knowledge_refs !== undefined ? importedRefs : previous.importedKnowledgeRefs,
+  };
+}
+
+export function eventFeedsCurrentSessionEvidenceLedger(event: BackendEvent): boolean {
+  return (
+    event.event === "research_progress" &&
+    (event.status === "source_found" || event.status === "source_evaluated")
+  );
 }
 
 function artifactKeyList(value: unknown): string[] {
@@ -562,10 +693,10 @@ function hitlEvidenceRefs(prompt: HitlPrompt): unknown {
   return prompt.payload?.evidence_refs;
 }
 
-function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null {
+export function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null {
   if (event.event !== "research_progress") return null;
   const status = String(event.status ?? "searching");
-  if (!["searching", "source_found", "source_evaluated", "knowledge_gap", "facet_summary", "done"].includes(status)) return null;
+  if (!RESEARCH_ACTIVITY_STATUSES.includes(status as ResearchActivity["status"])) return null;
   const query = String(event.query ?? "").trim();
   const sourceTitle = String(event.source_title ?? "").trim();
   const sourceUrl = String(event.source_url ?? "").trim();
@@ -578,15 +709,42 @@ function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null
   const queryIndex = Number(event.query_index ?? 0) || undefined;
   const queryCount = Number(event.query_count ?? 0) || undefined;
   const relevanceScore = Number(event.relevance_score ?? Number.NaN);
-  const acceptedCount = Number(event.accepted_count ?? 0) || undefined;
-  const minAcceptedSources = Number(event.min_accepted_sources ?? 0) || undefined;
-  const gapCount = Number(event.gap_count ?? 0) || undefined;
+  const acceptedCount = optionalNumber(event.accepted_count);
+  const minAcceptedSources = optionalNumber(event.min_accepted_sources);
+  const gapCount = optionalNumber(event.gap_count);
+  const acceptedSourceCount = optionalNumber(event.accepted_source_count);
+  const rejectedSourceCount = optionalNumber(event.rejected_source_count);
+  const supportedClaimCount = optionalNumber(event.supported_claim_count ?? event.supported_count);
+  const partialClaimCount = optionalNumber(event.partial_claim_count ?? event.partial_count);
+  const unsupportedClaimCount = optionalNumber(event.unsupported_claim_count ?? event.unsupported_count);
+  const supportedRatio = optionalNumber(event.supported_ratio);
+  const decision = String(event.decision ?? "").trim();
+  const benchmarkId = String(event.benchmark_id ?? "").trim();
+  const topicAnchor = String(event.topic_anchor ?? event.topicAnchor ?? "").trim();
+  const purpose = String(event.purpose ?? "").trim();
+  const sourceClass = String(event.source_class ?? event.sourceClass ?? "").trim();
+  const intent = String(event.intent ?? "").trim();
+  const backend = String(event.backend ?? "").trim();
+  const continueReason = String(event.continue_reason ?? event.continueReason ?? "").trim();
+  const authorityRequirement = String(event.authority_requirement ?? event.authorityRequirement ?? "").trim();
+  const rawAcceptanceRules = event.acceptance_rules ?? event.acceptanceRules;
+  const acceptanceRules = parseStringArray(rawAcceptanceRules) ?? (String(rawAcceptanceRules ?? "").trim() ? [String(rawAcceptanceRules).trim()] : undefined);
+  const metrics =
+    event.metrics && typeof event.metrics === "object" && !Array.isArray(event.metrics)
+      ? Object.fromEntries(
+          Object.entries(event.metrics)
+            .map(([key, value]) => [key, Number(value)])
+            .filter(([, value]) => Number.isFinite(value)),
+        )
+      : undefined;
   const backends = Array.isArray(event.backends)
     ? event.backends.map((item) => String(item)).filter(Boolean)
     : undefined;
   const facetIds = Array.isArray(event.facet_ids)
     ? event.facet_ids.map((item) => String(item)).filter(Boolean)
     : undefined;
+  const queries = parseStringArray(event.queries);
+  const queryRoutes = normalizeResearchQueryRoutes(event.query_routes);
   const accepted = typeof event.accepted === "boolean" ? event.accepted : undefined;
   const id = [status, queryIndex ?? "", query, sourceTitle, sourceUrl, facetId, reason].join("|");
   return {
@@ -610,6 +768,311 @@ function normalizeResearchActivity(event: BackendEvent): ResearchActivity | null
     acceptedCount,
     minAcceptedSources,
     gapCount,
+    acceptedSourceCount,
+    rejectedSourceCount,
+    passed: optionalBoolean(event.passed),
+    decision: decision || undefined,
+    supportedClaimCount,
+    partialClaimCount,
+    unsupportedClaimCount,
+    supportedRatio,
+    benchmarkId: benchmarkId || undefined,
+    metrics,
+    queries,
+    queryRoutes,
+    topicAnchor: topicAnchor || undefined,
+    purpose: purpose || undefined,
+    sourceClass: sourceClass || undefined,
+    intent: intent || undefined,
+    backend: backend || undefined,
+    continueReason: continueReason || undefined,
+    authorityRequirement: authorityRequirement || undefined,
+    acceptanceRules,
+  };
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return parseEventBoolean(value);
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseStringArray(value: unknown): string[] | undefined {
+  const raw = typeof value === "string" ? safeJsonParse(value) : value;
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw.map((item) => String(item).trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeResearchQueryRoute(value: unknown): ResearchQueryRoute | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const rawAcceptanceRules = record.acceptance_rules ?? record.acceptanceRules;
+  const parsedAcceptanceRules = parseStringArray(rawAcceptanceRules);
+  const fallbackAcceptanceRule = String(rawAcceptanceRules ?? "").trim();
+  const route: ResearchQueryRoute = {
+    query: String(record.query ?? "").trim() || undefined,
+    facetId: String(record.facet_id ?? record.facetId ?? "").trim() || undefined,
+    purpose: String(record.purpose ?? "").trim() || undefined,
+    sourceClass: String(record.source_class ?? record.sourceClass ?? "").trim() || undefined,
+    intent: String(record.intent ?? "").trim() || undefined,
+    backend: String(record.backend ?? "").trim() || undefined,
+    continueReason: String(record.continue_reason ?? record.continueReason ?? "").trim() || undefined,
+    authorityRequirement: String(record.authority_requirement ?? record.authorityRequirement ?? "").trim() || undefined,
+    acceptanceRules: parsedAcceptanceRules ?? (fallbackAcceptanceRule ? [fallbackAcceptanceRule] : undefined),
+  };
+  return Object.values(route).some(Boolean) ? route : null;
+}
+
+function normalizeResearchQueryRoutes(value: unknown): ResearchQueryRoute[] | undefined {
+  const raw = typeof value === "string" ? safeJsonParse(value) : value;
+  if (!Array.isArray(raw)) return undefined;
+  const routes = raw.map(normalizeResearchQueryRoute).filter((item): item is ResearchQueryRoute => item !== null);
+  return routes.length > 0 ? routes : undefined;
+}
+
+function qualitySummaryObject(event: BackendEvent, key: string): Record<string, unknown> {
+  return parseJsonRecord(event[key]);
+}
+
+export function normalizeResearchQualityReadyActivity(event: BackendEvent): ResearchActivity | null {
+  const isReadyEvent = event.event === "research_quality_ready";
+  const isReadyDone =
+    event.event === "done" &&
+    (event.status === "research_quality_ready" || parseEventBoolean(event.research_quality_only));
+  if (!isReadyEvent && !isReadyDone) return null;
+
+  const artifacts = qualitySummaryObject(event, "artifacts");
+  const sourceAudit =
+    qualitySummaryObject(event, "source_audit_summary").accepted_source_count !== undefined
+      ? qualitySummaryObject(event, "source_audit_summary")
+      : qualitySummaryObject(artifacts as BackendEvent, "source_audit_summary");
+  const claimEvidence =
+    qualitySummaryObject(event, "claim_evidence_matrix_summary").supported_count !== undefined
+      ? qualitySummaryObject(event, "claim_evidence_matrix_summary")
+      : qualitySummaryObject(artifacts as BackendEvent, "claim_evidence_matrix_summary");
+  const metricsValue = parseJsonRecord(event.max_plus_benchmark_metrics ?? artifacts.max_plus_benchmark_metrics);
+  const metrics =
+    Object.keys(metricsValue).length > 0
+      ? Object.fromEntries(
+          Object.entries(metricsValue)
+            .map(([key, value]) => [key, Number(value)])
+            .filter(([, value]) => Number.isFinite(value)),
+        )
+      : undefined;
+  const stop = String(event.research_quality_stop ?? event.status ?? "ready_before_council").trim();
+  const decision = String(event.max_plus_benchmark_decision ?? artifacts.max_plus_benchmark_decision ?? "").trim();
+  return {
+    id: `research_quality_ready|${stop}`,
+    status: "research_quality_ready",
+    message: "Research quality-first run complete before council",
+    reason: stop,
+    acceptedSourceCount: optionalNumber(sourceAudit.accepted_source_count),
+    rejectedSourceCount: optionalNumber(sourceAudit.rejected_source_count),
+    gapCount: optionalNumber(sourceAudit.gap_count),
+    passed: optionalBoolean(sourceAudit.passed),
+    decision: decision || undefined,
+    supportedClaimCount: optionalNumber(claimEvidence.supported_claim_count ?? claimEvidence.supported_count),
+    partialClaimCount: optionalNumber(claimEvidence.partial_claim_count ?? claimEvidence.partial_count),
+    unsupportedClaimCount: optionalNumber(claimEvidence.unsupported_claim_count ?? claimEvidence.unsupported_count),
+    supportedRatio: optionalNumber(claimEvidence.supported_ratio),
+    metrics,
+  };
+}
+
+function formatBenchmarkMetricLabel(key: string): string {
+  if (key === "source_authority_score") return "authority";
+  if (key === "weak_source_penalty") return "weak penalty";
+  if (key === "expected_claim_recall") return "claim recall";
+  if (key === "evidence_quote_coverage") return "quote coverage";
+  if (key === "claim_traceability") return "traceability";
+  return key.replaceAll("_", " ");
+}
+
+function formatBenchmarkMetricValue(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  return `${Math.round(value * 100)}%`;
+}
+
+function uniqueStrings(values: (string | undefined)[]): string[] {
+  return Array.from(new Set(values.map((item) => item?.trim()).filter((item): item is string => Boolean(item))));
+}
+
+function queryKey(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+export function researchPlanDisplayRows(activity: ResearchActivity): ResearchPlanDisplayRow[] {
+  const routesByQuery = new Map<string, ResearchQueryRoute>();
+  for (const route of activity.queryRoutes ?? []) {
+    const key = queryKey(route.query);
+    if (key && !routesByQuery.has(key)) routesByQuery.set(key, route);
+  }
+  const orderedQueries = activity.queries && activity.queries.length > 0
+    ? activity.queries
+    : (activity.queryRoutes ?? []).map((route) => route.query).filter((query): query is string => Boolean(query));
+  const rows = orderedQueries.map((query, index): ResearchPlanDisplayRow => {
+    const route = routesByQuery.get(queryKey(query)) ?? activity.queryRoutes?.[index];
+    return {
+      query,
+      routeDetails: [
+        route?.facetId ? `facet ${route.facetId}` : undefined,
+        route?.purpose ? `purpose ${route.purpose}` : undefined,
+        route?.sourceClass ? `source class ${route.sourceClass}` : undefined,
+        route?.intent ? `intent ${route.intent}` : undefined,
+        route?.backend ? `backend ${route.backend}` : undefined,
+      ].filter((item): item is string => Boolean(item)),
+      continueReason: route?.continueReason,
+      authorityRequirement: route?.authorityRequirement,
+      acceptanceRules: route?.acceptanceRules ?? [],
+    };
+  });
+  if (rows.length > 0) return rows;
+  return (activity.query ? [activity.query] : []).map((query) => ({ query, routeDetails: [], acceptanceRules: [] }));
+}
+
+export function researchPlanSummaryChips(activity: ResearchActivity): string[] {
+  const rows = researchPlanDisplayRows(activity);
+  const sourceClasses = uniqueStrings((activity.queryRoutes ?? []).map((route) => route.sourceClass));
+  const backends = uniqueStrings((activity.queryRoutes ?? []).map((route) => route.backend));
+  return [
+    `queries ${activity.queryCount ?? rows.length}`,
+    sourceClasses.length > 0 ? `source classes ${sourceClasses.join(", ")}` : undefined,
+    backends.length > 0 ? `backends ${backends.join(", ")}` : undefined,
+    activity.topicAnchor ? `topic anchor ${activity.topicAnchor}` : undefined,
+  ].filter((item): item is string => Boolean(item));
+}
+
+export function researchProgressStage(event: BackendEvent, activity?: ResearchActivity | null): Stage {
+  if (event.stage === "quality_gate") return "evidence";
+  if (
+    event.event === "research_quality_ready" ||
+    event.status === "research_quality_ready" ||
+    event.status === "ready_before_council" ||
+    event.status === "source_audit_gate" ||
+    event.status === "claim_evidence_gate" ||
+    event.status === "max_plus_benchmark_scored"
+  ) return "evidence";
+  if (
+    activity?.status === "source_audit_gate" ||
+    activity?.status === "claim_evidence_gate" ||
+    activity?.status === "max_plus_benchmark_scored" ||
+    activity?.status === "research_quality_ready"
+  ) return "evidence";
+  return "research";
+}
+
+export function researchQualityDetailChips(activity: ResearchActivity): string[] {
+  const details: string[] = [];
+  if (activity.passed !== undefined) details.push(`passed ${activity.passed ? "yes" : "no"}`);
+  if (activity.acceptedSourceCount !== undefined) details.push(`accepted sources ${activity.acceptedSourceCount}`);
+  if (activity.rejectedSourceCount !== undefined) details.push(`rejected sources ${activity.rejectedSourceCount}`);
+  if (activity.gapCount !== undefined) details.push(`gaps ${activity.gapCount}`);
+  if (activity.supportedClaimCount !== undefined) details.push(`supported claims ${activity.supportedClaimCount}`);
+  if (activity.partialClaimCount !== undefined) details.push(`partial claims ${activity.partialClaimCount}`);
+  if (activity.unsupportedClaimCount !== undefined) details.push(`unsupported claims ${activity.unsupportedClaimCount}`);
+  if (activity.supportedRatio !== undefined) details.push(`supported ratio ${formatBenchmarkMetricValue(activity.supportedRatio)}`);
+  if (activity.decision) details.push(`decision ${activity.decision}`);
+  return details;
+}
+
+export function researchActivityCopy(activity: ResearchActivity): { label: string; message: string; signal: string } {
+  if (activity.status === "research_plan_ready") {
+    return {
+      label: "Research plan ready",
+      message: "Research plan prepared with query rationale",
+      signal: `research_plan_ready · ${activity.queryCount ?? activity.queries?.length ?? 0} queries`,
+    };
+  }
+  if (activity.status === "source_found") {
+    return {
+      label: "출처 확인",
+      message: "출처 확인 중",
+      signal: `source_found · ${activity.sourceTitle || "source"}`,
+    };
+  }
+  if (activity.status === "source_evaluated") {
+    return {
+      label: activity.accepted === false ? "출처 거절" : "출처 채택",
+      message: activity.accepted === false ? "출처 평가 · 거절/보류" : "출처 평가 · 채택",
+      signal: `source_evaluated · ${activity.sourceTitle || "source"}`,
+    };
+  }
+  if (activity.status === "knowledge_gap") {
+    return {
+      label: "근거 gap",
+      message: "근거 부족 gap 발견",
+      signal: `knowledge_gap · ${activity.facetId || "facet"}`,
+    };
+  }
+  if (activity.status === "facet_summary") {
+    return {
+      label: "Facet 요약",
+      message: "facet별 근거 커버리지 요약",
+      signal: `facet_summary · gaps ${activity.gapCount ?? 0}`,
+    };
+  }
+  if (activity.status === "source_audit_gate") {
+    const details = researchQualityDetailChips(activity);
+    return {
+      label: "출처 감사 gate",
+      message: activity.message || "출처 감사 gate 확인 중",
+      signal: `source_audit_gate · ${details.join(" · ") || activity.reason || activity.message || "quality gate"}`,
+    };
+  }
+  if (activity.status === "claim_evidence_gate") {
+    const details = researchQualityDetailChips(activity);
+    return {
+      label: "Claim 근거 gate",
+      message: activity.message || "claim 근거 matrix 확인 중",
+      signal: `claim_evidence_gate · ${details.join(" · ") || activity.reason || activity.message || "quality gate"}`,
+    };
+  }
+  if (activity.status === "max_plus_benchmark_scored") {
+    const claimRecall = activity.metrics?.expected_claim_recall;
+    const metricSignal = claimRecall !== undefined ? `claim recall ${formatBenchmarkMetricValue(claimRecall)}` : "quality gate";
+    return {
+      label: "Benchmark gate",
+      message: activity.message || "명시 선택 benchmark fixture 평가",
+      signal: `max_plus_benchmark_scored · ${activity.decision ? `decision ${activity.decision}` : activity.benchmarkId || metricSignal}`,
+    };
+  }
+  if (activity.status === "research_quality_ready") {
+    const details = researchQualityDetailChips(activity);
+    return {
+      label: "Research quality ready",
+      message: activity.message || "Research quality-first run complete before council",
+      signal: `research_quality_ready · ${activity.reason || "ready_before_council"}${details.length ? ` · ${details.join(" · ")}` : ""}`,
+    };
+  }
+  return {
+    label: activity.status === "done" ? "검색 완료" : "검색 중",
+    message: activity.status === "done" ? "검색 완료" : "검색 쿼리 실행 중",
+    signal: `${activity.status} · ${activity.query || "query"}`,
   };
 }
 
@@ -693,6 +1156,23 @@ function pushCouncilActivity(
   return [activity, ...withoutDuplicate].slice(0, 12);
 }
 
+export function deriveLiveE2eStatus({
+  runId,
+  runtimeRunId,
+  runtimeHeartbeatStage,
+  hasVisibleBackendHeartbeat,
+}: {
+  runId?: string;
+  runtimeRunId?: string;
+  runtimeHeartbeatStage?: string;
+  hasVisibleBackendHeartbeat: boolean;
+}): string {
+  if ((runtimeRunId === runId && runtimeHeartbeatStage) || hasVisibleBackendHeartbeat) {
+    return "Backend run signals observed";
+  }
+  return "Not proven in this UI session";
+}
+
 export default function RunProgress() {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
@@ -702,6 +1182,7 @@ export default function RunProgress() {
   const [studioProvenance, setStudioProvenance] = useState<StudioProvenance | null>(null);
   const [tokenCards, setTokenCards] = useState<TokenCard[]>([]);
   const [researchActivity, setResearchActivity] = useState<ResearchActivity[]>([]);
+  const [researchContract, setResearchContract] = useState<ResearchContractState>(EMPTY_RESEARCH_CONTRACT);
   const [discoveredSources, setDiscoveredSources] = useState<Map<string, DiscoveredSource>>(() => {
     if (!runId) return new Map();
     try {
@@ -741,6 +1222,7 @@ export default function RunProgress() {
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [hitlError, setHitlError] = useState<string | null>(null);
   const [runtimeEvidence, setRuntimeEvidence] = useState<RuntimeEvidence | null>(null);
+  const [hasReceivedHeartbeat, setHasReceivedHeartbeat] = useState(false);
   const [aborting, setAborting] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -824,6 +1306,7 @@ export default function RunProgress() {
         setHitlError(null);
         setHitlSubmitting(false);
         setRuntimeEvidence(null);
+        setHasReceivedHeartbeat(false);
         try {
           for (const suffix of ["report", "report_path", "vault_path", "chapter_count", "pending", "pending_at"]) {
             localStorage.removeItem(`run:${runId}:${suffix}`);
@@ -875,6 +1358,14 @@ export default function RunProgress() {
     finalReportReceivedRef.current = false;
     const handleEvent = (event: BackendEvent) => {
       if (!mounted) return;
+      if (
+        event.research_session_id !== undefined ||
+        event.app_run_id !== undefined ||
+        event.memory_policy !== undefined ||
+        event.imported_knowledge_refs !== undefined
+      ) {
+        setResearchContract((prev) => updateResearchContractFromEvent(prev, event));
+      }
 
       if (event.event === "error") {
         const message = (event.message as string) || "오류가 발생했어요.";
@@ -937,6 +1428,7 @@ export default function RunProgress() {
       }
 
       if (event.event === "pipeline_heartbeat") {
+        setHasReceivedHeartbeat(true);
         const stage = isStage(event.stage) ? event.stage : null;
         if (stage) {
           setStages((prev) => {
@@ -973,33 +1465,17 @@ export default function RunProgress() {
       if (event.event === "research_progress") {
         const activity = normalizeResearchActivity(event);
         if (!activity) return;
+        const targetStage = researchProgressStage(event, activity);
+        const copy = researchActivityCopy(activity);
         setStages((prev) => ({
           ...prev,
-          research: {
-            ...prev.research,
-            status: prev.research.status === "completed" ? "completed" : "active",
-            startedAt: prev.research.startedAt ?? Date.now(),
+          [targetStage]: {
+            ...prev[targetStage],
+            status: prev[targetStage].status === "completed" ? "completed" : "active",
+            startedAt: prev[targetStage].startedAt ?? Date.now(),
             lastEventAt: Date.now(),
-            lastSignal:
-              activity.status === "source_found" || activity.status === "source_evaluated"
-                ? `${activity.status} · ${activity.sourceTitle || "source"}`
-                : activity.status === "knowledge_gap"
-                  ? `knowledge_gap · ${activity.facetId || "facet"}`
-                  : activity.status === "facet_summary"
-                    ? `facet_summary · gaps ${activity.gapCount ?? 0}`
-                    : `searching · ${activity.query || "query"}`,
-            message:
-              activity.status === "source_found"
-                ? "출처 확인 중"
-                : activity.status === "source_evaluated"
-                  ? activity.accepted === false
-                    ? "출처 평가 · 거절/보류"
-                    : "출처 평가 · 채택"
-                  : activity.status === "knowledge_gap"
-                    ? "근거 부족 gap 발견"
-                    : activity.status === "facet_summary"
-                      ? "facet별 근거 커버리지 요약"
-                      : "검색 쿼리 실행 중",
+            lastSignal: copy.signal,
+            message: copy.message,
           },
         }));
         setResearchActivity((prev) => {
@@ -1023,6 +1499,38 @@ export default function RunProgress() {
             } catch { /* ignore */ }
           }
           return next;
+        });
+        return;
+      }
+
+      if (event.event === "research_quality_ready") {
+        const activity = normalizeResearchQualityReadyActivity(event);
+        if (!activity) return;
+        const copy = researchActivityCopy(activity);
+        setStages((prev) => ({
+          ...prev,
+          evidence: {
+            ...prev.evidence,
+            status: "completed",
+            completedAt: Date.now(),
+            durationMs: prev.evidence.startedAt ? Date.now() - prev.evidence.startedAt : prev.evidence.durationMs,
+            lastEventAt: Date.now(),
+            lastSignal: copy.signal,
+            message: copy.message,
+          },
+          finalize: {
+            ...prev.finalize,
+            status: "completed",
+            startedAt: prev.finalize.startedAt ?? Date.now(),
+            completedAt: Date.now(),
+            lastEventAt: Date.now(),
+            lastSignal: "research_quality_ready",
+            message: "Research quality-first bounded run complete",
+          },
+        }));
+        setResearchActivity((prev) => {
+          const withoutDuplicate = prev.filter((item) => item.id !== activity.id);
+          return [activity, ...withoutDuplicate].slice(0, 8);
         });
         return;
       }
@@ -1326,6 +1834,7 @@ export default function RunProgress() {
         const timeoutSec = Number(event.timeout_sec ?? 0) || undefined;
         const errorClass = String(event.error_class ?? "");
         const errorText = String(event.error ?? "").trim();
+        const blocksProductPass = parseEventBoolean(event.blocks_product_pass);
         setStages((prev) => ({
           ...prev,
           council: {
@@ -1366,6 +1875,7 @@ export default function RunProgress() {
             elapsedSec,
             timeoutSec,
             errorClass: errorClass || undefined,
+            blocksProductPass,
             text: errorText || undefined,
           }),
         );
@@ -1432,6 +1942,7 @@ export default function RunProgress() {
       }
 
       if (event.event === "done" && runId && !runErrorRef.current) {
+        const qualityReadyActivity = normalizeResearchQualityReadyActivity(event);
         setInterviewSubmitting(false);
         setInterviewPrompt(null);
         setHitlSubmitting(false);
@@ -1448,13 +1959,23 @@ export default function RunProgress() {
                   ? Date.now() - (next[stage].startedAt ?? Date.now())
                   : next[stage].durationMs,
                 lastEventAt: Date.now(),
-                lastSignal: "done",
-                message: "완료 · done event 수신",
+                lastSignal: qualityReadyActivity ? "research_quality_ready" : "done",
+                message: qualityReadyActivity
+                  ? "Research quality-first bounded run complete"
+                  : "완료 · done event 수신",
               };
             }
           }
           return next;
         });
+        if (qualityReadyActivity) {
+          setResearchActivity((prev) => {
+            const withoutDuplicate = prev.filter((item) => item.id !== qualityReadyActivity.id);
+            return [qualityReadyActivity, ...withoutDuplicate].slice(0, 8);
+          });
+          markRunDone(runId);
+          return;
+        }
         if (event.aborted) {
           deleteRun(runId);
           setTimeout(() => {
@@ -1521,6 +2042,7 @@ export default function RunProgress() {
           hasRuntimeEvidence = Boolean(status.running && status.app_run_id === runId);
           setRuntimeEvidence((prev) => ({
             ...(prev ?? {}),
+            runId: status.app_run_id ?? prev?.runId,
             childPid: status.child_pid ?? null,
             appBinaryPath: status.app_binary_path ?? null,
             workspaceRoot: status.workspace_root,
@@ -1574,6 +2096,7 @@ export default function RunProgress() {
         lastEventElapsedMs = status.last_event_elapsed_ms ?? null;
         setRuntimeEvidence((prev) => ({
           ...(prev ?? {}),
+          runId: status.app_run_id ?? prev?.runId,
           childPid: status.child_pid ?? null,
           appBinaryPath: status.app_binary_path ?? null,
           workspaceRoot: status.workspace_root,
@@ -1652,15 +2175,27 @@ export default function RunProgress() {
   const selectedPersonaRows = browserPersonaRows(councilPersonas);
   const runtimeRunId = runtimeEvidence?.runId;
   const runtimeHeartbeatStage = runtimeEvidence?.heartbeatStage;
+  const hasVisibleBackendHeartbeat = hasReceivedHeartbeat;
   const desktopRuntimeStatus = runtimeEvidence ? "Observed" : "Not observed yet";
-  const liveE2eStatus =
-    runtimeRunId === runId && runtimeHeartbeatStage
-      ? "Backend run signals observed"
-      : "Not proven in this UI session";
+  const liveE2eStatus = deriveLiveE2eStatus({
+    runId,
+    runtimeRunId,
+    runtimeHeartbeatStage,
+    hasVisibleBackendHeartbeat,
+  });
   const sourceAccessEvidenceStatus =
     discoveredSources.size > 0
       ? `${discoveredSources.size} source event${discoveredSources.size === 1 ? "" : "s"}`
       : "Not observed yet";
+  const importedKnowledgeRefCount = researchContract.importedKnowledgeRefs.length;
+  const currentSessionEvidenceCount = discoveredSources.size;
+  const researchSessionLabel = researchContract.researchSessionId
+    ? researchContract.researchSessionId.slice(-10)
+    : "pending";
+  const memoryPolicyLabel = researchContract.memoryPolicy || "pending";
+  const importedRefsLabel = importedKnowledgeRefCount > 0
+    ? `${importedKnowledgeRefCount} explicit imported ref${importedKnowledgeRefCount === 1 ? "" : "s"}`
+    : "0 explicit imports";
 
   async function submitInterviewAnswer(answer: string, selected?: string, isOther = false) {
     if (!interviewPrompt || interviewSubmitting) return;
@@ -1901,6 +2436,51 @@ export default function RunProgress() {
               <p className="mt-1 text-xs text-white">{sourceAccessEvidenceStatus}</p>
             </div>
           </div>
+        </div>
+
+        <div className="fade-in mb-6 rounded-lg border border-white/5 bg-white/[0.02] px-4 py-3 shadow-[var(--shadow-paper)]">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
+                Research contract
+              </p>
+              <h2 className="mt-1 text-sm font-medium text-white">Current-session evidence / imported refs boundary</h2>
+            </div>
+            <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 font-mono text-[10px] text-emerald-100">
+              no implicit memory
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Session</p>
+              <p className="mt-1 font-mono text-xs text-white">{researchSessionLabel}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Memory policy</p>
+              <p className="mt-1 break-words font-mono text-xs text-white">{memoryPolicyLabel}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Current session evidence</p>
+              <p className="mt-1 text-xs text-white">{currentSessionEvidenceCount} source event{currentSessionEvidenceCount === 1 ? "" : "s"}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Imported wiki refs</p>
+              <p className="mt-1 text-xs text-white">{importedRefsLabel}</p>
+            </div>
+          </div>
+          {researchContract.importedKnowledgeRefs.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {researchContract.importedKnowledgeRefs.map((ref) => (
+                <span
+                  key={ref}
+                  className="max-w-full truncate rounded-md border border-sky-300/15 bg-sky-300/10 px-2.5 py-1 font-mono text-[10px] text-sky-100"
+                  title={ref}
+                >
+                  {ref}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {runtimeEvidence && (
@@ -2621,6 +3201,7 @@ export default function RunProgress() {
                                     {item.elapsedSec !== undefined ? ` · elapsed ${item.elapsedSec}s` : ""}
                                     {item.responseChars ? ` · ${item.responseChars} chars` : ""}
                                     {item.errorClass ? ` · ${item.errorClass}` : ""}
+                                    {item.blocksProductPass ? " · blocks product pass" : ""}
                                   </p>
                                   {item.text && (
                                     <p className="break-words text-[11px] leading-relaxed text-tertiary">
@@ -2635,26 +3216,21 @@ export default function RunProgress() {
                       </div>
                     </div>
                   )}
-                  {stage === "research" && researchActivity.length > 0 && (
+                  {(stage === "research" || stage === "evidence") && researchActivity.length > 0 && (
                     <div className="mt-2 space-y-1.5">
-                      {researchActivity.slice(0, 5).map((item) => (
+                      {researchActivity
+                        .filter((item) => researchProgressStage({ event: "research_progress", status: item.status }, item) === stage)
+                        .slice(0, 5)
+                        .map((item) => {
+                          const copy = researchActivityCopy(item);
+                          return (
                         <div
                           key={item.id}
                           className="min-w-0 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] uppercase tracking-wider text-tertiary">
-                              {item.status === "source_found"
-                                ? "출처 확인"
-                                : item.status === "source_evaluated"
-                                  ? item.accepted === false
-                                    ? "출처 거절"
-                                    : "출처 채택"
-                                  : item.status === "knowledge_gap"
-                                    ? "근거 gap"
-                                    : item.status === "facet_summary"
-                                      ? "Facet 요약"
-                                      : "검색 중"}
+                              {copy.label}
                               {item.queryIndex && item.queryCount
                                 ? ` · ${item.queryIndex}/${item.queryCount}`
                                 : ""}
@@ -2665,7 +3241,56 @@ export default function RunProgress() {
                               </span>
                             )}
                           </div>
-                          {item.status === "source_found" || item.status === "source_evaluated" ? (
+                          {item.status === "research_plan_ready" ? (
+                            <div className="mt-1 space-y-1.5 text-xs leading-relaxed text-secondary">
+                              <p>{copy.message}</p>
+                              <div className="flex flex-wrap gap-1">
+                                {researchPlanSummaryChips(item).map((detail) => (
+                                  <span
+                                    key={detail}
+                                    className="rounded border border-white/10 px-1.5 py-0.5 font-mono text-[10px] text-tertiary"
+                                  >
+                                    {detail}
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="space-y-1">
+                                {researchPlanDisplayRows(item).map((row, routeIndex) => (
+                                  <details
+                                    key={`${row.query || "route"}-${routeIndex}`}
+                                    className="min-w-0 rounded border border-white/5 bg-white/[0.02] px-2 py-1"
+                                    open={routeIndex < 3}
+                                  >
+                                    <summary className="cursor-pointer break-words text-[11px] text-secondary marker:text-tertiary">
+                                      {routeIndex + 1}. {row.query || `query ${routeIndex + 1}`}
+                                    </summary>
+                                    <div className="mt-1 space-y-0.5">
+                                      {row.routeDetails.length > 0 && (
+                                        <p className="break-words text-[10px] text-tertiary">
+                                          {row.routeDetails.join(" · ")}
+                                        </p>
+                                      )}
+                                      {row.continueReason && (
+                                        <p className="break-words text-[10px] text-tertiary">
+                                          continue reason: {row.continueReason}
+                                        </p>
+                                      )}
+                                      {row.authorityRequirement && (
+                                        <p className="break-words text-[10px] text-tertiary">
+                                          authority requirement: {row.authorityRequirement}
+                                        </p>
+                                      )}
+                                      {row.acceptanceRules.length > 0 && (
+                                        <p className="break-words text-[10px] text-tertiary">
+                                          acceptance rules: {row.acceptanceRules.join("; ")}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
+                            </div>
+                          ) : item.status === "source_found" || item.status === "source_evaluated" ? (
                             <>
                               <p className="mt-1 truncate text-xs text-secondary">
                                 {item.sourceTitle || "로컬/내부 근거"}
@@ -2708,9 +3333,70 @@ export default function RunProgress() {
                             <p className="mt-1 break-words text-xs leading-relaxed text-secondary">
                               근거 facet 요약 완료 · gaps {item.gapCount ?? 0}
                             </p>
+                          ) : item.status === "source_audit_gate" || item.status === "claim_evidence_gate" || item.status === "max_plus_benchmark_scored" || item.status === "research_quality_ready" ? (
+                            <div className="mt-1 space-y-1 text-xs leading-relaxed text-secondary">
+                              <p>{copy.message}</p>
+                              {item.benchmarkId && (
+                                <p className="break-words font-mono text-[10px] leading-relaxed text-tertiary">
+                                  {item.benchmarkId}
+                                </p>
+                              )}
+                              {researchQualityDetailChips(item).length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {researchQualityDetailChips(item).map((detail) => (
+                                    <span
+                                      key={detail}
+                                      className="rounded border border-white/10 px-1.5 py-0.5 font-mono text-[10px] text-tertiary"
+                                    >
+                                      {detail}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {item.metrics && Object.keys(item.metrics).length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {Object.entries(item.metrics).map(([key, value]) => (
+                                    <span
+                                      key={key}
+                                      className="rounded border border-white/10 px-1.5 py-0.5 font-mono text-[10px] text-tertiary"
+                                    >
+                                      {formatBenchmarkMetricLabel(key)} {formatBenchmarkMetricValue(value)}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {item.reason && (
+                                <p className="break-words text-[11px] leading-relaxed text-tertiary">
+                                  {item.reason}
+                                </p>
+                              )}
+                            </div>
                           ) : (
                             <p className="mt-1 break-words text-xs leading-relaxed text-secondary">
-                              {item.query}
+                              {item.query || copy.message}
+                            </p>
+                          )}
+                          {[item.facetId ? `facet ${item.facetId}` : undefined, item.purpose ? `purpose ${item.purpose}` : undefined, item.sourceClass ? `source class ${item.sourceClass}` : undefined, item.intent ? `intent ${item.intent}` : undefined, item.backend ? `backend ${item.backend}` : undefined]
+                            .filter(Boolean).length > 0 && (
+                            <p className="mt-1 break-words text-[10px] leading-relaxed text-tertiary">
+                              {[item.facetId ? `facet ${item.facetId}` : undefined, item.purpose ? `purpose ${item.purpose}` : undefined, item.sourceClass ? `source class ${item.sourceClass}` : undefined, item.intent ? `intent ${item.intent}` : undefined, item.backend ? `backend ${item.backend}` : undefined]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
+                          )}
+                          {item.continueReason && (
+                            <p className="mt-1 break-words text-[10px] leading-relaxed text-tertiary">
+                              continue reason: {item.continueReason}
+                            </p>
+                          )}
+                          {item.authorityRequirement && (
+                            <p className="mt-1 break-words text-[10px] leading-relaxed text-tertiary">
+                              authority requirement: {item.authorityRequirement}
+                            </p>
+                          )}
+                          {item.acceptanceRules && item.acceptanceRules.length > 0 && (
+                            <p className="mt-1 break-words text-[10px] leading-relaxed text-tertiary">
+                              acceptance rules: {item.acceptanceRules.join("; ")}
                             </p>
                           )}
                           {item.backends && item.backends.length > 0 && (
@@ -2719,7 +3405,8 @@ export default function RunProgress() {
                             </p>
                           )}
                         </div>
-                      ))}
+                          );
+                        })}
                     </div>
                   )}
                 </div>

@@ -158,6 +158,228 @@ def test_terminal_run_jsonl_prints_machine_events(tmp_path: Path, monkeypatch):
     assert printed[-2]["status"] == "completed"
 
 
+def test_terminal_run_quality_only_exports_structured_snapshot_without_report_or_council(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def quality_only_run(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
+        assert topic
+        if progress_callback:
+            progress_callback({"event": "stage_started", "stage": "intake"})
+            progress_callback({"event": "stage_completed", "stage": "intake"})
+            progress_callback({"event": "stage_started", "stage": "research"})
+            progress_callback({"event": "stage_completed", "stage": "research"})
+            progress_callback(
+                {
+                    "event": "research_quality_ready",
+                    "stage": "quality_gate",
+                    "status": "ready_before_council",
+                }
+            )
+        return {
+            "report_md": "",
+            "rounds": [],
+            "brief": None,
+            "vault_path": None,
+            "depth": depth,
+            "depth_profile": depth_profile(depth),
+            "executed_council_round_count": 0,
+            "council_persona_pool_size": 0,
+            "active_council_persona_count": 6,
+            "council_turn_transcript": [],
+            "research_quality_only": True,
+            "research_quality_only_stop": "before_council",
+            "artifacts": {
+                "source_audit_summary": json.dumps(
+                    {
+                        "passed": True,
+                        "accepted_source_count": 43,
+                        "rejected_source_count": 2,
+                        "gap_count": 0,
+                    }
+                ),
+                "claim_evidence_matrix_summary": json.dumps(
+                    {"passed": True, "unsupported_claim_count": 0}
+                ),
+                "max_plus_benchmark_metrics": json.dumps(
+                    {
+                        "weak_source_penalty": 0.125,
+                        "expected_claim_recall": 0.67,
+                        "evidence_quote_coverage": 0.8,
+                        "claim_traceability": 0.75,
+                    }
+                ),
+                "max_plus_benchmark_decision": "keep",
+                "evidence_count": "24",
+            },
+        }
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", quality_only_run)
+    stdout = io.StringIO()
+
+    result = terminal_mod.terminal_run(
+        "quality snapshot topic",
+        stdout=stdout,
+        run_dir=tmp_path / "run",
+        offline=True,
+        jsonl=True,
+    )
+
+    assert not result.report_path.exists()
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert summary["status"] == "research_quality_ready"
+    assert summary["research_quality_only"] is True
+    assert summary["research_quality_stop"] == "before_council"
+    assert summary["report_path"] is None
+    assert summary["accepted_source_count"] == 43
+    assert summary["rejected_source_count"] == 2
+    assert summary["evidence_count"] == 24
+    assert summary["expected_claim_recall"] == 0.67
+    assert summary["max_plus_benchmark_decision"] == "keep"
+    snapshot = summary["research_quality_snapshot"]
+    assert snapshot["source_audit_summary"]["accepted_source_count"] == 43
+    assert snapshot["claim_evidence_matrix_summary"]["unsupported_claim_count"] == 0
+    assert snapshot["max_plus_benchmark_decision"] == "keep"
+    assert snapshot["max_plus_benchmark_metrics"]["claim_traceability"] == 0.75
+
+    events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
+    assert not any(event["event"] == "final_report" for event in events)
+    assert not any(event.get("stage") == "council" for event in events)
+    assert events[-2]["event"] == "done"
+    assert events[-2]["research_quality_snapshot"]["evidence_count"] == 24
+    assert events[-1]["event"] == "terminal_run_done"
+    assert events[-1]["research_quality_snapshot"]["accepted_source_count"] == 43
+    printed = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert [event["event"] for event in printed][-2:] == ["done", "terminal_run_done"]
+
+
+def test_terminal_run_quality_only_propagates_ledger_needs_review_status(tmp_path: Path, monkeypatch):
+    def quality_only_needs_review(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "research_quality_needs_review",
+                    "stage": "quality_gate",
+                    "status": "needs_review_before_council",
+                    "research_quality_readiness": "needs_review",
+                    "evidence_ledger_readiness": "needs_review",
+                    "evidence_ledger_metrics": {"expected_claim_traceability_score": 0.0},
+                }
+            )
+        return {
+            "report_md": "",
+            "rounds": [],
+            "brief": None,
+            "vault_path": None,
+            "depth": depth,
+            "depth_profile": depth_profile(depth),
+            "executed_council_round_count": 0,
+            "council_persona_pool_size": 0,
+            "active_council_persona_count": 6,
+            "council_turn_transcript": [],
+            "research_quality_only": True,
+            "research_quality_only_stop": "needs_review_before_council",
+            "artifacts": {
+                "research_quality_readiness": "needs_review",
+                "evidence_ledger_readiness": "needs_review",
+                "evidence_ledger_readiness_metrics": json.dumps(
+                    {"expected_claim_traceability_score": 0.0, "background_leak_count": 5.0}
+                ),
+                "source_audit_summary": json.dumps(
+                    {"passed": True, "accepted_source_count": 0, "rejected_source_count": 5, "gap_count": 1}
+                ),
+                "claim_evidence_matrix_summary": json.dumps({"passed": False}),
+                "max_plus_benchmark_metrics": json.dumps({"expected_claim_traceability_score": 0.0}),
+                "evidence_count": "5",
+            },
+        }
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", quality_only_needs_review)
+
+    result = terminal_mod.terminal_run(
+        "quality needs review topic",
+        stdout=io.StringIO(),
+        run_dir=tmp_path / "run",
+        offline=True,
+        jsonl=True,
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    snapshot = summary["research_quality_snapshot"]
+    events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
+
+    assert summary["status"] == "research_quality_needs_review"
+    assert summary["research_quality_stop"] == "needs_review_before_council"
+    assert snapshot["research_quality_readiness"] == "needs_review"
+    assert snapshot["evidence_ledger_readiness"] == "needs_review"
+    assert snapshot["evidence_ledger_metrics"]["expected_claim_traceability_score"] == 0.0
+    assert events[-2]["status"] == "research_quality_needs_review"
+
+
+def test_terminal_run_quality_only_blocked_benchmark_forces_needs_review(tmp_path: Path, monkeypatch):
+    def blocked_benchmark_run(topic, *, progress_callback=None, offline=None, require_live=None, depth="deep"):
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "research_quality_ready",
+                    "stage": "quality_gate",
+                    "status": "ready_before_council",
+                    "research_quality_readiness": "ready",
+                    "evidence_ledger_readiness": "ready",
+                    "max_plus_benchmark_decision": "blocked",
+                    "max_plus_benchmark_metrics": {"expected_claim_traceability_score": 0.333},
+                }
+            )
+        return {
+            "report_md": "",
+            "rounds": [],
+            "brief": None,
+            "vault_path": None,
+            "depth": depth,
+            "depth_profile": depth_profile(depth),
+            "executed_council_round_count": 0,
+            "council_persona_pool_size": 0,
+            "active_council_persona_count": 6,
+            "council_turn_transcript": [],
+            "research_quality_only": True,
+            "research_quality_only_stop": "before_council",
+            "artifacts": {
+                "research_quality_readiness": "ready",
+                "evidence_ledger_readiness": "ready",
+                "evidence_ledger_readiness_metrics": json.dumps({"expected_claim_traceability_score": 0.333}),
+                "source_audit_summary": json.dumps(
+                    {"passed": True, "accepted_source_count": 4, "rejected_source_count": 0, "gap_count": 1}
+                ),
+                "claim_evidence_matrix_summary": json.dumps(
+                    {"passed": True, "supported_count": 4, "unsupported_count": 0}
+                ),
+                "max_plus_benchmark_metrics": json.dumps({"expected_claim_traceability_score": 0.333}),
+                "max_plus_benchmark_decision": "blocked",
+                "evidence_count": "4",
+            },
+        }
+
+    monkeypatch.setattr(terminal_mod, "run_pipeline", blocked_benchmark_run)
+
+    result = terminal_mod.terminal_run(
+        "generic topic with blocked benchmark",
+        stdout=io.StringIO(),
+        run_dir=tmp_path / "run",
+        offline=True,
+        jsonl=True,
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    snapshot = summary["research_quality_snapshot"]
+    events = [json.loads(line) for line in result.events_path.read_text(encoding="utf-8").splitlines()]
+
+    assert summary["status"] == "research_quality_needs_review"
+    assert summary["research_quality_stop"] == "needs_review_before_council"
+    assert snapshot["research_quality_readiness"] == "needs_review"
+    assert snapshot["max_plus_benchmark_decision"] == "blocked"
+    assert events[-2]["status"] == "research_quality_needs_review"
+
+
 def test_conduct_interview_merges_show_prd_answers_into_pipeline_input():
     stdout = io.StringIO()
 

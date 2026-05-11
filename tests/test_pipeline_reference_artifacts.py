@@ -20,6 +20,7 @@ from src.pipeline.idea_to_council import (
 from src.intake.idea_dump import IdeaDump
 from src.intent.office_hours import OfficeHours
 from src.interview.session import InterviewSession
+from src.research.event_contract import validate_research_event_contract
 
 
 @pytest.fixture
@@ -255,6 +256,14 @@ def _event(events: list[dict], stage: str) -> dict:
     return next(event for event in events if event["stage"] == stage and "reference_step" in event)
 
 
+def _research_progress_event(events: list[dict], status: str) -> dict:
+    return next(
+        event
+        for event in events
+        if event.get("event") == "research_progress" and event.get("status") == status
+    )
+
+
 def test_step1_interview_records_show_prd_and_office_hours_outputs(reference_pipeline_run):
     result, events, _runner, _ontology, _tmp_path = reference_pipeline_run
     event = _event(events, "interview")
@@ -319,6 +328,11 @@ def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_ru
     assert event["reference_step"] == 3
     assert event["reference_projects"] == ["Karpathy Autoresearch", "InsightForge", "MemPalace", "학술 자료 검색 API"]
     assert event["artifacts"]["research_query_count"] == str(len(runner.last_plan.queries))
+    assert "research_query_routes" in event["artifacts"]
+    persisted_routes = json.loads(event["artifacts"]["research_query_routes"])
+    assert persisted_routes == runner.last_plan.query_routes
+    assert all(route["purpose"] for route in persisted_routes)
+    assert all(route["continue_reason"] for route in persisted_routes)
     assert runner.last_plan.queries[0] == result.brief.research_question
     assert set(result.targeting_map.search_queries[result.targeting_map.domains[0]]) & set(runner.last_plan.queries)
     assert "counter-evidence query attempted before council" in runner.last_plan.stop_conditions
@@ -329,6 +343,47 @@ def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_ru
     assert event["artifacts"]["research_memory_store"] == "not_executed"
     assert "research_memory_key" not in event["artifacts"]
     assert event["_research_runner_completed"] is True
+
+
+def test_step3_research_emits_plan_ready_before_searching(reference_pipeline_run):
+    _result, events, runner, _ontology, _tmp_path = reference_pipeline_run
+    plan_ready_index = next(
+        index for index, event in enumerate(events)
+        if event.get("event") == "research_progress" and event.get("status") == "research_plan_ready"
+    )
+    searching_index = next(
+        index for index, event in enumerate(events)
+        if event.get("event") == "research_progress" and event.get("status") == "searching"
+    )
+    plan_ready = events[plan_ready_index]
+
+    assert plan_ready_index < searching_index
+    assert plan_ready["_research_runner_completed"] is False
+    assert plan_ready["query_count"] == len(runner.last_plan.queries)
+    assert plan_ready["queries"] == runner.last_plan.queries
+    assert plan_ready["query_routes"] == runner.last_plan.query_routes
+    assert all(route["facet_id"] for route in plan_ready["query_routes"])
+    assert all(route["purpose"] for route in plan_ready["query_routes"])
+    assert all(route["source_class"] for route in plan_ready["query_routes"])
+    assert all(route["intent"] for route in plan_ready["query_routes"])
+    assert all(route["backend"] for route in plan_ready["query_routes"])
+    assert all(route["continue_reason"] for route in plan_ready["query_routes"])
+
+
+
+def test_step3_research_events_satisfy_backend_contract(reference_pipeline_run):
+    _result, events, _runner, _ontology, _tmp_path = reference_pipeline_run
+    research_events = [event for event in events if event.get("event") == "research_progress"]
+
+    assert research_events
+    for event in research_events:
+        decision = validate_research_event_contract(event)
+        assert decision.in_scope is True
+        assert decision.valid is True, decision.to_dict()
+        assert event["research_session_id"]
+        assert event["app_run_id"]
+        assert event["memory_policy"] == "no_implicit_cross_session_memory"
+        assert event["topic_anchor"]
 
 
 def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipeline_run):
@@ -343,6 +398,71 @@ def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipel
     assert result.evidence_summary["verified_claim_ratio"] == 1.0
     assert event["artifacts"]["evidence_gate_status"] == result.hitl_results["evidence"].status == "approved"
     assert event["artifacts"]["evidence_gate_synthetic"] == "false"
+
+
+def test_step4_evidence_records_refutation_loop_before_quality_readiness(reference_pipeline_run):
+    result, events, _runner, _ontology, _tmp_path = reference_pipeline_run
+
+    summary = json.loads(result.state.artifacts["refutation_loop_summary"])
+    report = json.loads(result.state.artifacts["refutation_loop_report"])
+    facet_gap_report = json.loads(result.state.artifacts["facet_gap_scheduler_report"])
+    adaptive_plan = json.loads(result.state.artifacts["adaptive_followup_query_plan"])
+    assert summary["readiness"] in {"completed", "skipped"}
+    assert report["summary"] == summary
+    assert "tasks" in report
+    assert facet_gap_report["status"] in {"complete", "facet_gaps_pending"}
+    assert "scheduled_followups" in facet_gap_report
+    assert adaptive_plan["status"] in {"adaptive_followups_planned", "no_adaptive_followups"}
+    assert "adaptive_query_routes" in adaptive_plan
+    assert adaptive_plan["model_role_routing_plan"]["quality_gate"]["deterministic"] is True
+
+    status_order = [event.get("status") for event in events if event.get("event") == "research_progress"]
+    claim_index = status_order.index("claim_evidence_gate")
+    refute_start_index = status_order.index("refutation_pass_started")
+    adaptive_index = status_order.index("adaptive_followup_query_plan")
+    facet_gap_index = status_order.index("facet_gap_scheduler_report")
+    ledger_index = status_order.index("evidence_ledger_built")
+    assert claim_index < refute_start_index < adaptive_index < facet_gap_index < ledger_index
+
+
+def test_step4_research_progress_exposes_smart_research_ui_contract(reference_pipeline_run):
+    result, events, _runner, _ontology, _tmp_path = reference_pipeline_run
+    source_summary = json.loads(result.state.artifacts["source_decision_summary"])
+    facet_gap_report = json.loads(result.state.artifacts["facet_gap_scheduler_report"])
+
+    ledger_event = _research_progress_event(events, "source_decision_ledger_built")
+    assert ledger_event["by_route_facet_id"] == source_summary["by_route_facet_id"]
+    assert ledger_event["route_facet_statuses"] == source_summary["route_facet_statuses"]
+
+    claim_event = _research_progress_event(events, "claim_evidence_gate")
+    assert claim_event["claim_verification_summary"] == {
+        "row_count": claim_event["row_count"],
+        "supported_count": claim_event["supported_count"],
+        "partial_count": claim_event["partial_count"],
+        "unsupported_count": claim_event["unsupported_count"],
+        "supported_ratio": claim_event["supported_ratio"],
+        "passed": claim_event["passed"],
+    }
+    assert claim_event["citation_verification_summary"] == {
+        "strict_citation_row_count": claim_event["row_count"],
+        "supporting_source_count": len({
+            source_id
+            for row in claim_event["rows"]
+            for source_id in row.get("supporting_source_ids", [])
+        }),
+        "canonical_id_count": len({
+            canonical_id
+            for row in claim_event["rows"]
+            for canonical_id in row.get("canonical_ids", [])
+        }),
+    }
+
+    facet_gap_event = _research_progress_event(events, "facet_gap_scheduler_report")
+    assert facet_gap_event["facet_gap_scheduler_report"] == facet_gap_report
+    assert facet_gap_event["by_route_facet_id"] == source_summary["by_route_facet_id"]
+    assert facet_gap_event["route_facet_statuses"] == source_summary["route_facet_statuses"]
+    assert facet_gap_event["claim_verification_summary"] == claim_event["claim_verification_summary"]
+    assert facet_gap_event["citation_verification_summary"] == claim_event["citation_verification_summary"]
 
 
 def test_step5_council_records_persona_protocol_telemetry(reference_pipeline_run):
@@ -405,6 +525,23 @@ def test_step6_report_vault_agents_done_record_learning_outputs(reference_pipeli
     assert "## Claim Grounding Matrix" in result.report_md
     assert "(Evidence: `ref-" in result.report_md
     assert "mock-evidence-" not in result.report_md
+    assert "## Strict Claim-Evidence Matrix" in result.report_md
+    assert "## Research Audit Appendix" in result.report_md
+    audit_payload = json.loads(result.state.artifacts["research_audit_appendix"])
+    assert audit_payload["route_ledger"]["route_count"] >= 1
+    assert "source_decision_summary" in audit_payload
+    assert "claim_evidence_matrix_summary" in audit_payload
+    assert "refutation_loop_summary" in audit_payload
+    assert "evidence_ledger" in audit_payload
+    assert "research_readiness_decision" in audit_payload
+    assert "research_process_completeness" in result.state.artifacts
+    process_payload = json.loads(result.state.artifacts["research_process_completeness"])
+    assert process_payload["readiness"] == "complete"
+    assert process_payload["score"] == 1.0
+    assert audit_payload["research_process_completeness"]["readiness"] == "complete"
+    assert "### Query Route Ledger" in result.report_md
+    assert "### Source Decision Summary" in result.report_md
+    assert "### Claim / Refutation / Evidence Readiness" in result.report_md
     assert "## Chapter 1:" in result.report_md
     assert "## Chapter 6:" in result.report_md
     assert "## ReACT Executed Sections" in result.report_md

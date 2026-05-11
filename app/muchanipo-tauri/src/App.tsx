@@ -9,9 +9,15 @@ import Sidebar from "./components/Sidebar";
 import { listRuns } from "./lib/runsIndex";
 
 function HomeRedirect() {
-  // Returning users land in Browser if any Run exists; new users land in Studio.
+  // Dev autostart is used for desktop E2E verification when macOS UI automation
+  // cannot click through the Tauri window. It must take precedence over the
+  // existing run index; otherwise returning users land on BrowserHome and the
+  // IdeaSubmit autostart hook never gets a chance to seed /browser/:runId.
+  const autostartTopic = import.meta.env.DEV
+    ? (import.meta.env.VITE_MUCHANIPO_AUTOSTART_TOPIC || "").trim()
+    : "";
   const hasRun = listRuns().length > 0;
-  return <Navigate to={hasRun ? "/browser" : "/studio"} replace />;
+  return <Navigate to={autostartTopic ? "/studio" : hasRun ? "/browser" : "/studio"} replace />;
 }
 
 function BackButton() {

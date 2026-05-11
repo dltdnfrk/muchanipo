@@ -1,0 +1,47 @@
+{
+  "fixture_id": "b1-rq17d-offtopic-accepted-sources",
+  "description": "Five sources accepted by the RQ-17D rerun that are adjacent/off-topic for the B-1 Max-Plus evaluation. This fixture is for regression tests only; runtime code must remain topic-generic.",
+  "topic": "B-1 turn-on fluorescent probe detection of Erwinia amylovora fire blight field validation market evidence",
+  "sources": [
+    {
+      "id": "crossref:10.52783/jier.v6i1.4539",
+      "kind": "crossref",
+      "grade": "A",
+      "url": "https://doi.org/10.52783/jier.v6i1.4539",
+      "title": "Journal of Informatics Education and Research article listing",
+      "quote": "The article listing describes informatics education research publication metadata and classroom learning outcomes."
+    },
+    {
+      "id": "crossref:10.47205/jdss.2021(2-iv)74",
+      "kind": "crossref",
+      "grade": "A",
+      "url": "https://doi.org/10.47205/jdss.2021(2-iv)74",
+      "title": "CPEC and social science development study",
+      "quote": "This source discusses economic corridor policy, development indicators, and social-science methodology."
+    },
+    {
+      "id": "arxiv:http://arxiv.org/abs/2306.08326v3",
+      "kind": "academic",
+      "grade": "A",
+      "url": "http://arxiv.org/abs/2306.08326v3",
+      "title": "Tomato late blight detection using computer vision",
+      "quote": "The paper concerns tomato late blight image classification and model benchmarking for crop disease monitoring."
+    },
+    {
+      "id": "arxiv:http://arxiv.org/abs/2306.04338v1",
+      "kind": "academic",
+      "grade": "A",
+      "url": "http://arxiv.org/abs/2306.04338v1",
+      "title": "Machine learning for official statistics production",
+      "quote": "The work describes machine learning methods used in official statistics workflows and quality assurance."
+    },
+    {
+      "id": "crossref:10.1201/9781482273168-16",
+      "kind": "crossref",
+      "grade": "A",
+      "url": "https://doi.org/10.1201/9781482273168-16",
+      "title": "History of food irradiation applications",
+      "quote": "The chapter covers food irradiation history, processing applications, and safety regulation."
+    }
+  ]
+}

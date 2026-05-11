@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { listRuns, subscribeRuns, type RunIndexEntry } from "../lib/runsIndex";
 
-function formatStatus(status: RunIndexEntry["status"]): string {
+export function formatStatus(status: RunIndexEntry["status"]): string {
   switch (status) {
     case "running":
       return "진행";
@@ -28,32 +28,41 @@ function statusToneClass(status: RunIndexEntry["status"]): string {
   }
 }
 
-function stageSummary(status: RunIndexEntry["status"] | undefined): { label: string; detail: string; progress: number } {
+export function stageSummary(status: RunIndexEntry["status"] | undefined): { label: string; detail: string } {
   switch (status) {
     case "running":
       return {
-        label: "근거 수집 중",
-        detail: "실시간 신호를 받으며 출처를 찾고 평가하고 있어요.",
-        progress: 46,
+        label: "실시간 조사 진행 중",
+        detail: "상세 화면에서 heartbeat, backend event, source event를 확인할 수 있어요.",
       };
     case "done":
       return {
         label: "보고서 준비 완료",
-        detail: "근거와 판단을 모아 최종 보고서로 정리했어요.",
-        progress: 100,
+        detail: "상세 화면과 보고서에서 실제 수집된 근거를 확인하세요.",
       };
     case "failed":
       return {
         label: "확인 필요",
-        detail: "실행 중 문제가 생겼어요. 진행 화면에서 원인을 확인하세요.",
-        progress: 24,
+        detail: "실행 중 문제가 생겼어요. 상세 화면에서 마지막 backend event를 확인하세요.",
       };
     default:
       return {
         label: "새 조사를 시작하세요",
         detail: "Studio에서 목표를 정리하면 Browser가 이어서 실행합니다.",
-        progress: 0,
       };
+  }
+}
+
+export function progressCopy(status: RunIndexEntry["status"] | undefined): string {
+  switch (status) {
+    case "running":
+      return "상세 화면에서 live step 확인";
+    case "done":
+      return "완료";
+    case "failed":
+      return "확인 필요";
+    default:
+      return "대기";
   }
 }
 
@@ -78,7 +87,9 @@ export default function BrowserHome() {
       : `/browser/${activeRun.runId}`
     : "/studio";
   const summary = stageSummary(activeRun?.status);
-  const completedCount = activeRun?.status === "done" ? 10 : activeRun?.status === "running" ? 4 : activeRun?.status === "failed" ? 2 : 0;
+  const runProgressCopy = progressCopy(activeRun?.status);
+  const runTopic = activeRun?.topic?.trim() || "새 조사를 시작하세요";
+  const runIdentifier = activeRun?.runId ? `run ${activeRun.runId}` : "run 없음";
 
   return (
     <div className="muchanipo-cowork-shell min-h-[calc(100vh-49px)]">
@@ -88,16 +99,11 @@ export default function BrowserHome() {
             {activeRun?.topic ? "시장성 근거 조사" : "Muchanipo Browser"}
             <span aria-hidden="true" className="ml-2 text-tertiary">⌄</span>
           </Link>
-          <div className="cowork-title-actions" aria-label="Browser sections">
-            <span className="active">실시간 결과</span>
-            <span>근거</span>
-            <span>보고서</span>
-          </div>
         </header>
 
         <div className="cowork-thread">
           <div className="cowork-user-bubble">
-            딸기 농가용 저비용 분자진단 키트의 시장성과 실제 근거를 확인하고 싶어.
+            {runTopic}
           </div>
 
           <article className="cowork-assistant-message">
@@ -105,10 +111,7 @@ export default function BrowserHome() {
               <p className="atlas-label">현재 상태</p>
               <h1>{summary.label}</h1>
               <p>{summary.detail}</p>
-              <div className="cowork-progress-bar" aria-label={`진행률 ${summary.progress}%`}>
-                <span style={{ width: `${summary.progress}%` }} />
-              </div>
-              <small>{completedCount}/10 단계 · {activeRun?.status === "running" ? "최근 신호 수신 중" : "대기 중"}</small>
+              <small>{runProgressCopy}</small>
             </div>
             <p>
               Studio에서 <strong>목표와 모호한 조건을 정리</strong>하면 Browser가
@@ -157,13 +160,10 @@ export default function BrowserHome() {
         <ContextCard>
           <div className="cowork-card-row">
             <span>진행 상황</span>
-            <span>{completedCount}/10 ›</span>
+            <span>{runProgressCopy} ›</span>
           </div>
           <div className="cowork-current-run-card">
-            <p>{activeRun?.topic || "새로운 Goal을 정리하세요"}</p>
-            <div className="cowork-progress-bar compact" aria-hidden="true">
-              <span style={{ width: `${summary.progress}%` }} />
-            </div>
+            <p>{runTopic}</p>
             <small>{summary.label}</small>
             <span className={`cowork-status-pill ${statusToneClass(activeRun?.status ?? "pending")}`}>
               {formatStatus(activeRun?.status ?? "pending")}
@@ -179,16 +179,12 @@ export default function BrowserHome() {
           </div>
         </ContextCard>
 
-        <ContextCard title="컨텍스트">
-          <ContextSection label="업로드">
-            <ContextItem icon="MD" label="REPORT.md" />
-            <ContextItem icon="JSON" label="pipeline events" />
+        <ContextCard title="현재 run">
+          <ContextSection label="식별자">
+            <ContextItem icon="ID" label={runIdentifier} />
           </ContextSection>
-          <ContextSection label="커넥터">
-            <ContextItem icon="⌘" label="Tauri desktop" />
-            <ContextItem icon="Py" label="Python backend" />
-            <ContextItem icon="Web" label="Source research" />
-            <ContextItem icon="Vault" label="Obsidian/Vault" />
+          <ContextSection label="상세 증거">
+            <ContextItem icon="↗" label={activeRun ? "RunProgress에서 heartbeat/source 확인" : "아직 실행된 run 없음"} />
           </ContextSection>
         </ContextCard>
       </aside>

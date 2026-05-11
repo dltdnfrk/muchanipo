@@ -339,8 +339,9 @@ fn normalize_pipeline_depth(depth: Option<&str>) -> Result<&'static str, String>
         Some("shallow") => Ok("shallow"),
         Some("deep") => Ok("deep"),
         Some("max") => Ok("max"),
+        Some("superdeep") => Ok("superdeep"),
         Some(other) => Err(format!(
-            "unsupported research depth: {other}; expected shallow, deep, or max"
+            "unsupported research depth: {other}; expected shallow, deep, max, or superdeep"
         )),
     }
 }
@@ -377,6 +378,9 @@ fn sanitize_renderer_envs(envs: HashMap<String, String>) -> Result<Vec<(String, 
         if is_boolean_renderer_env(&key) && !is_boolean_env_value(&value) {
             return Err(format!("{key} must be a boolean-like value"));
         }
+        if is_url_renderer_env(&key) && !is_http_url_env_value(&value) {
+            return Err(format!("{key} must be an http(s) URL"));
+        }
         out.push((key, value));
     }
     Ok(out)
@@ -397,6 +401,8 @@ fn is_allowed_renderer_env(key: &str) -> bool {
             | "MUCHANIPO_PROVIDER_CHAIN"
             | "MUCHANIPO_OPENCODE_MODEL"
             | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK"
+            | "MUCHANIPO_COUNCIL_CHAIRMAN_TIMEOUT_FALLBACK"
             | "MUCHANIPO_PREFER_CLI"
             | "ANTHROPIC_API_KEY"
             | "GEMINI_API_KEY"
@@ -430,12 +436,25 @@ fn is_boolean_renderer_env(key: &str) -> bool {
             | "MUCHANIPO_REQUIRE_LIVE"
             | "MUCHANIPO_SOURCE_RESEARCH"
             | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK"
+            | "MUCHANIPO_COUNCIL_CHAIRMAN_TIMEOUT_FALLBACK"
             | "MUCHANIPO_PREFER_CLI"
     )
 }
 
 fn is_boolean_env_value(value: &str) -> bool {
     matches!(value, "1" | "0" | "true" | "false" | "yes" | "no")
+}
+
+fn is_url_renderer_env(key: &str) -> bool {
+    matches!(key, "MIMO_BASE_URL" | "XIAOMI_MIMO_BASE_URL")
+}
+
+fn is_http_url_env_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        && !value.contains('\n')
+        && !value.contains('\r')
 }
 
 fn resolve_python_bin() -> Result<String, String> {
@@ -1307,8 +1326,10 @@ mod tests {
             ("OPENCODE_API_KEY", "oc-key"),
             ("OPENCODE_GO_API_KEY", "oc-go-key"),
             ("XIAOMI_MIMO_API_KEY", "tp-key"),
-            ("MIMO_BASE_URL", "https://token-plan-ams.xiaomimimo.com/v1"),
+            ("MIMO_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1"),
+            ("XIAOMI_MIMO_BASE_URL", "https://token-plan-sgp.xiaomimimo.com/v1"),
             ("MIMO_MODEL", "mimo-v2.5-pro"),
+            ("MUCHANIPO_MIMO_MODEL", "mimo-v2.5-pro"),
             ("OPENALEX_EMAIL", "dev@example.com"),
             ("MUCHANIPO_CONTACT_EMAIL", "dev@example.com"),
             ("UNPAYWALL_EMAIL", "dev@example.com"),
@@ -1318,7 +1339,7 @@ mod tests {
         ]))
         .expect("expected allowlisted envs");
 
-        assert_eq!(sanitized.len(), 28);
+        assert_eq!(sanitized.len(), 30);
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_USE_CLI"));
         assert!(sanitized.iter().any(|(key, _)| key == "MUCHANIPO_OFFLINE"));
         assert!(sanitized
@@ -1370,6 +1391,15 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_renderer_envs_rejects_non_http_mimo_base_urls() {
+        for key in ["MIMO_BASE_URL", "XIAOMI_MIMO_BASE_URL"] {
+            let err = sanitize_renderer_envs(env_map(&[(key, "file:///tmp/evil")])).unwrap_err();
+            assert!(err.contains(key));
+            assert!(err.contains("http(s) URL"));
+        }
+    }
+
+    #[test]
     fn normalize_pipeline_depth_defaults_to_deep_and_accepts_valid_depths() {
         assert_eq!(normalize_pipeline_depth(None).unwrap(), "deep");
         assert_eq!(normalize_pipeline_depth(Some("")).unwrap(), "deep");
@@ -1379,6 +1409,7 @@ mod tests {
         );
         assert_eq!(normalize_pipeline_depth(Some("deep")).unwrap(), "deep");
         assert_eq!(normalize_pipeline_depth(Some("max")).unwrap(), "max");
+        assert_eq!(normalize_pipeline_depth(Some("superdeep")).unwrap(), "superdeep");
     }
 
     #[test]
@@ -1389,6 +1420,7 @@ mod tests {
         assert!(err.contains("shallow"));
         assert!(err.contains("deep"));
         assert!(err.contains("max"));
+        assert!(err.contains("superdeep"));
     }
 
     #[test]
