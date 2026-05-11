@@ -1,8 +1,11 @@
 """ResearchBrief to ResearchPlan conversion."""
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 from src.interview.brief import ResearchBrief
 from .queries import expand_query, translated_topic_queries
@@ -18,6 +21,63 @@ class ResearchPlan:
     risk_notes: list[str] = field(default_factory=list)
     collection_rules: list[str] = field(default_factory=list)
     topic_anchor: str = ""
+    query_routes: list[dict[str, Any]] = field(default_factory=list)
+
+
+QUERY_ROUTE_VERSION = "query-route.v1"
+NORMALIZED_ROUTE_INTENTS = {
+    "primary_anchor_recall",
+    "confirmation",
+    "refutation",
+    "gap_fill",
+    "background_mapping",
+    "comparison",
+}
+_INTENT_ALIASES = {
+    "find_primary": "primary_anchor_recall",
+    "primary": "primary_anchor_recall",
+    "confirm": "confirmation",
+    "refute": "refutation",
+    "counter_evidence": "refutation",
+    "gap": "gap_fill",
+    "limitations": "gap_fill",
+    "compare": "comparison",
+    "comparative": "comparison",
+}
+
+
+@dataclass(frozen=True)
+class QueryRoute:
+    """Typed, JSON-compatible backend contract for a planned research query."""
+
+    route_id: str
+    route_version: str
+    query: str
+    facet_id: str
+    purpose: str
+    source_class: str
+    intent: str
+    backend: str
+    authority_requirement: str
+    acceptance_rules: tuple[str, ...]
+    reject_patterns: tuple[str, ...] = ()
+    continue_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "route_id": self.route_id,
+            "route_version": self.route_version,
+            "query": self.query,
+            "facet_id": self.facet_id,
+            "intent": self.intent,
+            "source_class": self.source_class,
+            "backend": self.backend,
+            "purpose": self.purpose,
+            "continue_reason": self.continue_reason,
+            "authority_requirement": self.authority_requirement,
+            "acceptance_rules": list(self.acceptance_rules),
+            "reject_patterns": list(self.reject_patterns),
+        }
 
 
 class ResearchPlanner:
@@ -73,7 +133,279 @@ class ResearchPlanner:
                 "record query, source grade, source text, and retrieval score in provenance",
                 "if all sources are C/D, mark the finding limitation before report generation",
             ],
+            query_routes=[source_route_for_query(query) for query in queries],
         )
+
+
+def with_source_discovery_queries(
+    plan: ResearchPlan,
+    discovery_queries: Iterable[str],
+    *,
+    max_queries: int | None = None,
+) -> ResearchPlan:
+    """Return a plan with explicit source-discovery queries appended.
+
+    The helper is generic: callers pass fixture/evaluation/config-derived
+    queries. It never infers benchmark/domain terms from the runtime topic.
+    """
+
+    extras = [str(query).strip() for query in discovery_queries if str(query).strip()]
+    if not extras:
+        return plan
+    limit = max_queries if max_queries is not None else len(plan.queries) + len(extras)
+    queries = _dedupe(list(plan.queries) + extras, limit=max(1, limit))
+    return ResearchPlan(
+        brief_id=plan.brief_id,
+        queries=queries,
+        evidence_targets=list(plan.evidence_targets),
+        expected_deliverables=list(plan.expected_deliverables),
+        stop_conditions=list(plan.stop_conditions),
+        risk_notes=list(plan.risk_notes),
+        collection_rules=list(plan.collection_rules),
+        topic_anchor=plan.topic_anchor,
+        query_routes=[source_route_for_query(query) for query in queries],
+    )
+
+
+def source_route_for_query(query: str) -> dict[str, Any]:
+    """Return generic source-class routing metadata for a planned query.
+
+    This is intentionally procedural and fixture-agnostic: it reads the query's
+    evidence intent/source-channel words and emits a Max-style route contract
+    that downstream retrieval/audit code can carry in traces. Domain specificity
+    must stay in the user topic, interview answers, or targeting map.
+    """
+
+    normalized = " ".join(str(query or "").split())
+    lowered = normalized.casefold()
+    intent = "background_mapping"
+    source_class = "background"
+    facet_id = "background_scope"
+    backend = "web"
+    authority = "medium"
+    purpose = "map topic scope and background sources"
+    continue_reason = "background sources may frame scope but need corroboration for factual claims"
+    rules = [
+        "accepted source must share topic anchor terms with the query",
+        "listing/search-result pages cannot directly support material claims",
+    ]
+
+    if re.search(r"\b10\.\d{4,9}/\S+", lowered) or "doi:" in lowered or "doi.org/" in lowered:
+        intent = "primary_anchor_recall"
+        source_class = "peer_reviewed"
+        facet_id = "canonical_sources"
+        backend = "scholar"
+        authority = "high"
+        purpose = "resolve stable scholarly identifier"
+        continue_reason = "resolve DOI or other stable scholarly identifier before falling back to broad web snippets"
+        rules.append("resolve DOI or other stable scholarly identifier before falling back to broad web snippets")
+    elif any(marker in lowered for marker in ("counter evidence", "limitations", "failure cases", "refute", "contradict")):
+        intent = "refutation"
+        source_class = "peer_reviewed"
+        facet_id = "counter_evidence"
+        backend = "scholar"
+        authority = "high"
+        purpose = "test counter-evidence and limitations"
+        continue_reason = "must corroborate before high-confidence claim support"
+        rules.append("must corroborate before high-confidence claim support")
+    elif any(
+        marker in lowered
+        for marker in (
+            "official statistics",
+            "government statistics",
+            "공식",
+            "통계",
+            "regulatory adoption",
+            "public data",
+            "공공데이터",
+        )
+    ):
+        intent = "primary_anchor_recall"
+        source_class = "official"
+        facet_id = "canonical_sources"
+        backend = "web"
+        authority = "high"
+        purpose = "find canonical official/statistical sources"
+        continue_reason = "prefer canonical government/statistics/standards pages over secondary summaries"
+        rules.append("prefer canonical government/statistics/standards pages over secondary summaries")
+    elif any(
+        marker in lowered
+        for marker in (
+            "peer reviewed",
+            "empirical evidence",
+            "methods validation",
+            "source quality",
+            "validation limitations",
+        )
+    ):
+        intent = "primary_anchor_recall"
+        source_class = "peer_reviewed"
+        facet_id = "canonical_sources"
+        backend = "scholar"
+        authority = "high"
+        purpose = "find primary peer-reviewed evidence"
+        continue_reason = "prefer primary papers, systematic reviews, datasets, or methods documents"
+        rules.append("prefer primary papers, systematic reviews, datasets, or methods documents")
+    elif any(marker in lowered for marker in ("definitions", "scope", "constraints", "case studies", "examples")):
+        intent = "comparison"
+        source_class = "background"
+        backend = "web"
+        authority = "medium"
+        purpose = "compare scope, definitions, constraints, or examples"
+        continue_reason = "background sources may frame scope but need corroboration for factual claims"
+        rules.append("background sources may frame scope but need corroboration for factual claims")
+
+    return QueryRoute(
+        route_id=_route_id_for_query(normalized),
+        route_version=QUERY_ROUTE_VERSION,
+        query=normalized,
+        facet_id=facet_id,
+        intent=normalize_route_intent(intent),
+        source_class=source_class,
+        backend=backend,
+        purpose=purpose,
+        continue_reason=continue_reason,
+        authority_requirement=authority,
+        acceptance_rules=tuple(rules),
+        reject_patterns=("listing/search result page", "redirect-only grounding wrapper"),
+    ).to_dict()
+
+
+def normalize_route_intent(intent: str) -> str:
+    """Normalize legacy planner route aliases at the API boundary."""
+
+    normalized = str(intent or "").casefold().strip().replace("-", "_").replace(" ", "_")
+    if normalized in NORMALIZED_ROUTE_INTENTS:
+        return normalized
+    return _INTENT_ALIASES.get(normalized, "background_mapping")
+
+
+def query_route_ledger(plan: ResearchPlan) -> dict[str, Any]:
+    """Return a compact JSON-safe route ledger artifact payload."""
+
+    routes = [dict(route) for route in getattr(plan, "query_routes", []) if isinstance(route, dict)]
+    return {
+        "route_count": len(routes),
+        "route_version": QUERY_ROUTE_VERSION,
+        "routes": routes,
+    }
+
+
+def adaptive_followup_query_plan(
+    plan: ResearchPlan,
+    facet_gap_report: dict[str, Any],
+    *,
+    max_followups: int = 3,
+) -> dict[str, Any]:
+    """Convert unresolved facet-gap rows into bounded generic follow-up routes.
+
+    The planner is intentionally deterministic and offline. It consumes the
+    already-computed facet gap scheduler output, preserves the original topic
+    text embedded in scheduled queries, and only adds generic evidence-quality
+    suffixes derived from reason codes/facet IDs.
+    """
+
+    scheduled = facet_gap_report.get("scheduled_followups") if isinstance(facet_gap_report, dict) else []
+    rows = [row for row in (scheduled or []) if isinstance(row, dict)]
+    limit = max(0, int(max_followups or 0))
+    routes: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows[:limit]):
+        base_query = " ".join(str(row.get("query") or getattr(plan, "topic_anchor", "") or "").split())
+        if not base_query:
+            continue
+        reason_codes = tuple(str(code).strip() for code in (row.get("reason_codes") or ()) if str(code).strip())
+        facet_id = str(row.get("facet_id") or "background_scope").strip() or "background_scope"
+        intent = normalize_route_intent(str(row.get("intent") or _intent_for_adaptive_facet(facet_id)))
+        query = _adaptive_followup_query(base_query, facet_id=facet_id, reason_codes=reason_codes)
+        route = source_route_for_query(query)
+        route.update(
+            {
+                "route_id": _adaptive_route_id(query, idx),
+                "facet_id": facet_id,
+                "intent": intent,
+                "purpose": _adaptive_route_purpose(facet_id, reason_codes),
+                "continue_reason": "; ".join(reason_codes) or "unresolved route facet requires follow-up evidence",
+                "followup_of_route_id": row.get("route_id"),
+                "adaptive_reason_codes": list(reason_codes),
+                "priority": int(row.get("priority") or idx),
+                "planner_source": "facet_gap_scheduler_report",
+            }
+        )
+        if facet_id == "counter_evidence":
+            route.update({"source_class": "peer_reviewed", "backend": "scholar", "authority_requirement": "high"})
+        elif facet_id == "canonical_sources":
+            route.update({"authority_requirement": "high"})
+        routes.append(route)
+
+    return {
+        "status": "adaptive_followups_planned" if routes else "no_adaptive_followups",
+        "planned_count": len(routes),
+        "max_followups": limit,
+        "source_gap_status": facet_gap_report.get("status") if isinstance(facet_gap_report, dict) else None,
+        "adaptive_query_routes": routes,
+        "model_role_routing_plan": _adaptive_model_role_routing_plan(bool(routes)),
+    }
+
+
+def _adaptive_followup_query(base_query: str, *, facet_id: str, reason_codes: tuple[str, ...]) -> str:
+    suffixes: list[str] = []
+    if facet_id == "counter_evidence" or "refutation_gap" in reason_codes:
+        suffixes.append("counter evidence limitations contradicting findings")
+    if "route_facet_needs_review" in reason_codes:
+        suffixes.append("stable citation direct quote locator")
+    if "claim_coverage_gap" in reason_codes or "route_facet_gap" in reason_codes:
+        suffixes.append("accepted source evidence")
+    if not suffixes:
+        suffixes.append("source-backed evidence")
+    return " ".join(_dedupe([base_query, *suffixes], limit=1 + len(suffixes)))
+
+
+def _adaptive_route_purpose(facet_id: str, reason_codes: tuple[str, ...]) -> str:
+    if facet_id == "counter_evidence":
+        return "adaptively close unresolved counter-evidence or refutation gaps"
+    if facet_id == "canonical_sources":
+        return "adaptively find stable canonical sources for unresolved claims"
+    if "claim_coverage_gap" in reason_codes:
+        return "adaptively find accepted material evidence for claim coverage gaps"
+    return "adaptively close unresolved route-facet evidence gaps"
+
+
+def _intent_for_adaptive_facet(facet_id: str) -> str:
+    if facet_id == "counter_evidence":
+        return "refutation"
+    if facet_id == "canonical_sources":
+        return "primary_anchor_recall"
+    return "gap_fill"
+
+
+def _adaptive_route_id(query: str, index: int) -> str:
+    digest = hashlib.sha1(f"adaptive-query-route.v1\n{index}\n{query}".encode("utf-8")).hexdigest()[:12]
+    return f"aqr_{digest}"
+
+
+def _adaptive_model_role_routing_plan(has_followups: bool) -> dict[str, Any]:
+    return {
+        "source_discovery": {
+            "enabled": has_followups,
+            "model_tier": "cheap_or_local",
+            "role": "generate_or_execute_followup_queries_from_deterministic_gap_rows",
+            "paid_calls_allowed": False,
+        },
+        "quality_gate": {
+            "deterministic": True,
+            "role": "re-run source decision, claim evidence, evidence ledger, and readiness gates",
+            "paid_calls_allowed": False,
+        },
+        "council_or_report": {
+            "enabled": False,
+            "role": "defer until deterministic quality gates report ready",
+        },
+    }
+
+
+def _route_id_for_query(query: str) -> str:
+    digest = hashlib.sha1(f"{QUERY_ROUTE_VERSION}\n{query}".encode("utf-8")).hexdigest()[:12]
+    return f"qr_{digest}"
 
 
 def _queries_from_targeting_map(brief: ResearchBrief) -> list[str]:

@@ -65,6 +65,16 @@ DEPTH_PROFILES: dict[str, ResearchDepthProfile] = {
         extended_test_time_compute=True,
         description="Comprehensive background pass with extended test-time compute metadata.",
     ),
+    "superdeep": ResearchDepthProfile(
+        name="superdeep",
+        query_limit=18,
+        council_round_budget=12,
+        persona_pool_size=240,
+        active_persona_count=20,
+        target_runtime_seconds=7200,
+        extended_test_time_compute=True,
+        description="Claim-first, source-audited research pass that refuses weak grounding before council/report.",
+    ),
 }
 
 VALID_DEPTHS: tuple[str, ...] = tuple(DEPTH_PROFILES)

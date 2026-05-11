@@ -31,7 +31,8 @@ from src.runtime.live_mode import live_requested_from_env, source_research_reque
 
 from .academic import sync_search as academic_sync_search
 from . import public_web
-from .planner import ResearchPlan
+from .max_plus_benchmark import MaxPlusBenchmarkFixture, selected_max_plus_benchmark_fixture
+from .planner import ResearchPlan, source_route_for_query
 from .synthesis import finding_from_query
 
 
@@ -94,15 +95,20 @@ class MockResearchRunner:
     """API-key-free runner used by tests and early pipeline wiring."""
 
     def run(self, plan: ResearchPlan) -> list[Finding]:
-        self.last_backend_trace = [
-            {
-                "backend": "mock",
-                "query": query,
-                "status": "mock",
-                "count": 1,
-            }
-            for query in (plan.queries or ["research question"])
-        ]
+        self.last_backend_trace = []
+        for query in (plan.queries or ["research question"]):
+            route = source_route_for_query(query)
+            self.last_backend_trace.append(
+                {
+                    "backend": "mock",
+                    "query": query,
+                    "status": "mock",
+                    "count": 1,
+                    "route_intent": route.get("intent"),
+                    "source_class": route.get("source_class"),
+                    "authority_requirement": route.get("authority_requirement"),
+                }
+            )
         findings: list[Finding] = []
         for idx, query in enumerate(plan.queries or ["research question"], start=1):
             evidence = EvidenceRef(
@@ -115,6 +121,94 @@ class MockResearchRunner:
             )
             findings.append(finding_from_query(query, evidence))
         return findings
+
+
+class FixtureSourceBackedResearchRunner:
+    """Deterministic offline runner for explicitly selected benchmark fixtures.
+
+    This is not a B-1 runtime shortcut: fixture selection is opt-in and the
+    retrievable item rows live in benchmark config. The runner only emits rows
+    whose configured discovery query is present in the runtime ResearchPlan.
+    """
+
+    def __init__(self, fixture: MaxPlusBenchmarkFixture, *, emit_unmatched_mock: bool = False) -> None:
+        self.fixture = fixture
+        self.emit_unmatched_mock = emit_unmatched_mock
+        self.last_backend_trace: list[dict[str, Any]] = []
+
+    def run(self, plan: ResearchPlan) -> list[Finding]:
+        self.last_backend_trace = []
+        findings: list[Finding] = []
+        queries = plan.queries or ["research question"]
+        emitted_ids: set[str] = set()
+        for idx, query in enumerate(queries, start=1):
+            route = source_route_for_query(query)
+            rows = [
+                row for row in self.fixture.source_backed_evidence
+                if _fixture_query_matches(query, row.query)
+            ]
+            self.last_backend_trace.append(
+                {
+                    "backend": "fixture_source",
+                    "query": query,
+                    "status": "ok" if rows else "no_fixture_match",
+                    "count": len(rows),
+                    "route_intent": route.get("intent"),
+                    "source_class": route.get("source_class"),
+                    "authority_requirement": route.get("authority_requirement"),
+                    "benchmark_id": self.fixture.benchmark_id,
+                }
+            )
+            if rows:
+                for sub_idx, row in enumerate(rows, start=1):
+                    if row.id in emitted_ids:
+                        continue
+                    emitted_ids.add(row.id)
+                    evidence = EvidenceRef(
+                        id=row.id,
+                        source_url=row.url,
+                        source_title=row.title,
+                        quote=row.quote,
+                        source_grade=row.source_grade,
+                        provenance=Provenance(
+                            kind=row.source_kind,
+                            metadata={
+                                "brief_id": plan.brief_id,
+                                "query": query,
+                                "fixture_query": row.query,
+                                "benchmark_id": self.fixture.benchmark_id,
+                                "source_text": row.quote,
+                                "title": row.title,
+                                "source": row.url,
+                            },
+                        ).as_dict(),
+                        access_status="fixture_source_backed",
+                    )
+                    findings.append(
+                        Finding(
+                            claim=_claim_from_evidence(evidence, query),
+                            support=[evidence],
+                            confidence=0.9,
+                        )
+                    )
+                continue
+            if self.emit_unmatched_mock:
+                evidence = EvidenceRef(
+                    id=f"mock-evidence-{idx}",
+                    source_url=None,
+                    source_title="Mock research evidence",
+                    quote=query,
+                    source_grade="B",
+                    provenance=Provenance(kind="mock", metadata={"brief_id": plan.brief_id}).as_dict(),
+                )
+                findings.append(finding_from_query(query, evidence))
+        return findings
+
+
+def _fixture_query_matches(runtime_query: str, fixture_query: str) -> bool:
+    runtime = " ".join(str(runtime_query or "").casefold().split())
+    fixture = " ".join(str(fixture_query or "").casefold().split())
+    return bool(fixture and (runtime == fixture or fixture in runtime or runtime in fixture))
 
 
 def _load_default_vault_search() -> SearchFn | None:
@@ -290,8 +384,9 @@ class WebResearchRunner:
         self.emit_empty_fallback = emit_empty_fallback
         self.last_backend_trace: list[dict[str, Any]] = []
 
-    def _gather(self, query: str) -> list[dict]:
+    def _gather(self, query: str, route: dict[str, Any] | None = None) -> list[dict]:
         hits: list[dict] = []
+        route = route or source_route_for_query(query)
         for backend, kind in (
             (self.insight_forge_search, "insight_forge"),
             (self.vault_search, "vault"),
@@ -311,7 +406,12 @@ class WebResearchRunner:
                         "query": query,
                         "status": "error",
                         "count": 0,
+                        "route_id": route.get("route_id"),
+                        "route_facet_id": route.get("facet_id"),
                         "error": str(exc).splitlines()[0][:160],
+                        "route_intent": route.get("intent"),
+                        "source_class": route.get("source_class"),
+                        "authority_requirement": route.get("authority_requirement"),
                     }
                 )
                 continue
@@ -321,6 +421,11 @@ class WebResearchRunner:
                     "query": query,
                     "status": "ok",
                     "count": len(raw),
+                    "route_id": route.get("route_id"),
+                    "route_facet_id": route.get("facet_id"),
+                    "route_intent": route.get("intent"),
+                    "source_class": route.get("source_class"),
+                    "authority_requirement": route.get("authority_requirement"),
                 }
             )
             for item in raw:
@@ -366,6 +471,7 @@ class WebResearchRunner:
         existing = hit.get("evidence_ref")
         if isinstance(existing, EvidenceRef):
             return existing
+        route = source_route_for_query(query)
         kind = hit.get("kind") or "web"
         source_url = hit.get("url") or hit.get("source_url")
         source = hit.get("source") or source_url or "unknown"
@@ -374,6 +480,11 @@ class WebResearchRunner:
             metadata={
                 "brief_id": plan.brief_id,
                 "query": query,
+                "route_id": route.get("route_id"),
+                "route_facet_id": route.get("facet_id"),
+                "route_intent": route.get("intent"),
+                "source_class": route.get("source_class"),
+                "authority_requirement": route.get("authority_requirement"),
                 "score": float(hit.get("score") or 0.0),
                 "source": source,
                 "source_text": (hit.get("text") or "")[:280],
@@ -405,8 +516,13 @@ class WebResearchRunner:
         self.last_backend_trace = []
         findings: list[Finding] = []
         queries = plan.queries or ["research question"]
+        routes_by_query = {
+            str(route.get("query") or ""): route
+            for route in getattr(plan, "query_routes", [])
+            if isinstance(route, dict)
+        }
         for idx, query in enumerate(queries, start=1):
-            hits = self._gather(query)
+            hits = self._gather(query, routes_by_query.get(query))
             if not hits:
                 if not self.emit_empty_fallback:
                     continue
@@ -455,7 +571,13 @@ def _attach_query_metadata(ref: EvidenceRef, query: str) -> None:
     provenance = dict(ref.provenance or {})
     metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
     metadata = dict(metadata)
+    route = source_route_for_query(query)
     metadata.setdefault("query", query)
+    metadata.setdefault("route_id", route.get("route_id"))
+    metadata.setdefault("route_facet_id", route.get("facet_id"))
+    metadata.setdefault("route_intent", route.get("intent"))
+    metadata.setdefault("source_class", route.get("source_class"))
+    metadata.setdefault("authority_requirement", route.get("authority_requirement"))
     provenance["metadata"] = metadata
     ref.provenance = provenance
 
@@ -659,9 +781,12 @@ def _expand_query_terms(terms: set[str]) -> set[str]:
     return expanded
 
 
-def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | WebResearchRunner:
+def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | WebResearchRunner | FixtureSourceBackedResearchRunner:
     """Factory that swaps mock ↔ real keeping the same interface."""
     if not use_real:
+        fixture = selected_max_plus_benchmark_fixture()
+        if fixture is not None and fixture.source_backed_evidence:
+            return FixtureSourceBackedResearchRunner(fixture)
         return MockResearchRunner()
     if "web_search" not in kwargs:
         kwargs["web_search"] = public_web.search

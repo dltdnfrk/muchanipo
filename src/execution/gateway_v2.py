@@ -86,6 +86,7 @@ class FallbackChain:
     on_fallback: Optional[Any] = None  # callback(stage, failed_provider, error)
 
     def call(self, stage: str, prompt: str, **kwargs: Any) -> ModelResult:
+        validate_live_result = bool(kwargs.pop("_validate_live_result", False))
         last_error: Optional[Exception] = None
         for i, provider in enumerate(self.providers):
             try:
@@ -94,12 +95,24 @@ class FallbackChain:
                     prompt=prompt,
                     **_chain_call_kwargs(provider, kwargs),
                 )
+                if validate_live_result:
+                    assert_live_model_result(stage, result)
                 if i > 0:
                     result.is_fallback = True
                     result.fallback_reason = (
                         f"primary {self.providers[0].name} failed: {last_error}"
                     )
                 return result
+            except LiveModeViolation as exc:
+                if "empty or too-short" in str(exc) and i + 1 < len(self.providers):
+                    last_error = exc
+                    if self.on_fallback:
+                        try:
+                            self.on_fallback(stage, provider, exc)
+                        except Exception:  # pragma: no cover - 콜백 장애 무시
+                            pass
+                    continue
+                raise
             except Exception as exc:
                 last_error = exc
                 if self.on_fallback:
@@ -335,6 +348,8 @@ class GatewayV2(ModelGateway):
                         prompt=prompt,
                         **_chain_call_kwargs(provider, kwargs),
                     )
+                    if require_live:
+                        assert_live_model_result(stage, result)
                 except Exception as exc:
                     last_error = exc
                     self.budget.reconcile(reservation_id, actual_usd=0.0)
@@ -367,7 +382,12 @@ class GatewayV2(ModelGateway):
             on_fallback=self._record_fallback,
         )
         try:
-            result = chain.call(stage=stage, prompt=prompt, **kwargs)
+            result = chain.call(
+                stage=stage,
+                prompt=prompt,
+                _validate_live_result=require_live,
+                **kwargs,
+            )
         except Exception:
             if reservation_id and self.budget is not None:
                 self.budget.reconcile(reservation_id, actual_usd=0.0)

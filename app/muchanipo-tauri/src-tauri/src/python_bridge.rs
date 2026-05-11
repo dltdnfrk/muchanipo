@@ -339,8 +339,9 @@ fn normalize_pipeline_depth(depth: Option<&str>) -> Result<&'static str, String>
         Some("shallow") => Ok("shallow"),
         Some("deep") => Ok("deep"),
         Some("max") => Ok("max"),
+        Some("superdeep") => Ok("superdeep"),
         Some(other) => Err(format!(
-            "unsupported research depth: {other}; expected shallow, deep, or max"
+            "unsupported research depth: {other}; expected shallow, deep, max, or superdeep"
         )),
     }
 }
@@ -400,6 +401,8 @@ fn is_allowed_renderer_env(key: &str) -> bool {
             | "MUCHANIPO_PROVIDER_CHAIN"
             | "MUCHANIPO_OPENCODE_MODEL"
             | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK"
+            | "MUCHANIPO_COUNCIL_CHAIRMAN_TIMEOUT_FALLBACK"
             | "MUCHANIPO_PREFER_CLI"
             | "ANTHROPIC_API_KEY"
             | "GEMINI_API_KEY"
@@ -433,6 +436,8 @@ fn is_boolean_renderer_env(key: &str) -> bool {
             | "MUCHANIPO_REQUIRE_LIVE"
             | "MUCHANIPO_SOURCE_RESEARCH"
             | "MUCHANIPO_INTERVIEW_COUNSELLING"
+            | "MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK"
+            | "MUCHANIPO_COUNCIL_CHAIRMAN_TIMEOUT_FALLBACK"
             | "MUCHANIPO_PREFER_CLI"
     )
 }
@@ -1404,6 +1409,7 @@ mod tests {
         );
         assert_eq!(normalize_pipeline_depth(Some("deep")).unwrap(), "deep");
         assert_eq!(normalize_pipeline_depth(Some("max")).unwrap(), "max");
+        assert_eq!(normalize_pipeline_depth(Some("superdeep")).unwrap(), "superdeep");
     }
 
     #[test]
@@ -1414,6 +1420,7 @@ mod tests {
         assert!(err.contains("shallow"));
         assert!(err.contains("deep"));
         assert!(err.contains("max"));
+        assert!(err.contains("superdeep"));
     }
 
     #[test]

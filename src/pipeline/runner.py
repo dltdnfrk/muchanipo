@@ -10,11 +10,16 @@ from typing import Any, Callable, Dict, Iterator
 from src.council.parsers import RoundResult
 from src.execution.gateway_v2 import default_gateway
 from src.hitl.plannotator_adapter import HITLAdapter
-from src.pipeline.idea_to_council import IdeaToCouncilPipeline, IdeaToCouncilResult
+from src.pipeline.idea_to_council import (
+    IdeaToCouncilPipeline,
+    IdeaToCouncilResult,
+    ResearchQualityOnlyComplete,
+)
 from src.pipeline.reference_contracts import contract_for_stage
 from src.pipeline.stages import Stage
 from src.research.depth import ResearchDepthProfile, depth_profile, normalize_depth
 from src.research.runner import build_runner
+from src.research.session_contract import ResearchContract
 from src.report.chapter_mapper import RoundDigest
 from src.runtime.live_mode import (
     assert_mimo_opencode_policy_credentials,
@@ -145,6 +150,7 @@ def run_pipeline(
     require_live: bool | None = None,
     hitl_adapter: Any | None = None,
     depth: str = "deep",
+    research_contract: ResearchContract | None = None,
 ) -> dict[str, Any]:
     """Run idea -> research -> council -> report -> vault and return report inputs.
 
@@ -156,6 +162,7 @@ def run_pipeline(
         from src.muchanipo.server import _detect_offline_mode
         offline = _detect_offline_mode()
     normalized_depth = normalize_depth(depth)
+    research_contract = research_contract or ResearchContract.new(topic=topic)
     profile = depth_profile(normalized_depth)
     live_required = live_requested_from_env() if require_live is None else bool(require_live or live_requested_from_env())
     source_research = source_research_requested_from_env()
@@ -211,6 +218,8 @@ def run_pipeline(
             payload = {**event, "stage": stage}
             progress_callback({"event": "stage_completed", **payload})
             next_stage = next_progress_stage(stage)
+            if _research_quality_only_requested() and stage == "evidence":
+                next_stage = None
             if next_stage is not None:
                 emit_stage_started(next_stage, {"run_id": event.get("run_id")})
 
@@ -239,12 +248,38 @@ def run_pipeline(
             progress_callback=handle_progress,
             require_live=live_required,
             depth=normalized_depth,
+            research_contract=research_contract,
         )
         emit_stage_started("intake", {"topic": topic})
         with _academic_targeting_policy(live_enabled=bool(live_required or not offline or source_research)), _offline_runtime_policy(
             offline=bool(offline and not source_research)
         ):
-            result = pipeline.run(topic)
+            try:
+                result = pipeline.run(topic)
+            except ResearchQualityOnlyComplete as exc:
+                return {
+                    "rounds": [],
+                    "report_md": "",
+                    "report_path": None,
+                    "brief": None,
+                    "vault_path": None,
+                    "pipeline_result": None,
+                    "depth": normalized_depth,
+                    "depth_profile": profile,
+                    "executed_council_round_count": 0,
+                    "council_persona_pool_size": 0,
+                    "active_council_persona_count": int(
+                        exc.state.artifacts.get("active_council_persona_count")
+                        or profile.active_persona_count
+                    ),
+                    "council_turn_transcript": [],
+                    "research_quality_only": True,
+                    "research_quality_only_stop": exc.state.artifacts.get(
+                        "research_quality_only_stop",
+                        "before_council",
+                    ),
+                    "artifacts": dict(exc.state.artifacts),
+                }
 
     rounds = _digests_from_result(result)
     return {
@@ -260,6 +295,15 @@ def run_pipeline(
         "council_persona_pool_size": len(result.council.personas),
         "active_council_persona_count": int(result.state.artifacts.get("active_council_persona_count") or profile.active_persona_count),
         "council_turn_transcript": list(result.council.turn_transcript),
+    }
+
+
+def _research_quality_only_requested() -> bool:
+    return os.environ.get("MUCHANIPO_RESEARCH_QUALITY_ONLY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 

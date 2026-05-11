@@ -23,6 +23,10 @@ def test_api_mode_allows_either_mimo_or_opencode_go_without_other_providers() ->
     assert 'envs.MUCHANIPO_MIMO_MODEL = envs.MIMO_MODEL;' in source
     assert 'envs.XIAOMI_MIMO_BASE_URL = mimoBaseUrl;' in source
     assert 'envs.MUCHANIPO_PROVIDER_CHAIN = opencodeGoKey ? "mimo,opencode" : "mimo";' in source
+    assert 'envs.MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK = "1";' in source
+    assert '"MUCHANIPO_CHAIRMAN_TIMEOUT_FALLBACK"' in (
+        Path("app/muchanipo-tauri/src-tauri/src/python_bridge.rs").read_text(encoding="utf-8")
+    )
     assert 'envs.OPENCODE_USE_CLI = "0";' in source
     assert 'ANTHROPIC_API_KEY' not in source
     assert 'GEMINI_API_KEY' not in source

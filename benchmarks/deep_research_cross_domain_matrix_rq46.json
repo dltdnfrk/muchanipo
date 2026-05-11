@@ -1,0 +1,126 @@
+{
+  "benchmark_id": "muchanipo-deep-research-cross-domain-matrix-rq46",
+  "purpose": "Offline deterministic Stage-2 Deep Research benchmark matrix that checks domain-general facet coverage, source quality, and claim support without selecting any single scientific fixture by default.",
+  "cases": [
+    {
+      "domain_id": "market_gtm",
+      "title": "Market and GTM evidence synthesis",
+      "prompt": "Evaluate whether a new product category has credible segment demand, willingness to pay, buyer personas, competitive alternatives, and channel constraints.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["industry_report", "survey", "pricing_page"],
+      "expected_claims": [
+        {
+          "id": "market-gtm-demand-and-motion",
+          "text": "Market/GTM research should connect segment sizing, willingness-to-pay evidence, buyer personas, and channel constraints before recommending a launch motion.",
+          "required_terms": ["segment", "sizing", "willingness", "pay", "buyer", "personas", "channel", "constraints", "launch"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "policy_public_data",
+      "title": "Policy and public-data evaluation",
+      "prompt": "Assess a public intervention using official statistics, evaluation evidence, equity impacts, implementation constraints, and counterfactual risks.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["government", "statistics", "academic"],
+      "expected_claims": [
+        {
+          "id": "policy-public-data-outcomes",
+          "text": "Policy/public-data research should cite official statistics, intervention outcomes, equity impact, and implementation constraints.",
+          "required_terms": ["official", "statistics", "intervention", "outcomes", "equity", "impact", "implementation", "constraints"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "finance_diligence",
+      "title": "Finance and diligence analysis",
+      "prompt": "Review an investment or acquisition thesis using filings, audited financials, unit economics, risk factors, and downside scenarios.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["filing", "financial_statement", "industry_report"],
+      "expected_claims": [
+        {
+          "id": "finance-diligence-risk-return",
+          "text": "Finance diligence should connect filings, audited financials, unit economics, risk factors, and downside scenarios.",
+          "required_terms": ["filings", "audited", "financials", "unit", "economics", "risk", "factors", "downside", "scenarios"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "legal_regulatory",
+      "title": "Legal and regulatory research",
+      "prompt": "Analyze a regulated activity using statutes, agency guidance, precedent, jurisdiction boundaries, compliance duties, and enforcement uncertainty.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["statute", "regulator", "case_law"],
+      "expected_claims": [
+        {
+          "id": "legal-regulatory-authority-and-risk",
+          "text": "Legal/regulatory research should cite statutes, agency guidance, precedent, jurisdiction boundaries, compliance duties, and enforcement uncertainty.",
+          "required_terms": ["statutes", "agency", "guidance", "precedent", "jurisdiction", "compliance", "enforcement", "uncertainty"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "technical_product",
+      "title": "Technical and product evaluation",
+      "prompt": "Evaluate a technical product decision using architecture constraints, benchmark data, integration risk, user workflows, and operational reliability.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["documentation", "benchmark", "incident_report"],
+      "expected_claims": [
+        {
+          "id": "technical-product-fit",
+          "text": "Technical/product research should connect architecture constraints, benchmark data, integration risk, user workflows, and reliability tradeoffs.",
+          "required_terms": ["architecture", "constraints", "benchmark", "data", "integration", "risk", "user", "workflows", "reliability"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "academic_literature",
+      "title": "Academic and literature review",
+      "prompt": "Review a scholarly question using primary papers, systematic reviews, methods comparability, effect sizes, limitations, and open debates.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["academic", "review", "dataset"],
+      "expected_claims": [
+        {
+          "id": "academic-literature-methods-and-limits",
+          "text": "Academic/literature research should cite primary papers, systematic reviews, methods comparability, effect sizes, limitations, and open debates.",
+          "required_terms": ["primary", "papers", "systematic", "reviews", "methods", "effect", "sizes", "limitations", "debates"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "local_business_ops",
+      "title": "Local business operations research",
+      "prompt": "Assess a local operating plan using foot traffic, permits, supplier constraints, staffing, local competitors, and seasonal demand.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["local_record", "map", "review"],
+      "expected_claims": [
+        {
+          "id": "local-business-ops-constraints",
+          "text": "Local/business-ops research should connect foot traffic, permits, supplier constraints, staffing, local competitors, and seasonal demand.",
+          "required_terms": ["foot", "traffic", "permits", "supplier", "constraints", "staffing", "competitors", "seasonal", "demand"],
+          "min_matched_terms": 4
+        }
+      ]
+    },
+    {
+      "domain_id": "scientific_hybrid",
+      "title": "Scientific hybrid translational research",
+      "prompt": "Evaluate a science-to-product thesis using primary research, protocols, validation metrics, deployment constraints, adjacent alternatives, and commercialization evidence.",
+      "expected_facets": ["background_scope", "canonical_sources", "counter_evidence"],
+      "expected_source_kinds": ["academic", "protocol", "industry_report"],
+      "expected_claims": [
+        {
+          "id": "scientific-hybrid-validation-to-deployment",
+          "text": "Scientific hybrid research should connect primary research, protocols, validation metrics, deployment constraints, adjacent alternatives, and commercialization evidence.",
+          "required_terms": ["primary", "research", "protocols", "validation", "metrics", "deployment", "constraints", "alternatives", "commercialization"],
+          "min_matched_terms": 4
+        }
+      ]
+    }
+  ]
+}

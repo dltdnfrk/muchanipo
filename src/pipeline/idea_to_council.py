@@ -42,13 +42,45 @@ from src.research.autoresearch_runtime import runtime_contract_for_profile
 from src.research.depth import ResearchDepthProfile, depth_profile, effective_query_limit, normalize_depth
 from src.research.karpathy_autoresearch import (
     KarpathyAutoresearchRunner,
+    SourceAuditViolation,
     build_research_quality_audit,
+    enforce_source_audit_gate,
     iteration_budget_for_profile,
 )
-from src.research.planner import ResearchPlanner
+from src.research.evidence_ledger import build_evidence_ledger_report
+from src.research.event_contract import assert_research_event_contract
+from src.research.max_plus_benchmark import (
+    benchmark_metrics,
+    build_quality_gate_event,
+    selected_max_plus_benchmark_fixture,
+)
+from src.research.planner import (
+    ResearchPlanner,
+    adaptive_followup_query_plan,
+    query_route_ledger,
+    with_source_discovery_queries,
+)
+from src.research.process_completeness import ProcessCompletenessInput, score_process_completeness
+from src.research.readiness import ResearchReadinessInput, decide_research_readiness
+from src.research.refutation_loop import RefutationLoopReport, run_refutation_loop
 from src.research.runner import MockResearchRunner, build_runner
+from src.research.session_contract import ResearchContract, scope_event
+from src.research.source_decision_ledger import (
+    SourceDecisionLedger,
+    build_source_decision_ledger,
+    facet_gap_scheduler_report,
+)
 from src.report.chapter_mapper import ChapterMapper, RoundDigest
+from src.report.claim_matrix import (
+    ClaimEvidenceMatrix,
+    build_claim_evidence_matrix,
+    enforce_claim_evidence_gate,
+)
 from src.report.pyramid_formatter import PyramidFormatter
+from src.report.research_audit_appendix import (
+    build_research_audit_appendix_payload,
+    render_research_audit_appendix,
+)
 from src.report.schema import ResearchReport
 from src.runtime.live_mode import (
     LiveModeViolation,
@@ -90,6 +122,14 @@ class IdeaToCouncilResult:
     retrospective: Retrospective | None = None
 
 
+class ResearchQualityOnlyComplete(RuntimeError):
+    """Raised after source/evidence quality artifacts are ready before council."""
+
+    def __init__(self, state: PipelineState) -> None:
+        super().__init__("research quality-only run completed before council")
+        self.state = state
+
+
 class IdeaToCouncilPipeline:
     def __init__(
         self,
@@ -104,10 +144,12 @@ class IdeaToCouncilPipeline:
         progress_callback: ProgressCallback | None = None,
         require_live: bool | None = None,
         depth: str = "deep",
+        research_contract: ResearchContract | None = None,
     ) -> None:
         self.require_live = live_requested_from_env() if require_live is None else require_live
         self.source_research = source_research_requested_from_env()
         self.depth = normalize_depth(depth)
+        self.research_contract = research_contract
         self.depth_profile = depth_profile(self.depth)
         self.hitl_adapter = hitl_adapter or HITLAdapter(timeout_seconds=0)
         base_research_runner = research_runner or build_runner(use_real=_use_real_research_from_env())
@@ -133,8 +175,44 @@ class IdeaToCouncilPipeline:
         self.progress_callback = progress_callback
         self.progress_events: list[dict[str, Any]] = []
 
+    def _effective_quality_gate_depth(self, source_audit: Any) -> str:
+        """Keep strict quality gates for live/source-backed runs, not offline mocks.
+
+        Offline unit/demo runs still exercise max/superdeep depth budgets with
+        MockResearchRunner. Those mock-only findings are intentionally rejected as
+        material evidence, but they should not abort budget-contract tests before
+        council/report stages. Live/source-research paths keep the requested depth.
+        """
+
+        if self.require_live or self.source_research:
+            return self.depth
+        evaluations = list(getattr(source_audit, "source_evaluations", ()) or ())
+        if evaluations and all(
+            getattr(item, "source_kind", "") in {"mock", "empty", "generated"}
+            or "generated/mock/empty" in str(getattr(item, "reason", ""))
+            for item in evaluations
+        ):
+            return "standard"
+        return self.depth
+
     def run(self, raw_idea: str) -> IdeaToCouncilResult:
         state = PipelineState(run_id=f"run-{uuid4()}")
+        if self.research_contract is None:
+            self.research_contract = ResearchContract.new(
+                topic=_extract_original_topic_anchor(raw_idea),
+                app_run_id=state.run_id,
+            )
+        elif not self.research_contract.app_run_id:
+            self.research_contract = ResearchContract(
+                research_session_id=self.research_contract.research_session_id,
+                topic=self.research_contract.topic,
+                app_run_id=state.run_id,
+                memory_policy=self.research_contract.memory_policy,
+                imported_knowledge_refs=self.research_contract.imported_knowledge_refs,
+                benchmark_fixture_id=self.research_contract.benchmark_fixture_id,
+            )
+        for key, value in self.research_contract.to_artifacts().items():
+            state.record_artifact(key, value)
         runtime_contract = runtime_contract_for_profile(self.depth_profile)
         original_topic = _extract_original_topic_anchor(raw_idea)
         state.record_artifact("topic_anchor", original_topic)
@@ -317,10 +395,24 @@ class IdeaToCouncilPipeline:
         self._emit(state, Stage.TARGETING)
 
         state.advance(Stage.RESEARCH)
+        benchmark_fixture = selected_max_plus_benchmark_fixture()
         plan = ResearchPlanner().plan(brief, max_queries=query_limit)
+        if benchmark_fixture is not None and benchmark_fixture.source_discovery_queries:
+            plan = with_source_discovery_queries(
+                plan,
+                benchmark_fixture.source_discovery_queries,
+                max_queries=query_limit + len(benchmark_fixture.source_discovery_queries),
+            )
+            state.record_artifact(
+                "fixture_source_discovery_queries",
+                json.dumps(list(benchmark_fixture.source_discovery_queries), ensure_ascii=False),
+            )
         if self.require_live or self.source_research:
             _assert_research_plan_preserves_topic_anchor(plan, original_topic)
+        route_ledger = query_route_ledger(plan)
         state.record_artifact("research_query_count", str(len(plan.queries)))
+        state.record_artifact("research_query_routes", json.dumps(plan.query_routes, ensure_ascii=False, sort_keys=True))
+        state.record_artifact("research_query_route_ledger", json.dumps(route_ledger, ensure_ascii=False, sort_keys=True))
         state.record_artifact("research_collection_rules", json.dumps(plan.collection_rules, ensure_ascii=False))
         state.record_artifact("research_stop_conditions", json.dumps(plan.stop_conditions, ensure_ascii=False))
         self._emit_research_plan_progress(plan)
@@ -346,6 +438,23 @@ class IdeaToCouncilPipeline:
             evidence_store.add(ref)
         grounding_reports = annotate_findings(findings)
         evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
+        source_audit = build_research_quality_audit(findings, plan)
+        quality_gate_depth = self._effective_quality_gate_depth(source_audit)
+        source_audit_summary = enforce_source_audit_gate(source_audit, depth=quality_gate_depth)
+        if quality_gate_depth != self.depth:
+            source_audit_summary["runtime_depth"] = self.depth
+            source_audit_summary["quality_gate_depth_override"] = quality_gate_depth
+        state.record_artifact("source_audit_summary", json.dumps(source_audit_summary, ensure_ascii=False, sort_keys=True))
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "source_audit_gate",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **source_audit_summary,
+            }
+        )
+        source_decision_ledger = self._record_source_decision_ledger(state, findings, source_audit, plan)
         state.record_artifact("evidence_count", str(len(evidence_refs)))
         state.record_artifact("evidence_validation_summary", json.dumps(evidence_summary, ensure_ascii=False, sort_keys=True))
         self._require_live_evidence(evidence_summary, evidence_refs)
@@ -362,6 +471,14 @@ class IdeaToCouncilPipeline:
                 evidence_store.add(ref)
             grounding_reports = annotate_findings(findings)
             evidence_summary = _evidence_validation_summary(evidence_store, grounding_reports)
+            source_audit = build_research_quality_audit(findings, plan)
+            quality_gate_depth = self._effective_quality_gate_depth(source_audit)
+            source_audit_summary = enforce_source_audit_gate(source_audit, depth=quality_gate_depth)
+            if quality_gate_depth != self.depth:
+                source_audit_summary["runtime_depth"] = self.depth
+                source_audit_summary["quality_gate_depth_override"] = quality_gate_depth
+            state.record_artifact("source_audit_summary", json.dumps(source_audit_summary, ensure_ascii=False, sort_keys=True))
+            source_decision_ledger = self._record_source_decision_ledger(state, findings, source_audit, plan)
             state.record_artifact("evidence_count", str(len(evidence_refs)))
             state.record_artifact("evidence_validation_summary", json.dumps(evidence_summary, ensure_ascii=False, sort_keys=True))
         self._emit(state, Stage.EVIDENCE)
@@ -377,6 +494,224 @@ class IdeaToCouncilPipeline:
             limitations=_report_limitations(require_live=self.require_live, source_research=self.source_research),
         )
         state.record_artifact("report_id", report.id)
+        source_decision_summary = source_decision_ledger.summary()
+        accepted_evidence_ids = set(source_decision_ledger.accepted_source_ids)
+        claim_evidence_matrix = build_claim_evidence_matrix(
+            findings,
+            evidence_refs,
+            accepted_evidence_ids=accepted_evidence_ids,
+            source_decision_ledger=source_decision_ledger,
+        )
+        claim_evidence_summary = enforce_claim_evidence_gate(claim_evidence_matrix, depth=quality_gate_depth)
+        if quality_gate_depth != self.depth:
+            claim_evidence_summary["runtime_depth"] = self.depth
+            claim_evidence_summary["quality_gate_depth_override"] = quality_gate_depth
+        verification_summaries = _claim_and_citation_verification_summaries(claim_evidence_summary)
+        state.record_artifact(
+            "claim_evidence_matrix_summary",
+            json.dumps(claim_evidence_summary, ensure_ascii=False, sort_keys=True),
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "claim_evidence_gate",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **claim_evidence_summary,
+                **verification_summaries,
+            }
+        )
+        refutation_loop_report = self._record_refutation_loop(
+            state,
+            plan=plan,
+            claim_evidence_matrix=claim_evidence_matrix,
+            source_decision_ledger=source_decision_ledger,
+        )
+        facet_gap_report = facet_gap_scheduler_report(
+            getattr(plan, "query_routes", []) or [],
+            source_decision_summary=source_decision_summary,
+            claim_coverage=claim_evidence_summary,
+            refutation_summary=refutation_loop_report.summary(),
+        )
+        state.record_artifact(
+            "facet_gap_scheduler_report",
+            json.dumps(facet_gap_report, ensure_ascii=False, sort_keys=True),
+        )
+        adaptive_query_plan = adaptive_followup_query_plan(plan, facet_gap_report)
+        state.record_artifact(
+            "adaptive_followup_query_plan",
+            json.dumps(adaptive_query_plan, ensure_ascii=False, sort_keys=True),
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **adaptive_query_plan,
+                "status": "adaptive_followup_query_plan",
+                "adaptive_followup_status": adaptive_query_plan["status"],
+            }
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **facet_gap_report,
+                "status": "facet_gap_scheduler_report",
+                "facet_gap_scheduler_status": facet_gap_report["status"],
+                "facet_gap_scheduler_report": facet_gap_report,
+                "by_route_facet_id": source_decision_summary.get("by_route_facet_id", {}),
+                "route_facet_statuses": source_decision_summary.get("route_facet_statuses", {}),
+                **verification_summaries,
+            }
+        )
+        ledger_expected_claims = benchmark_fixture.expected_claims if benchmark_fixture is not None else ()
+        rejected_evidence_reasons = source_decision_ledger.rejected_source_reasons
+        evidence_ledger_report = build_evidence_ledger_report(
+            findings,
+            expected_claims=ledger_expected_claims,
+            accepted_source_ids=accepted_evidence_ids,
+            rejected_source_reasons=rejected_evidence_reasons,
+            source_decision_ledger=source_decision_ledger,
+        )
+        state.record_artifact(
+            "evidence_ledger_report",
+            json.dumps(evidence_ledger_report.to_dict(), ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact(
+            "evidence_ledger_metrics",
+            json.dumps(dict(evidence_ledger_report.metrics), ensure_ascii=False, sort_keys=True),
+        )
+        for ledger_event in evidence_ledger_report.quality_gate_events:
+            self._emit_progress(
+                {
+                    **ledger_event,
+                    "topic_anchor": getattr(plan, "topic_anchor", ""),
+                    "readiness": evidence_ledger_report.readiness,
+                }
+            )
+        benchmark_score_vector: dict[str, float] | None = None
+        benchmark_decision: str | None = None
+        if benchmark_fixture is not None:
+            benchmark_score_vector = benchmark_metrics(
+                findings,
+                fixture=benchmark_fixture,
+                accepted_source_ids=accepted_evidence_ids,
+            )
+            benchmark_decision = _max_plus_benchmark_decision(benchmark_score_vector)
+            state.record_artifact("max_plus_benchmark_id", benchmark_fixture.benchmark_id)
+            state.record_artifact(
+                "max_plus_benchmark_metrics",
+                json.dumps(benchmark_score_vector, ensure_ascii=False, sort_keys=True),
+            )
+            state.record_artifact("max_plus_benchmark_decision", benchmark_decision)
+            benchmark_event = build_quality_gate_event(
+                benchmark_id=benchmark_fixture.benchmark_id,
+                metrics=benchmark_score_vector,
+                decision=benchmark_decision,
+                hypothesis="score live findings against an explicitly selected local Deep Research Max fixture without re-calling paid Max",
+            )
+            benchmark_event["topic_anchor"] = getattr(plan, "topic_anchor", "")
+            self._emit_progress(benchmark_event)
+        else:
+            state.record_artifact("max_plus_benchmark_id", "")
+        readiness_decision = decide_research_readiness(
+            ResearchReadinessInput(
+                source_audit_summary=source_audit_summary,
+                source_decision_summary=source_decision_ledger.summary(),
+                claim_evidence_summary=claim_evidence_summary,
+                evidence_ledger_readiness=evidence_ledger_report.readiness,
+                evidence_ledger_metrics=evidence_ledger_report.metrics,
+                refutation_loop_readiness=refutation_loop_report.readiness,
+                refutation_loop_summary=refutation_loop_report.summary(),
+                max_plus_benchmark_decision=benchmark_decision,
+                max_plus_benchmark_metrics=benchmark_score_vector,
+            )
+        )
+        state.record_artifact(
+            "research_readiness_decision",
+            json.dumps(readiness_decision.to_dict(), ensure_ascii=False, sort_keys=True),
+        )
+        process_completeness = score_process_completeness(
+            ProcessCompletenessInput(
+                query_route_ledger=route_ledger,
+                source_decision_summary=source_decision_ledger.summary(),
+                claim_evidence_summary=claim_evidence_summary,
+                refutation_loop_summary=refutation_loop_report.summary(),
+                evidence_ledger_readiness=evidence_ledger_report.readiness,
+                evidence_ledger_metrics=evidence_ledger_report.metrics,
+                research_readiness_decision=readiness_decision.to_dict(),
+                progress_events=tuple(self.progress_events),
+            )
+        )
+        process_completeness_payload = process_completeness.to_dict()
+        state.record_artifact(
+            "research_process_completeness",
+            json.dumps(process_completeness_payload, ensure_ascii=False, sort_keys=True),
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "research_process_completeness",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **process_completeness_payload,
+            }
+        )
+        research_audit_appendix = build_research_audit_appendix_payload(
+            query_route_ledger=query_route_ledger(plan),
+            source_decision_summary=source_decision_ledger.summary(),
+            claim_evidence_summary=claim_evidence_summary,
+            refutation_loop_summary=refutation_loop_report.summary(),
+            evidence_ledger_metrics=evidence_ledger_report.metrics,
+            evidence_ledger_readiness=evidence_ledger_report.readiness,
+            research_readiness_decision=readiness_decision.to_dict(),
+            research_process_completeness=process_completeness_payload,
+        )
+        state.record_artifact(
+            "research_audit_appendix",
+            json.dumps(research_audit_appendix, ensure_ascii=False, sort_keys=True),
+        )
+        if _research_quality_only_requested():
+            research_quality_stop = readiness_decision.stop_state
+            research_quality_readiness = readiness_decision.readiness
+            state.record_artifact("research_quality_only_stop", research_quality_stop)
+            state.record_artifact("research_quality_readiness", research_quality_readiness)
+            state.record_artifact("evidence_ledger_readiness", evidence_ledger_report.readiness)
+            state.record_artifact("refutation_loop_readiness", refutation_loop_report.readiness)
+            state.record_artifact(
+                "research_readiness_decision",
+                json.dumps(readiness_decision.to_dict(), ensure_ascii=False, sort_keys=True),
+            )
+            if readiness_decision.readiness != "ready":
+                state.record_artifact("research_quality_review_reason", "; ".join(readiness_decision.reasons))
+            state.record_artifact(
+                "evidence_ledger_readiness_metrics",
+                json.dumps(dict(evidence_ledger_report.metrics), ensure_ascii=False, sort_keys=True),
+            )
+            ready_event = {
+                "event": readiness_decision.terminal_event_name(),
+                "stage": "quality_gate",
+                "status": research_quality_stop if research_quality_stop != "before_council" else "ready_before_council",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                "research_quality_readiness": research_quality_readiness,
+                "research_readiness_decision": readiness_decision.to_dict(),
+                "research_readiness_reasons": list(readiness_decision.reasons),
+                "evidence_ledger_readiness": evidence_ledger_report.readiness,
+                "evidence_ledger_metrics": dict(evidence_ledger_report.metrics),
+                "research_process_completeness": process_completeness_payload,
+                "refutation_loop_readiness": refutation_loop_report.readiness,
+                "refutation_loop_summary": refutation_loop_report.summary(),
+                "source_audit_summary": source_audit_summary,
+                "source_decision_summary": source_decision_ledger.summary(),
+                "claim_evidence_matrix_summary": claim_evidence_summary,
+            }
+            if benchmark_score_vector is not None and benchmark_decision is not None:
+                ready_event["max_plus_benchmark_decision"] = benchmark_decision
+                ready_event["max_plus_benchmark_metrics"] = benchmark_score_vector
+            self._emit_progress(ready_event)
+            raise ResearchQualityOnlyComplete(state)
 
         agents = DebateAgentGenerator().from_report(report)
         state.record_artifact("agents", ",".join(agent.name for agent in agents))
@@ -515,6 +850,8 @@ class IdeaToCouncilPipeline:
             targeting_map,
             evidence_summary=evidence_summary,
             reference_runtime_artifacts=reference_runtime_artifacts,
+            claim_evidence_matrix=claim_evidence_matrix,
+            research_audit_appendix=research_audit_appendix,
             require_live=self.require_live,
         )
         self._require_live_report(report_md)
@@ -685,6 +1022,8 @@ class IdeaToCouncilPipeline:
             event["reference_stage_name"] = contract.name
             event["reference_projects"] = list(contract.references)
             event["reference_notes"] = list(contract.notes)
+        if self.research_contract is not None:
+            event = scope_event(event, self.research_contract)
         self.progress_events.append(event)
         if self.progress_callback is not None:
             self.progress_callback(event)
@@ -694,7 +1033,34 @@ class IdeaToCouncilPipeline:
         if not queries:
             return
         backends = _research_backend_labels(self.research_runner)
+        query_routes = [dict(route) for route in getattr(plan, "query_routes", []) if isinstance(route, dict)]
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": Stage.RESEARCH.value,
+                "status": "query_route_ledger_built",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                "route_count": len(query_routes),
+                "route_ids": [str(route.get("route_id") or "") for route in query_routes],
+                "route_version": query_routes[0].get("route_version") if query_routes else None,
+                "routes": query_routes,
+            }
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": Stage.RESEARCH.value,
+                "status": "research_plan_ready",
+                "queries": queries,
+                "query_routes": query_routes,
+                "query_count": len(queries),
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                "backends": backends,
+            }
+        )
+        routes_by_query = {str(route.get("query") or ""): route for route in query_routes}
         for index, query in enumerate(queries, start=1):
+            route = routes_by_query.get(str(query), {})
             self._emit_progress(
                 {
                     "event": "research_progress",
@@ -704,15 +1070,119 @@ class IdeaToCouncilPipeline:
                     "topic_anchor": getattr(plan, "topic_anchor", ""),
                     "query_index": index,
                     "query_count": len(queries),
+                    **_route_progress_metadata(route),
                     "backends": backends,
                 }
             )
+
+    def _record_source_decision_ledger(
+        self,
+        state: Any,
+        findings: list[Finding],
+        audit: Any,
+        plan: Any,
+    ) -> SourceDecisionLedger:
+        ledger = build_source_decision_ledger(findings, audit=audit, plan=plan)
+        payload = ledger.to_dict()
+        summary = payload["summary"]
+        state.record_artifact("source_decision_ledger", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        state.record_artifact("source_decision_summary", json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        topic_anchor = getattr(plan, "topic_anchor", "")
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "source_decision_ledger_built",
+                "topic_anchor": topic_anchor,
+                **summary,
+            }
+        )
+        max_emitted = int(os.getenv("MUCHANIPO_MAX_RESEARCH_PROGRESS_SOURCES", "24"))
+        routes_by_query = {
+            str(route.get("query") or ""): route
+            for route in getattr(plan, "query_routes", [])
+            if isinstance(route, dict)
+        }
+        for decision in ledger.decisions[:max_emitted]:
+            route = routes_by_query.get(str(getattr(decision, "query", "") or ""), {})
+            if not route:
+                route = next(
+                    (
+                        route
+                        for route in getattr(plan, "query_routes", []) or []
+                        if isinstance(route, dict) and str(route.get("route_id") or "") == str(decision.route_id or "")
+                    ),
+                    {},
+                )
+            base_event = {
+                "event": "research_progress",
+                "stage": Stage.RESEARCH.value,
+                "topic_anchor": topic_anchor,
+                "source_id": decision.source_id,
+                **_route_progress_metadata(route, route_id=decision.route_id),
+                "route_facet_id": decision.route_facet_id,
+                "route_intent": decision.route_intent,
+                "route_source_class": decision.route_source_class,
+                "route_authority_requirement": decision.route_authority_requirement,
+                "route_acceptance_rules": list(decision.route_acceptance_rules),
+                "route_purpose": decision.route_purpose,
+                "route_backend": decision.route_backend,
+                "source_title": decision.raw_title,
+                "source_url": decision.raw_url,
+                "canonical_id": decision.canonical_id,
+                "canonical_url": decision.canonical_url,
+                "identifier_kind": decision.identifier_kind,
+                "resolver_status": decision.resolver_status,
+                "source_kind": decision.source_kind,
+                "source_role": decision.source_role,
+                "accepted": decision.accepted,
+                "decision": decision.decision,
+                "rejection_codes": list(decision.rejection_codes),
+                "reason": decision.reason,
+            }
+            self._emit_progress({**base_event, "status": "source_resolved"})
+            self._emit_progress({**base_event, "status": "source_decision"})
+        return ledger
+
+    def _record_refutation_loop(
+        self,
+        state: Any,
+        *,
+        plan: Any,
+        claim_evidence_matrix: ClaimEvidenceMatrix,
+        source_decision_ledger: SourceDecisionLedger,
+    ) -> RefutationLoopReport:
+        report = run_refutation_loop(
+            plan,
+            claim_matrix=claim_evidence_matrix,
+            source_decision_ledger=source_decision_ledger,
+        )
+        payload = report.to_dict()
+        summary = report.summary()
+        state.record_artifact("refutation_loop_report", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        state.record_artifact("refutation_loop_summary", json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        topic_anchor = getattr(plan, "topic_anchor", "")
+        for event in report.events:
+            self._emit_progress(
+                {
+                    "event": "research_progress",
+                    "stage": "quality_gate",
+                    "topic_anchor": topic_anchor,
+                    **event,
+                }
+            )
+        return report
 
     def _emit_research_source_progress(self, findings: list[Finding], plan: Any) -> None:
         seen: set[str] = set()
         emitted = 0
         audit = build_research_quality_audit(findings, plan)
         evaluations_by_id = {item.source_id: item for item in audit.source_evaluations}
+        routes_by_query = {
+            str(route.get("query") or ""): route
+            for route in getattr(plan, "query_routes", [])
+            if isinstance(route, dict)
+        }
         for finding in findings:
             for ref in finding.support:
                 key = f"{ref.source_title}|{ref.source_url}|{ref.quote}"
@@ -722,15 +1192,21 @@ class IdeaToCouncilPipeline:
                 emitted += 1
                 provenance = ref.provenance or {}
                 metadata = provenance.get("metadata", {}) if isinstance(provenance, dict) else {}
-                query = metadata.get("query", "") if isinstance(metadata, dict) else ""
+                query = ""
+                if isinstance(metadata, dict):
+                    query = str(metadata.get("query") or "")
+                if not query and isinstance(provenance, dict):
+                    query = str(provenance.get("query") or "")
                 claim_prefix = "Initial research direction for: "
                 if not query and finding.claim.startswith(claim_prefix):
                     query = finding.claim[len(claim_prefix):]
                 evaluation = evaluations_by_id.get(ref.id)
+                route = routes_by_query.get(str(query), {})
                 base_event = {
                     "event": "research_progress",
                     "stage": Stage.RESEARCH.value,
                     "query": query,
+                    **_route_progress_metadata(route),
                     "source_title": ref.source_title,
                     "source_url": ref.source_url,
                     "source_grade": ref.source_grade,
@@ -777,6 +1253,9 @@ class IdeaToCouncilPipeline:
         )
 
     def _emit_progress(self, event: dict[str, Any]) -> None:
+        if self.research_contract is not None:
+            event = scope_event(event, self.research_contract)
+        event = assert_research_event_contract(event)
         self.progress_events.append(event)
         if self.progress_callback is not None:
             self.progress_callback(event)
@@ -835,6 +1314,8 @@ def _compose_six_chapter_report(
     *,
     evidence_summary: dict[str, Any] | None = None,
     reference_runtime_artifacts: dict[str, Any] | None = None,
+    claim_evidence_matrix: ClaimEvidenceMatrix | None = None,
+    research_audit_appendix: dict[str, Any] | None = None,
     require_live: bool = False,
 ) -> str:
     digests = _round_digests(council, report.evidence_refs, require_live=require_live)
@@ -880,6 +1361,10 @@ def _compose_six_chapter_report(
             grounding_rows.append((chapter.chapter_no, claim, evidence_ids))
         lines.append("")
     _append_claim_grounding_matrix(lines, grounding_rows, evidence_kind_by_id)
+    if claim_evidence_matrix is not None:
+        _append_strict_claim_evidence_matrix(lines, claim_evidence_matrix)
+    if research_audit_appendix:
+        lines.append(render_research_audit_appendix(research_audit_appendix).rstrip())
     if reference_runtime_artifacts:
         _append_react_plan(lines, reference_runtime_artifacts.get("react", {}))
         _append_gbrain_snapshot(lines, reference_runtime_artifacts.get("gbrain", {}))
@@ -1014,6 +1499,27 @@ def _append_claim_grounding_matrix(
     for chapter_no, claim, evidence_ids in grounding_rows:
         evidence = _evidence_cell(claim, evidence_ids, evidence_kind_by_id)
         lines.append(f"| {chapter_no} | {_table_cell(claim)} | {evidence} |")
+    lines.append("")
+
+
+def _append_strict_claim_evidence_matrix(lines: list[str], matrix: ClaimEvidenceMatrix) -> None:
+    summary = matrix.to_dict()
+    lines.extend([
+        "## Strict Claim-Evidence Matrix",
+        "",
+        f"- Supported claims: {summary['supported_count']} / {summary['row_count']}",
+        f"- Partial claims: {summary['partial_count']}",
+        f"- Unsupported claims: {summary['unsupported_count']}",
+        f"- Supported ratio: {float(summary['supported_ratio']):.2f}",
+        "",
+        "| Status | Claim | Evidence | Reason |",
+        "| --- | --- | --- | --- |",
+    ])
+    for row in matrix.rows:
+        evidence = ", ".join(f"`{evidence_id}`" for evidence_id in row.evidence_ids) or "none"
+        lines.append(
+            f"| {row.status} | {_table_cell(row.claim)} | {evidence} | {_table_cell(row.reason)} |"
+        )
     lines.append("")
 
 
@@ -1748,6 +2254,24 @@ def _safe_filename(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-")
 
 
+def _max_plus_benchmark_decision(metrics: dict[str, float]) -> str:
+    expected_claim_recall = float(metrics.get("expected_claim_recall", 0.0) if metrics.get("expected_claim_recall") is not None else 0.0)
+    evidence_quote_coverage = float(metrics.get("evidence_quote_coverage", 0.0) if metrics.get("evidence_quote_coverage") is not None else 0.0)
+    weak_source_penalty = float(metrics.get("weak_source_penalty", 1.0) if metrics.get("weak_source_penalty") is not None else 1.0)
+    if expected_claim_recall >= 0.5 and evidence_quote_coverage >= 0.5 and weak_source_penalty <= 0.5:
+        return "keep"
+    return "blocked"
+
+
+def _research_quality_only_requested() -> bool:
+    return os.environ.get("MUCHANIPO_RESEARCH_QUALITY_ONLY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _evidence_validation_summary(
     evidence_store: EvidenceStore,
     grounding_reports: list[dict[str, Any]],
@@ -1858,6 +2382,76 @@ def _record_karpathy_autoresearch_artifacts(state: PipelineState, runner: Any) -
         "karpathy_autoresearch_discarded_count",
         str(payload.get("discarded_iteration_count") or 0),
     )
+
+
+def _claim_and_citation_verification_summaries(claim_evidence_summary: dict[str, Any]) -> dict[str, Any]:
+    rows = claim_evidence_summary.get("rows") if isinstance(claim_evidence_summary.get("rows"), list) else []
+    supporting_source_ids = {
+        str(source_id)
+        for row in rows
+        if isinstance(row, dict)
+        for source_id in row.get("supporting_source_ids", []) or []
+        if str(source_id).strip()
+    }
+    canonical_ids = {
+        str(canonical_id)
+        for row in rows
+        if isinstance(row, dict)
+        for canonical_id in row.get("canonical_ids", []) or []
+        if str(canonical_id).strip()
+    }
+    return {
+        "claim_verification_summary": {
+            "row_count": int(claim_evidence_summary.get("row_count") or 0),
+            "supported_count": int(claim_evidence_summary.get("supported_count") or 0),
+            "partial_count": int(claim_evidence_summary.get("partial_count") or 0),
+            "unsupported_count": int(claim_evidence_summary.get("unsupported_count") or 0),
+            "supported_ratio": float(claim_evidence_summary.get("supported_ratio") or 0.0),
+            "passed": bool(claim_evidence_summary.get("passed")),
+        },
+        "citation_verification_summary": {
+            "strict_citation_row_count": int(claim_evidence_summary.get("row_count") or 0),
+            "supporting_source_count": len(supporting_source_ids),
+            "canonical_id_count": len(canonical_ids),
+        },
+    }
+
+
+def _route_progress_metadata(route: Any, *, route_id: str | None = None) -> dict[str, Any]:
+    """Return JSON-safe route metadata for research_progress events.
+
+    Missing route matches are explicit so downstream UI/audit code sees the
+    routing gap instead of silently treating absent metadata as unavailable.
+    """
+
+    if not isinstance(route, dict) or not route:
+        return {
+            "route_id": route_id or "unrouted",
+            "route_metadata_gap": True,
+        }
+    payload: dict[str, Any] = {
+        "route_id": route.get("route_id") or route_id or "unrouted",
+        "route_version": route.get("route_version"),
+        "facet_id": route.get("facet_id"),
+        "route_facet_id": route.get("facet_id"),
+        "purpose": route.get("purpose"),
+        "route_purpose": route.get("purpose"),
+        "source_class": route.get("source_class"),
+        "route_source_class": route.get("source_class"),
+        "intent": route.get("intent"),
+        "route_intent": route.get("intent"),
+        "backend": route.get("backend"),
+        "route_backend": route.get("backend"),
+        "authority_requirement": route.get("authority_requirement"),
+        "route_authority_requirement": route.get("authority_requirement"),
+        "acceptance_rules": list(route.get("acceptance_rules") or []),
+        "route_acceptance_rules": list(route.get("acceptance_rules") or []),
+        "continue_reason": route.get("continue_reason"),
+        "route_metadata_gap": False,
+    }
+    if route.get("reject_patterns"):
+        payload["reject_patterns"] = list(route.get("reject_patterns") or [])
+    return payload
 
 
 def _research_backend_labels(runner: Any) -> list[str]:

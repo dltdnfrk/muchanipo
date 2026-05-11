@@ -69,6 +69,20 @@ def test_select_personas_from_consensus_plan_injects_agtech_farmer_for_korean():
     assert "grounded_seed" in farmer
 
 
+def test_select_personas_no_explicit_agtech_role_skips_farmer_even_for_korean_topic():
+    """범용 리서치에서는 한국/농가 키워드만으로 농가 페르소나를 자동 주입하지 않는다."""
+    onto = {
+        "roles": ["topic_owner", "evidence_reviewer", "comparison_judge"],
+        "intents": ["Topic: 한국 사과 농가 가격 책정"],
+        "design_doc_brief": "# Korean market research, but no requested vertical persona preset",
+    }
+    personas = council_runner._select_personas_from_consensus_plan(
+        onto, count=3, topic="한국 사과 농가 가격 책정"
+    )
+    assert len(personas) == 3
+    assert all(p["role"] != "agtech_farmer" for p in personas)
+
+
 def test_select_personas_no_korean_skips_farmer():
     """한국 / agtech 신호가 없으면 농가 페르소나가 추가되지 않는다."""
     onto = {

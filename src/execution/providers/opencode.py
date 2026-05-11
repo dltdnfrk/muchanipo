@@ -195,8 +195,8 @@ class OpenCodeProvider:
             payload = json.loads(resp.read().decode("utf-8"))
         text = ""
         try:
-            text = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
+            text = payload["choices"][0]["message"].get("content") or ""
+        except (KeyError, IndexError, TypeError, AttributeError):
             text = json.dumps(payload, ensure_ascii=False)
         usage = payload.get("usage", {}) or {}
         return ModelResult(

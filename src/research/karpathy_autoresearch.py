@@ -23,13 +23,17 @@ from typing import Any
 from src.evidence.artifact import EvidenceRef, Finding
 
 from .depth import ResearchDepthProfile
-from .planner import ResearchPlan
+from .planner import ResearchPlan, source_route_for_query
 
 
 UPSTREAM_REVISION = "228791fb499afffb54b46200aca536f79142f117"
 RESULTS_HEADER = "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
 METRIC_NAME = "source_grounding_gap_score"
 METRIC_DIRECTION = "lower_is_better"
+
+
+class SourceAuditViolation(RuntimeError):
+    """Raised when strict research depth refuses weak/off-topic sources."""
 
 
 @dataclass(frozen=True)
@@ -384,6 +388,7 @@ class KarpathyAutoresearchRunner:
                     "karpathy-autoresearch candidate: keep only if source_grounding_gap_score improves",
                 ],
                 topic_anchor=plan.topic_anchor,
+                query_routes=[source_route_for_query(query) for query in _dedupe_strings(mutated_queries)],
             )
             candidates.append(
                 _CandidatePlan(
@@ -457,6 +462,49 @@ def iteration_budget_for_profile(profile: ResearchDepthProfile, *, source_resear
     if source_research:
         budget = max(2, budget)
     return budget
+
+
+def enforce_source_audit_gate(audit: ResearchQualityAudit, *, depth: str) -> dict[str, Any]:
+    """Enforce pre-council source quality for strict/max-depth research.
+
+    `superdeep` is intentionally harsher than `max`: no facet gaps, no accepted
+    generated/mock sources, and a high accepted-source floor. This prevents a
+    large persona council from amplifying contaminated evidence.
+    """
+
+    normalized_depth = str(depth or "").casefold()
+    strict = normalized_depth in {"max", "superdeep"}
+    accepted = [item for item in audit.source_evaluations if item.accepted]
+    rejected = [item for item in audit.source_evaluations if not item.accepted]
+    generated_accepted = [
+        item for item in accepted if item.source_kind in {"mock", "empty", "generated"}
+    ]
+    min_accepted = 6 if normalized_depth == "superdeep" else 3
+    allowed_gaps = 0 if normalized_depth == "superdeep" else 1
+    passed = True
+    reasons: list[str] = []
+    if len(accepted) < min_accepted:
+        passed = False
+        reasons.append(f"accepted_source_count {len(accepted)} < {min_accepted}")
+    if len(audit.gaps) > allowed_gaps:
+        passed = False
+        reasons.append(f"gap_count {len(audit.gaps)} > {allowed_gaps}")
+    if generated_accepted:
+        passed = False
+        reasons.append("generated/mock sources cannot be accepted")
+    summary = {
+        "passed": passed,
+        "depth": normalized_depth,
+        "accepted_source_count": len(accepted),
+        "rejected_source_count": len(rejected),
+        "gap_count": len(audit.gaps),
+        "min_accepted_sources": min_accepted,
+        "allowed_gap_count": allowed_gaps,
+        "reasons": reasons,
+    }
+    if strict and not passed:
+        raise SourceAuditViolation("source audit gate failed: " + "; ".join(reasons))
+    return summary
 
 
 def _source_grounding_gap_score(
@@ -605,20 +653,25 @@ def _evaluate_source_ref(
     relevant = _ref_is_relevant_to_plan(ref, plan)
     generated = _is_generated_ref(ref)
     relevance_score = _source_relevance_score(ref, plan)
+    search_result_echo = _is_search_result_echo_ref(ref, plan)
     facet_ids = tuple(
         facet.id
         for facet in facets
-        if _source_satisfies_facet(ref, facet, plan=plan, source_kind=source_kind, relevance_score=relevance_score)
+        if not search_result_echo
+        and _source_satisfies_facet(ref, facet, plan=plan, source_kind=source_kind, relevance_score=relevance_score)
     )
     accepted = bool(
         relevant
         and relevance_score >= _minimum_relevance_score(plan)
         and not generated
+        and not search_result_echo
         and ref.source_grade in {"A", "B", "C"}
         and facet_ids
     )
     if generated:
         reason = "rejected: generated/mock/empty source is not live evidence"
+    elif search_result_echo:
+        reason = "rejected: search-result echo or landing page keyword match is not source evidence"
     elif not relevant:
         reason = "rejected: source text does not overlap with topic-specific plan terms"
     elif relevance_score < _minimum_relevance_score(plan):
@@ -668,6 +721,35 @@ def _source_kind_for_ref(ref: EvidenceRef) -> str:
     return raw_kind or "web"
 
 
+def _is_search_result_echo_ref(ref: EvidenceRef, plan: ResearchPlan | None) -> bool:
+    """Detect search/landing pages whose only topic match is the submitted query.
+
+    Search-result pages can echo the user query in the URL/quote while the actual
+    result title points to an unrelated dataset or article. Those echoes are not
+    evidence and must not satisfy source facets.
+    """
+
+    provenance = ref.provenance or {}
+    metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
+    access_status = str(ref.access_status or "").casefold()
+    url = str(ref.source_url or metadata.get("source") or "").casefold()
+    quote = str(ref.quote or metadata.get("source_text") or "").casefold()
+    search_markers = (
+        "selectdatasetlist",
+        "keyword=",
+        "search result page",
+        "search-result page",
+        "검색결과",
+        "검색 결과",
+    )
+    echo_like = any(marker in url or marker in quote for marker in search_markers)
+    landing_only = access_status in {"landing_page_only", "search_result", "search_result_only"}
+    # Search/listing pages often echo the submitted topic in the title, URL, or
+    # snippet. That anchor overlap must not rescue the record: a search results
+    # page is not an item-level dataset, paper, statistic, or regulatory source.
+    return bool(echo_like or landing_only)
+
+
 def _source_satisfies_facet(
     ref: EvidenceRef,
     facet: ResearchFacet,
@@ -678,6 +760,7 @@ def _source_satisfies_facet(
 ) -> bool:
     kind_satisfies = source_kind in facet.required_source_kinds
     text_satisfies = _source_matches_facet_text(ref, facet)
+    topic_anchor_satisfies = _source_has_topic_domain_anchor(ref, plan)
     if facet.id in {"market", "regional_adoption"}:
         # Market/adoption facets are especially prone to false positives from
         # generic words such as adoption, cost, regulatory, detection, and
@@ -687,11 +770,21 @@ def _source_satisfies_facet(
         return bool(
             text_satisfies
             and relevance_score >= _minimum_relevance_score(plan)
-            and _source_has_topic_domain_anchor(ref, plan)
+            and topic_anchor_satisfies
         )
-    if facet.id in {"scientific", "field_validation"} and not _source_has_topic_domain_anchor(ref, plan):
-        return False
-    return bool(kind_satisfies or text_satisfies)
+    if facet.id in {"scientific", "field_validation"}:
+        # Authority shape (DOI/arXiv/academic index) is only a carrier. It must
+        # not satisfy scientific facets by itself: the source title/quote/item
+        # metadata still needs both topic-domain anchors and facet evidence.
+        return bool(
+            relevance_score >= _minimum_relevance_score(plan)
+            and topic_anchor_satisfies
+            and text_satisfies
+            and (kind_satisfies or source_kind in {"web", "paper", "doi", "academic"})
+        )
+    if plan is not None and kind_satisfies:
+        return bool(topic_anchor_satisfies and (text_satisfies or relevance_score >= _minimum_relevance_score(plan)))
+    return bool(text_satisfies or kind_satisfies)
 
 
 def _source_matches_facet_text(ref: EvidenceRef, facet: ResearchFacet) -> bool:
@@ -699,7 +792,7 @@ def _source_matches_facet_text(ref: EvidenceRef, facet: ResearchFacet) -> bool:
     if facet.id == "scientific":
         return any(marker in text for marker in ("paper", "journal", "doi", "pcr", "lamp", "assay", "metabolomics", "ontology"))
     if facet.id == "market":
-        return any(marker in text for marker in ("market", "pricing", "adoption", "willingness", "consumer", "survey", "trend", "시장", "가격", "구매", "도입", "소비", "트렌드", "조사"))
+        return any(marker in text for marker in ("market", "pricing", "adoption", "willingness", "consumer", "survey", "trend", "statistics", "farm", "farmer", "production area", "시장", "가격", "구매", "도입", "소비", "트렌드", "조사", "통계", "농가"))
     if facet.id == "field_validation":
         return any(marker in text for marker in ("field", "validation", "sensitivity", "specificity", "현장", "검증", "민감도", "특이도"))
     if facet.id == "regional_adoption":
@@ -718,9 +811,10 @@ def _source_relevance_score(ref: EvidenceRef, plan: ResearchPlan | None) -> floa
     domain_terms = {term for term in plan_terms if not _is_framework_research_word(term)}
     if not domain_terms:
         return 1.0
-    text_terms = _content_terms(" ".join(str(value or "") for value in (ref.source_url, ref.source_title, ref.quote)))
+    text_terms = _content_terms(_source_item_text(ref))
     overlap = len(domain_terms & text_terms)
-    return round(min(1.0, overlap / max(1, min(4, len(domain_terms)))), 3)
+    required = max(1, min(4, len(domain_terms)))
+    return round(min(1.0, overlap / required), 3)
 
 
 def _source_has_topic_domain_anchor(ref: EvidenceRef, plan: ResearchPlan | None) -> bool:
@@ -735,14 +829,48 @@ def _source_has_topic_domain_anchor(ref: EvidenceRef, plan: ResearchPlan | None)
 
     if plan is None:
         return True
-    plan_text = " ".join(getattr(plan, "queries", []) or []).casefold()
-    source_text = " ".join(str(value or "").casefold() for value in (ref.source_title, ref.quote, ref.source_url))
-    source_terms = _content_terms(source_text)
+    source_terms = _content_terms(_source_item_text(ref))
     anchor_terms = _topic_domain_anchor_terms(plan)
     if anchor_terms:
-        return bool(anchor_terms & source_terms)
+        return len(anchor_terms & source_terms) >= _topic_anchor_required_overlap(plan, anchor_terms)
 
     return True
+
+
+def _source_item_text(ref: EvidenceRef) -> str:
+    """Text that belongs to the retrieved item, not to the submitted query.
+
+    Source relevance must be earned by the title, quote, locator and item-level
+    metadata. The provenance query is intentionally excluded because search APIs
+    often echo the user's request next to unrelated DOI/arXiv records.
+    """
+
+    provenance = ref.provenance or {}
+    metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
+    metadata_values: list[str] = []
+    for key in (
+        "title",
+        "abstract",
+        "snippet",
+        "description",
+        "source_text",
+        "source",
+        "authors",
+        "journal",
+        "venue",
+    ):
+        value = metadata.get(key) if isinstance(metadata, dict) else None
+        if isinstance(value, (list, tuple)):
+            metadata_values.extend(str(item or "") for item in value)
+        else:
+            metadata_values.append(str(value or ""))
+    return " ".join(str(value or "") for value in (ref.source_url, ref.source_title, ref.quote, *metadata_values))
+
+
+def _topic_anchor_required_overlap(plan: ResearchPlan | None, terms: set[str] | None = None) -> int:
+    if plan is None:
+        return 1
+    return 1
 
 
 def _topic_domain_anchor_terms(plan: ResearchPlan | None) -> set[str]:
@@ -750,10 +878,9 @@ def _topic_domain_anchor_terms(plan: ResearchPlan | None) -> set[str]:
 
     if plan is None:
         return set()
-    anchor_text = str(getattr(plan, "topic_anchor", "") or "").strip()
-    if not anchor_text:
-        queries = list(getattr(plan, "queries", []) or [])
-        anchor_text = str(queries[0] if queries else "").strip()
+    anchor_parts = [str(getattr(plan, "topic_anchor", "") or "").strip()]
+    anchor_parts.extend(str(query or "").strip() for query in (getattr(plan, "queries", []) or []))
+    anchor_text = " ".join(part for part in anchor_parts if part)
     terms = _expand_research_terms(_content_terms(anchor_text))
     return {
         term
@@ -791,32 +918,28 @@ def _ref_is_relevant_to_plan(ref: EvidenceRef, plan: ResearchPlan | None) -> boo
     query_terms = _expand_research_terms(
         {term for term in _content_terms(query) if not _is_generic_research_word(term)}
     )
-    domain_terms = {term for term in query_terms if not _is_framework_research_word(term)}
-    if not domain_terms:
-        fallback_terms = _expand_research_terms(
-            {
-                term
-                for plan_query in plan.queries
-                for term in _content_terms(plan_query)
-                if not _is_generic_research_word(term)
-            }
-        )
-        domain_terms = {term for term in fallback_terms if not _is_framework_research_word(term)}
+    # Provenance queries can be narrower than the full plan topic, especially
+    # when they come from a localized topic anchor. Merge the full plan terms so
+    # relevance can use domain-specific anchors introduced by additional query
+    # variants (for example assay/pathogen/field-validation terms) without
+    # relying on vertical-specific synonym tables.
+    fallback_terms = _expand_research_terms(
+        {
+            term
+            for plan_query in plan.queries
+            for term in _content_terms(plan_query)
+            if not _is_generic_research_word(term)
+        }
+    )
+    domain_terms = {
+        term
+        for term in (query_terms | fallback_terms)
+        if not _is_framework_research_word(term)
+    }
     if not domain_terms:
         return True
-    text = " ".join(
-        str(value or "")
-        for value in (
-            ref.source_url,
-            ref.source_title,
-            ref.quote,
-            provenance.get("source_text") if isinstance(provenance, dict) else "",
-            metadata.get("source_text") if isinstance(metadata, dict) else "",
-            metadata.get("source") if isinstance(metadata, dict) else "",
-        )
-    )
-    text_terms = _content_terms(text)
-    return bool(domain_terms & text_terms)
+    text_terms = _content_terms(_source_item_text(ref))
+    return len(domain_terms & text_terms) >= _topic_anchor_required_overlap(plan, domain_terms)
 
 
 def _has_scientific_intent(text: str) -> bool:
@@ -829,7 +952,16 @@ def _has_scientific_intent(text: str) -> bool:
             "assay",
             "diagnostic",
             "diagnostics",
+            "diagnosis",
             "pathogen",
+            "bacteria",
+            "infection",
+            "probe",
+            "fluorescent",
+            "fluorescence",
+            "biosensor",
+            "specificity",
+            "selectivity",
             "진단",
             "분자진단",
             "병원체",
@@ -887,9 +1019,19 @@ def _has_field_validation_intent(text: str) -> bool:
         for marker in (
             "diagnostic",
             "diagnostics",
+            "diagnosis",
             "molecular",
             "pcr",
             "lamp",
+            "probe",
+            "fluorescent",
+            "fluorescence",
+            "biosensor",
+            "specificity",
+            "selectivity",
+            "on-site",
+            "onsite",
+            "field applicability",
             "진단",
             "분자진단",
             "키트",
@@ -911,6 +1053,10 @@ def _is_generic_research_word(word: str) -> bool:
     normalized = word.lower()
     if normalized.isdigit():
         return True
+    if normalized.startswith("pmc") and normalized[3:].isdigit():
+        return True
+    if len(normalized) <= 1 and normalized.isascii():
+        return True
     return normalized in {
         "doi",
         "source",
@@ -927,6 +1073,7 @@ def _is_generic_research_word(word: str) -> bool:
         "council",
         "persona",
         "case",
+        "cases",
         "studies",
         "examples",
         "definitions",
@@ -935,6 +1082,22 @@ def _is_generic_research_word(word: str) -> bool:
         "failure",
         "limitations",
         "counter",
+        "review",
+        "reviews",
+        "recent",
+        "advances",
+        "protocol",
+        "procedure",
+        "procedures",
+        "applicability",
+        "site",
+        "anchor",
+        "pmcid",
+        "turn",
+        "on",
+        "no",
+        "topic",
+        "assess",
         "to",
         "for",
         "with",
@@ -1012,6 +1175,9 @@ def _expand_research_terms(terms: set[str]) -> set[str]:
     to the caller's topic_anchor so the system stays domain-agnostic."""
     expanded = set(terms)
     synonyms = {
+        "농가": {"farm", "farms", "farmer", "farmers"},
+        "farm": {"farms", "farmer", "farmers"},
+        "farmer": {"farm", "farms", "farmers"},
         "저비용": {"low", "cost", "lowcost", "low-cost"},
         "분자진단": {"molecular", "diagnostic", "diagnostics"},
         "진단": {"diagnostic", "diagnostics"},

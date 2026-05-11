@@ -62,8 +62,10 @@ def test_research_planner_adds_live_search_bridge_queries_without_replacing_anch
 
     assert plan.queries[0] == GENERAL_TOPIC
     joined = "\n".join(plan.queries[1:]).casefold()
-    for token in ("molecular diagnostic", "kit", "low cost", "market adoption", "pricing"):
-        assert token in joined
+    assert GENERAL_TOPIC.casefold() in joined
+    assert "official statistics" in joined
+    assert "willingness to pay" in joined
+    assert "empirical evidence methods validation limitations" in joined
 
 
 def test_research_planner_prioritizes_translated_bridge_inside_small_live_query_budget() -> None:
@@ -79,8 +81,8 @@ def test_research_planner_prioritizes_translated_bridge_inside_small_live_query_
     plan = ResearchPlanner().plan(brief, max_queries=7)
 
     assert plan.queries[0] == GENERAL_TOPIC
-    assert any("molecular diagnostic" in query.casefold() for query in plan.queries[1:])
-    assert any("market adoption" in query.casefold() for query in plan.queries[1:])
+    assert any("official statistics" in query.casefold() for query in plan.queries[1:])
+    assert any("willingness to pay" in query.casefold() for query in plan.queries[1:])
 
 
 
@@ -93,7 +95,9 @@ def test_translated_bridge_queries_cover_market_and_regional_adoption_evidence_i
     assert "government statistics" in joined or "official statistics" in joined
     assert "규제" in joined or "regulatory" in joined
     english_queries = [query for query in queries if "공식 통계" not in query]
-    assert all("molecular diagnostic" in query.casefold() for query in english_queries)
+    assert all(GENERAL_TOPIC.casefold() in query.casefold() for query in english_queries)
+    assert "molecular diagnostic" not in joined
+    assert "lamp pcr biosensor" not in joined
 
 
 def test_translated_bridge_queries_do_not_inject_vertical_defaults_for_generic_regional_market_topics() -> None:
@@ -173,12 +177,11 @@ def test_research_planner_prioritizes_regional_market_bridge_inside_live_query_b
     assert "규제" in joined or "regulatory" in joined
 
 
-def test_research_planner_keeps_local_diagnostic_market_retry_in_seven_query_budget() -> None:
-    """Verification 18b fixed scientific recall but trimmed the local market retry.
+def test_research_planner_keeps_generic_market_and_methods_probes_in_seven_query_budget() -> None:
+    """A tight source-backed budget should not spend slots on a keyword vertical preset.
 
-    The seven-query source-backed budget must keep one scientific DOI/assay
-    probe and a second local market/source-channel probe, without evicting the
-    generic government/WTP adoption probe.
+    Domain-specific language must remain topic/interview/targeting-derived; the
+    planner itself adds generic market/source and empirical-methods probes.
     """
 
     topic = "저비용 분자진단 키트 시장성 source-backed Deep Research council persona 검증 19"
@@ -194,18 +197,14 @@ def test_research_planner_keeps_local_diagnostic_market_retry_in_seven_query_bud
     plan = ResearchPlanner().plan(brief, max_queries=7)
     joined = "\n".join(plan.queries).casefold()
 
-    assert "peer reviewed doi assay review lamp pcr biosensor" in joined
-    assert "government statistics willingness to pay adoption market adoption" in joined
+    assert "government statistics market adoption pricing willingness to pay" in joined
+    assert "empirical evidence methods validation limitations" in joined
+    assert "lamp pcr biosensor" not in joined
 
 
 
-def test_research_planner_spends_tight_live_budget_on_market_and_local_adoption_probe() -> None:
-    """Verification 10D used a 4-query shallow/source run and trimmed market/regional probes.
-
-    The first English bridge query already carries scientific/field-validation terms,
-    so the next scarce slot should probe the local market/adoption channel instead
-    of another technical LAMP/PCR suffix.
-    """
+def test_research_planner_spends_tight_live_budget_on_topic_anchor_and_local_adoption_probe() -> None:
+    """The scarce shallow/source budget should keep the topic and generic evidence routes."""
     brief = ResearchBrief(
         raw_idea=GENERAL_TOPIC,
         research_question=STALE_TOPIC,
@@ -219,8 +218,9 @@ def test_research_planner_spends_tight_live_budget_on_market_and_local_adoption_
     joined = "\n".join(plan.queries).casefold()
 
     assert plan.queries[0] == GENERAL_TOPIC
-    assert "molecular diagnostic" in joined
+    assert GENERAL_TOPIC.casefold() in joined
     assert "공식 통계 가격 도입 유통 규제" in joined
+    assert "molecular diagnostic" not in joined
     assert "lamp pcr biosensor" not in joined
 
 
@@ -232,9 +232,8 @@ def test_translated_bridge_queries_add_local_language_source_channel_probe_befor
 
     assert any("공식 통계 가격 도입 유통 규제" in query for query in queries)
     local_query = next(query for query in queries if "공식 통계 가격 도입 유통 규제" in query)
-    assert "저비용" in local_query or "시장성" in local_query
-    assert "분자진단" not in local_query
-    assert "키트" not in local_query
+    assert "분자진단" in local_query
+    assert "키트" in local_query
 
 
 

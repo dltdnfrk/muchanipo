@@ -89,7 +89,11 @@ class MiMoProvider:
         body: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_completion_tokens": max_tokens,
+            # Xiaomi MiMo's Token Plan endpoint accepts OpenAI-style
+            # ``max_tokens``. In live smoke tests, using
+            # ``max_completion_tokens`` could spend the whole allowance on
+            # reasoning tokens and return HTTP 200 with empty content.
+            "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
             "stream": False,

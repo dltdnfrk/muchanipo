@@ -38,6 +38,8 @@ def test_mimo_uses_documented_api_model_id(monkeypatch):
 
     assert captured["url"] == "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"
     assert captured["body"]["model"] == "mimo-v2.5-pro"
+    assert captured["body"]["max_tokens"] == 12
+    assert "max_completion_tokens" not in captured["body"]
     assert captured["body"]["thinking"] == {"disabled": True}
     assert captured["headers"]["Authorization"] == "Bearer tp-test"
     assert captured["headers"].get("Api-key") == "tp-test"

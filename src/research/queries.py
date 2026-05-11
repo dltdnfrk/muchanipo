@@ -50,37 +50,18 @@ def expand_query(
 
 
 def translated_topic_queries(query: str) -> list[str]:
-    """Add narrow English bridge queries while preserving the Korean anchor.
+    """Add topic-anchored bridge queries without injecting a vertical preset.
 
-    Academic APIs frequently fail when a Korean topic contains English framework
-    words such as "source-backed Deep Research". This bridge translates only
-    domain tokens that are explicitly present in the user's topic; it does not
-    replace the first query, and it does not inject a preset vertical when the
-    topic lacks those concepts.
+    Muchanipo is a general-purpose research tool. The planner may add generic
+    source-channel probes (official statistics, adoption, limitations, methods),
+    but domain specialization must come from the user's topic, interview answers,
+    or targeting map — not from keyword-triggered AgTech/diagnostics/etc. presets.
     """
     query = " ".join(query.split())
     if not query:
         return []
     lowered = query.casefold()
-    token_groups: list[list[str]] = []
-    # General-purpose token translation: only terms explicitly present in the
-    # user's topic are translated; no vertical preset is injected.
-    if "분자진단" in query or "진단" in query:
-        token_groups.append(["molecular diagnostic", "detection"])
-    if "키트" in query:
-        token_groups.append(["kit"])
-    if "저비용" in query:
-        token_groups.append(["low cost"])
-    if "시장성" in query or "시장" in query or "가격" in query or "채택" in query or "도입" in query or "adoption" in lowered:
-        token_groups.append(["market adoption", "pricing"])
-    if "한국" in query or "korea" in lowered:
-        token_groups.append(["Korea"])
 
-    terms: list[str] = []
-    for group in token_groups:
-        for term in group:
-            if term not in terms:
-                terms.append(term)
     # Suppress product-market source-channel probes for financial-asset market
     # questions, but do not treat every "forecast/예측" as an asset-market query:
     # product adoption forecasts still need government/statistics/WTP evidence.
@@ -130,87 +111,45 @@ def translated_topic_queries(query: str) -> list[str]:
             "distribution channel",
         )
     )
-    if len(terms) < 3:
-        if not source_channel_intent:
-            return []
-        # Concise, general-purpose market/adoption prompts may have no
-        # vertical-specific token to translate. Preserve the user's topic as the
-        # bridge base and add only generic source-channel probes instead of
-        # injecting a hardcoded domain.
-        terms = [query]
+    if not source_channel_intent:
+        return []
 
-    base = " ".join(terms)
+    # Use the topic itself as the bridge base. Do not translate selected tokens
+    # into a hardcoded domain lexicon here; the deep interview/targeting map is
+    # responsible for adding domain-specific search language when needed.
+    base = query
     queries = [base]
-    has_market_or_local_intent = source_channel_intent or any(term in base for term in ("market adoption", "pricing", "Korea"))
-    has_korea_market_intent = "Korea" in base and any(term in base for term in ("market adoption", "pricing"))
-
-    # In shallow/live runs the planner may only have a six-query budget. The
-    # broad bridge can retrieve some scientific/field-validation evidence, but
-    # verification 16d still ended 2/3 on the scientific facet after market/local
-    # coverage was fixed. Preserve the first local source-channel slot for tight
-    # four-query runs, then spend the next available slot on a domain-neutral
-    # scientific evidence probe before broader market/adoption probes.
-    if has_market_or_local_intent:
-        local_query = _local_language_source_channel_query(query)
-        if local_query:
-            queries.append(local_query)
-    if "molecular diagnostic" in base:
-        queries.append(f"{base} peer reviewed DOI assay review LAMP PCR biosensor")
-    if has_market_or_local_intent:
-        queries.append(f"{base} government statistics willingness to pay adoption market adoption")
-    if has_korea_market_intent:
-        diag_local_query = _local_diagnostic_market_query(query)
-        if diag_local_query:
-            queries.append(diag_local_query)
-    if has_korea_market_intent:
-        queries.append(f"{base} Korea market statistics willingness to pay distribution channel regulatory adoption")
-    if "molecular diagnostic" in base:
-        queries.append(f"{base} LAMP PCR biosensor point-of-care")
+    local_query = _local_language_source_channel_query(query)
+    if local_query:
+        queries.append(local_query)
+    queries.extend(
+        [
+            f"{base} government statistics willingness to pay adoption market adoption pricing government statistics market adoption pricing willingness to pay",
+            f"{base} empirical evidence methods validation limitations",
+            f"{base} distribution channel regulatory adoption case studies",
+        ]
+    )
+    if _scientific_validation_intent(query):
+        queries.append(f"{base} peer reviewed assay field validation sensitivity specificity")
     return queries
 
 
-def _local_diagnostic_market_query(query: str) -> str:
-    """Build a second local market/source-channel probe for diagnostic-kit topics.
-
-    Verification 18b showed that the broad scientific bridge can now satisfy the
-    scientific facet, but market coverage may still stop at two accepted sources.
-    This query remains procedural and topic-anchored: it only appears when the
-    user's own topic contains local-language diagnostic/adoption terms, and it
-    adds generic market-channel words without injecting a vertical preset.
-    """
-
-    import re
-
-    if not re.search(r"[가-힣]", query):
-        return ""
-    if not any(marker in query for marker in ("진단", "키트", "병해", "분자진단")):
-        return ""
-    if not any(marker in query for marker in ("시장", "시장성", "가격", "구매", "도입", "유통")):
-        return ""
-    terms = re.findall(r"[가-힣A-Za-z0-9]+", query)
-    excluded = {
-        "source",
-        "backed",
-        "deep",
-        "research",
-        "council",
-        "persona",
-        "검증",
-        "저비용",
-    }
-    kept: list[str] = []
-    for term in terms:
-        key = term.casefold()
-        if key in excluded or term in excluded or term.isdigit() or re.fullmatch(r"\d+[a-z]?", key):
-            continue
-        if term not in kept:
-            kept.append(term)
-    if not kept:
-        return ""
-    suffix = ["가격", "구매", "도입", "유통", "업체"]
-    if any(marker in query for marker in ("분자진단", "진단")):
-        suffix.extend(["molecular", "diagnostic"])
-    return " ".join(kept[:6] + suffix)
+def _scientific_validation_intent(query: str) -> bool:
+    lowered = " ".join(query.casefold().split())
+    return any(
+        marker in lowered
+        for marker in (
+            "diagnostic",
+            "diagnostics",
+            "molecular",
+            "assay",
+            "field validation",
+            "detection kit",
+            "진단",
+            "검출",
+            "분자",
+        )
+    )
 
 
 def _local_language_source_channel_query(query: str) -> str:
@@ -229,10 +168,6 @@ def _local_language_source_channel_query(query: str) -> str:
         return ""
     terms = re.findall(r"[가-힣A-Za-z0-9]+", query)
     excluded = {
-        "분자진단",
-        "진단",
-        "키트",
-        "저비용",
         "source",
         "backed",
         "deep",

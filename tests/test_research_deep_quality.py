@@ -418,3 +418,110 @@ def test_specific_healthcare_source_satisfies_regional_market_adoption_facets():
     assert evaluation.accepted is True
     assert "market" in evaluation.facet_ids
     assert "regional_adoption" in evaluation.facet_ids
+
+
+def test_b1_erwinia_fixture_rejects_protocol_and_statistics_false_positives():
+    plan = ResearchPlan(
+        brief_id="brief-b1-erwinia",
+        topic_anchor=(
+            "B-1 turn-on fluorescent probe for Erwinia amylovora fire blight bacteria diagnosis; "
+            "anchor DOI 10.1016/j.isci.2023.106557 PMCID PMC10123346 and DOI 10.1016/j.xpro.2023.102412 PMCID PMC10339246; "
+            "assess source-backed protocol specificity selectivity field/on-site applicability, no strawberry topic."
+        ),
+        queries=[
+            "B-1 turn-on fluorescent probe for Erwinia amylovora fire blight bacteria diagnosis",
+            "B-1 fluorescent probe Erwinia amylovora protocol specificity selectivity field on-site applicability",
+            "B-1 Erwinia amylovora official statistics peer reviewed evidence",
+        ],
+    )
+    anchor_sources = [
+        EvidenceRef(
+            id="doi:10.1016/j.isci.2023.106557",
+            source_url="https://doi.org/10.1016/j.isci.2023.106557",
+            source_title="On-site applicable diagnostic fluorescent probe for fire blight bacteria",
+            quote="A B-1 turn-on fluorescent probe selectively detects fire blight bacteria including Erwinia amylovora for on-site diagnosis.",
+            source_grade="A",
+            provenance={"kind": "crossref", "metadata": {"query": plan.queries[1]}},
+        ),
+        EvidenceRef(
+            id="doi:10.1016/j.xpro.2023.102412",
+            source_url="https://doi.org/10.1016/j.xpro.2023.102412",
+            source_title="Protocol for diagnosing Erwinia amylovora infection using a fluorescent probe",
+            quote="This protocol describes diagnosing Erwinia amylovora infection using a fluorescent probe with specificity and selectivity steps.",
+            source_grade="A",
+            provenance={"kind": "crossref", "metadata": {"query": plan.queries[1]}},
+        ),
+    ]
+    false_positives = [
+        EvidenceRef(
+            id="arxiv:turn-sip",
+            source_url="http://arxiv.org/abs/1002.1178v1",
+            source_title="Adaptation of TURN protocol to SIP protocol",
+            quote="This paper presents an adaptation of TURN protocol to SIP protocol for NAT traversal in VoIP networks.",
+            source_grade="B",
+            provenance={"kind": "arxiv", "metadata": {"query": plan.queries[0]}},
+        ),
+        EvidenceRef(
+            id="crossref:bobath-stroke",
+            source_url="https://doi.org/10.4103/jfmpc.jfmpc_2080_22",
+            source_title="Letter to the Editor re: The Bobath Concept (NDT) as rehabilitation in stroke patients",
+            quote="The Bobath concept is discussed for rehabilitation in stroke patients and neurological physiotherapy.",
+            source_grade="B",
+            provenance={"kind": "crossref", "metadata": {"query": plan.queries[2]}},
+        ),
+        EvidenceRef(
+            id="arxiv:official-statistics-ml",
+            source_url="http://arxiv.org/abs/2409.04365v1",
+            source_title="Changing Data Sources in the Age of Machine Learning for Official Statistics",
+            quote="Machine learning can help official statistics agencies process changing administrative data sources.",
+            source_grade="B",
+            provenance={"kind": "arxiv", "metadata": {"query": plan.queries[2]}},
+        ),
+    ]
+
+    audit = build_research_quality_audit(
+        [Finding(claim=ref.source_title or ref.id, support=[ref]) for ref in [*anchor_sources, *false_positives]],
+        plan,
+    )
+
+    facet_ids = {facet.id for facet in audit.facets}
+    accepted_ids = {item.source_id for item in audit.source_evaluations if item.accepted}
+    rejected = [item for item in audit.source_evaluations if item.source_id not in accepted_ids]
+    assert "scientific" in facet_ids
+    assert "field_validation" in facet_ids
+    assert "general" not in facet_ids
+    assert "doi:10.1016/j.isci.2023.106557" in accepted_ids
+    assert "doi:10.1016/j.xpro.2023.102412" in accepted_ids
+    assert accepted_ids.isdisjoint({ref.id for ref in false_positives})
+    assert all(item.facet_ids == () for item in rejected)
+
+
+def test_generic_non_b1_topic_keeps_specific_domain_anchor_gate():
+    plan = _plan("Korea home healthcare SaaS market adoption pricing")
+    off_topic_bridge_source = EvidenceRef(
+        id="web:generic-enterprise-saas",
+        source_url="https://example.org/korea-enterprise-saas",
+        source_title="Korea enterprise SaaS adoption and pricing statistics",
+        quote="Enterprise SaaS vendors in Korea report adoption, pricing, channel, and public-sector procurement trends.",
+        source_grade="B",
+        provenance={"kind": "government", "metadata": {"query": "Korea home healthcare SaaS market adoption pricing"}},
+    )
+    relevant_source = EvidenceRef(
+        id="web:home-healthcare-saas",
+        source_url="https://example.org/korea-home-healthcare-saas",
+        source_title="Korea home healthcare SaaS adoption pricing for single-person households",
+        quote="Home healthcare providers in Korea report SaaS adoption barriers, pricing constraints, and distribution channels.",
+        source_grade="B",
+        provenance={"kind": "government", "metadata": {"query": "Korea home healthcare SaaS market adoption pricing"}},
+    )
+
+    audit = build_research_quality_audit(
+        [Finding(claim="healthcare SaaS adoption evidence", support=[off_topic_bridge_source, relevant_source])],
+        plan,
+    )
+
+    evaluations = {item.source_id: item for item in audit.source_evaluations}
+    assert evaluations["web:generic-enterprise-saas"].accepted is False
+    assert evaluations["web:generic-enterprise-saas"].facet_ids == ()
+    assert evaluations["web:home-healthcare-saas"].accepted is True
+    assert "market" in evaluations["web:home-healthcare-saas"].facet_ids

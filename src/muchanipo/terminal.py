@@ -367,15 +367,23 @@ def terminal_run(
         events_file.flush()
         events_file.close()
 
+    research_quality_only = bool(result.get("research_quality_only"))
+    research_quality_snapshot = _research_quality_snapshot(result) if research_quality_only else {}
     report_md = str(result.get("report_md") or "")
-    paths.report_path.parent.mkdir(parents=True, exist_ok=True)
-    paths.report_path.write_text(report_md, encoding="utf-8")
+    if not research_quality_only:
+        paths.report_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.report_path.write_text(report_md, encoding="utf-8")
+    if research_quality_only:
+        readiness = str(research_quality_snapshot.get("research_quality_readiness") or "ready")
+        terminal_status = "research_quality_ready" if readiness == "ready" else "research_quality_needs_review"
+    else:
+        terminal_status = "completed"
     summary = {
         "topic": topic,
         "run_id": paths.run_id,
-        "status": "completed",
+        "status": terminal_status,
         "pipeline_input": pipeline_topic if pipeline_topic != topic else None,
-        "report_path": str(paths.report_path),
+        "report_path": None if research_quality_only else str(paths.report_path),
         "events_path": str(paths.events_path),
         "offline": offline,
         "require_live": require_live,
@@ -391,31 +399,56 @@ def terminal_run(
         "vault_path": str(result.get("vault_path") or ""),
         "completed_at": _now_iso(),
     }
+    if research_quality_only:
+        summary.update(
+            {
+                "research_quality_only": True,
+                "research_quality_stop": str(
+                    research_quality_snapshot.get("research_quality_stop")
+                    or result.get("research_quality_only_stop")
+                    or "before_council"
+                ),
+                "research_quality_snapshot": research_quality_snapshot,
+                **_research_quality_iteration_counts(research_quality_snapshot),
+            }
+        )
     paths.summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
     chapter_count = sum(1 for line in report_md.splitlines() if line.startswith("## "))
+    done_event = {
+        "event": "done",
+        "pipeline": "terminal",
+        "report_path": summary["report_path"],
+        "vault_path": str(result.get("vault_path") or ""),
+        "status": terminal_status,
+        "depth": normalized_depth,
+        "council_persona_pool_size": summary["council_persona_pool_size"],
+        "active_council_persona_count": summary["active_council_persona_count"],
+        "council_turn_count": summary["council_turn_count"],
+    }
+    if research_quality_only:
+        done_event.update(
+            {
+                "research_quality_only": True,
+                "research_quality_stop": summary["research_quality_stop"],
+                "research_quality_snapshot": research_quality_snapshot,
+            }
+        )
     final_report_event = {
         "event": "final_report",
         "report_path": str(paths.report_path),
         "vault_path": str(result.get("vault_path") or ""),
         "chapter_count": chapter_count,
     }
-    done_event = {
-        "event": "done",
-        "pipeline": "terminal",
-        "report_path": str(paths.report_path),
-        "vault_path": str(result.get("vault_path") or ""),
-        "status": "completed",
-        "depth": normalized_depth,
-        "council_persona_pool_size": summary["council_persona_pool_size"],
-        "active_council_persona_count": summary["active_council_persona_count"],
-        "council_turn_count": summary["council_turn_count"],
-    }
     terminal_done_event = {"event": "terminal_run_done", **summary}
-    completion_events = [final_report_event, done_event, terminal_done_event]
+    completion_events = (
+        [done_event, terminal_done_event]
+        if research_quality_only
+        else [final_report_event, done_event, terminal_done_event]
+    )
     with paths.events_path.open("a", encoding="utf-8") as append_events:
         for event in completion_events:
             _write_event(append_events, event)
@@ -427,7 +460,10 @@ def terminal_run(
         _render_dashboard(out, topic=topic, paths=paths, status=status, event=terminal_done_event)
         out.write("\n")
     else:
-        out.write(f"Report: {paths.report_path}\n")
+        if research_quality_only:
+            out.write("Research quality snapshot ready before council.\n")
+        else:
+            out.write(f"Report: {paths.report_path}\n")
         out.write(f"Events: {paths.events_path}\n")
         out.write("Muchanipo run completed.\n")
     out.flush()
@@ -641,6 +677,112 @@ def _normalize_home_command(choice: str) -> str | None:
         "?": "help",
     }
     return slash_aliases.get(choice) or plain_aliases.get(choice)
+
+
+def _research_quality_snapshot(result: dict[str, Any]) -> dict[str, Any]:
+    artifacts = _as_dict(result.get("artifacts"))
+    source_audit = _parse_artifact(artifacts.get("source_audit_summary"))
+    claim_matrix = _parse_artifact(artifacts.get("claim_evidence_matrix_summary"))
+    benchmark_metrics = _parse_artifact(artifacts.get("max_plus_benchmark_metrics"))
+    evidence_ledger_metrics = _parse_artifact(artifacts.get("evidence_ledger_readiness_metrics"))
+    evidence_count = _coerce_int(
+        artifacts.get("evidence_count"),
+        default=_coerce_int(result.get("evidence_count"), default=0),
+    )
+    benchmark_decision = str(
+        artifacts.get("max_plus_benchmark_decision")
+        or result.get("max_plus_benchmark_decision")
+        or ""
+    )
+    readiness = str(artifacts.get("research_quality_readiness") or "ready")
+    quality_stop = str(
+        result.get("research_quality_only_stop")
+        or artifacts.get("research_quality_only_stop")
+        or "before_council"
+    )
+    review_reasons: list[str] = []
+    if benchmark_decision == "blocked":
+        readiness = "needs_review"
+        quality_stop = "needs_review_before_council"
+        review_reasons.append("max_plus_benchmark_decision=blocked")
+    snapshot = {
+        "research_quality_stop": quality_stop,
+        "research_quality_readiness": readiness,
+        "evidence_ledger_readiness": str(
+            artifacts.get("evidence_ledger_readiness") or ""
+        ),
+        "evidence_ledger_metrics": evidence_ledger_metrics,
+        "source_audit_summary": source_audit,
+        "claim_evidence_matrix_summary": claim_matrix,
+        "max_plus_benchmark_metrics": benchmark_metrics,
+        "max_plus_benchmark_decision": benchmark_decision,
+        "evidence_count": evidence_count,
+    }
+    if review_reasons:
+        snapshot["research_quality_review_reasons"] = review_reasons
+    snapshot.update(_research_quality_iteration_counts(snapshot))
+    return snapshot
+
+
+def _research_quality_iteration_counts(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source_audit = _as_dict(snapshot.get("source_audit_summary"))
+    benchmark_metrics = _as_dict(snapshot.get("max_plus_benchmark_metrics"))
+    counts: dict[str, Any] = {}
+    for key in (
+        "accepted_source_count",
+        "rejected_source_count",
+        "weak_source_count",
+        "weak_source_flag_count",
+        "gap_count",
+    ):
+        if key in source_audit:
+            counts[key] = _coerce_int(source_audit.get(key), default=0)
+    if "evidence_count" in snapshot:
+        counts["evidence_count"] = _coerce_int(snapshot.get("evidence_count"), default=0)
+    if "max_plus_benchmark_decision" in snapshot:
+        counts["max_plus_benchmark_decision"] = str(snapshot.get("max_plus_benchmark_decision") or "")
+    for key in (
+        "weak_source_penalty",
+        "expected_claim_recall",
+        "evidence_quote_coverage",
+        "claim_traceability",
+        "source_authority_score",
+    ):
+        if key in benchmark_metrics:
+            counts[key] = _coerce_float(benchmark_metrics.get(key), default=0.0)
+    return counts
+
+
+def _parse_artifact(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+    if isinstance(value, (dict, list)):
+        return value
+    return {} if value is None else value
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _coerce_int(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _record_terminal_failure(

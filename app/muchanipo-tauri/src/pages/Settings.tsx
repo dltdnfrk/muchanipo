@@ -106,6 +106,11 @@ const DEPTH_OPTIONS: Array<{
     label: "Max",
     hint: "확장 검토, 장시간 실행",
   },
+  {
+    key: "superdeep",
+    label: "Superdeep",
+    hint: "claim-first / source-audit로 약한 근거 차단",
+  },
 ];
 
 type BackendMode = "offline" | "cli" | "api";
@@ -142,7 +147,7 @@ export default function Settings() {
     setPipelineMode((localStorage.getItem("pipeline_mode") as "full" | "stub") || "full");
     const savedDepth = localStorage.getItem("research_depth");
     setResearchDepth(
-      savedDepth === "shallow" || savedDepth === "deep" || savedDepth === "max"
+      savedDepth === "shallow" || savedDepth === "deep" || savedDepth === "max" || savedDepth === "superdeep"
         ? savedDepth
         : "deep",
     );

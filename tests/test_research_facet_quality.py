@@ -6,8 +6,10 @@ import json
 from src.evidence.artifact import EvidenceRef, Finding
 from src.evidence.provenance import Provenance
 from src.muchanipo.server import serve_full
+from src.pipeline.idea_to_council import IdeaToCouncilPipeline
 from src.research.karpathy_autoresearch import build_research_quality_audit
-from src.research.planner import ResearchPlan
+from src.research.planner import ResearchPlan, source_route_for_query
+from src.research.session_contract import ResearchContract
 
 
 def _ref(
@@ -141,6 +143,52 @@ def test_live_diagnostic_plan_spends_one_limited_slot_on_scientific_followup() -
     assert "government statistics willingness to pay adoption market adoption" in joined or "pricing" in joined
     assert "consumer trend purchase" in joined or "adoption" in joined
     assert "government statistics willingness to pay adoption market adoption" in joined
+
+
+def test_research_progress_events_carry_route_metadata_and_gap_marker() -> None:
+    routed_query = "Korea diagnostic kit market consumer trend purchase price statistics"
+    route = source_route_for_query(routed_query)
+    unmatched_query = "query without route should be explicit"
+    plan = ResearchPlan(
+        brief_id="brief-route-progress",
+        queries=[routed_query, unmatched_query],
+        topic_anchor="Korea diagnostic kit market consumer trend purchase price statistics",
+        query_routes=[route],
+    )
+    finding = Finding(
+        claim="Korea government public data provides consumer trends and monthly purchase changes for diagnostic kits.",
+        support=[
+            _ref(
+                "gov-route-progress",
+                kind="government",
+                title="Korea Diagnostic Kit Market Consumer Trends Monthly Purchase Change",
+                quote="Korea consumer trend purchase price survey government public data statistics for diagnostic kits",
+                url="https://www.data.go.kr/data/15156401/fileData.do",
+                query=routed_query,
+            )
+        ],
+    )
+    pipeline = IdeaToCouncilPipeline(
+        research_contract=ResearchContract.new(topic=plan.topic_anchor, app_run_id="app-route-progress"),
+        require_live=False,
+    )
+
+    pipeline._emit_research_plan_progress(plan)
+    pipeline._emit_research_source_progress([finding], plan)
+
+    searching = [event for event in pipeline.progress_events if event.get("status") == "searching"]
+    assert next(event for event in searching if event["query"] == unmatched_query)["route_metadata_gap"] is True
+    routed_search = next(event for event in searching if event["query"] == routed_query)
+    source_event = next(event for event in pipeline.progress_events if event.get("status") == "source_evaluated")
+    for event in (routed_search, source_event):
+        assert event["route_id"] == route["route_id"]
+        assert event["facet_id"] == route["facet_id"]
+        assert event["purpose"] == route["purpose"]
+        assert event["source_class"] == route["source_class"]
+        assert event["intent"] == route["intent"]
+        assert event["backend"] == route["backend"]
+        assert event["authority_requirement"] == route["authority_requirement"]
+        assert event["acceptance_rules"] == route["acceptance_rules"]
 
 
 def test_serve_full_streams_source_evaluation_and_knowledge_gap_events(tmp_path, monkeypatch) -> None:

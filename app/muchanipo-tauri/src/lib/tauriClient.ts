@@ -81,6 +81,8 @@ export interface BackendEvent {
   accepted_count?: number;
   min_accepted_sources?: number;
   gap_count?: number;
+  benchmark_id?: string;
+  metrics?: Record<string, unknown>;
   // council progress
   active_persona_count?: number;
   active_persona_ids?: string[];
@@ -122,7 +124,7 @@ export type BackendAction =
 //   - "stub" : legacy 4-phase placeholder (interview Q&A, single chapter).
 //   - "full" : PRD-v2 §2.1 8-stage MBB pipeline (10 council rounds → 6 chapters).
 export type PipelineMode = "stub" | "full";
-export type ResearchDepth = "shallow" | "deep" | "max";
+export type ResearchDepth = "shallow" | "deep" | "max" | "superdeep";
 
 function isTauriRuntime(): boolean {
   if (typeof window === "undefined") return false;

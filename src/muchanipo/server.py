@@ -40,6 +40,7 @@ from typing import Any, IO, List, Sequence
 from uuid import uuid4
 
 from .events import Action, emit, parse_action
+from src.research.session_contract import ResearchContract, scope_event
 from src.research.depth import VALID_DEPTHS
 
 
@@ -179,6 +180,47 @@ def _read_action(stdin: IO[str]) -> Action | None:
     if not line:
         return None
     return parse_action(line)
+
+
+class _ScopedJSONLineWriter:
+    """Add research-contract fields to JSONL events written by helper flows."""
+
+    def __init__(self, stream: IO[str], contract: ResearchContract) -> None:
+        self.stream = stream
+        self.contract = contract
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._write_line(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            self._write_line(self._buffer)
+            self._buffer = ""
+        self.stream.flush()
+
+    def _write_line(self, line: str) -> None:
+        if not line.strip():
+            self.stream.write(line)
+            self.stream.write("\n")
+            return
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            self.stream.write(line)
+            self.stream.write("\n")
+            return
+        if isinstance(payload, dict) and isinstance(payload.get("event"), str):
+            payload = scope_event(payload, self.contract)
+            self.stream.write(json.dumps(payload, ensure_ascii=False))
+            self.stream.write("\n")
+            return
+        self.stream.write(line)
+        self.stream.write("\n")
 
 
 # ---- stub pipeline (legacy, kept for back-compat tests) ------------------
@@ -1188,10 +1230,18 @@ def _interview_answer_from_action(action: Action) -> str:
 class _PipelineHeartbeat:
     """Emit low-cardinality liveness evidence while a JSONL pipeline is active."""
 
-    def __init__(self, *, run_id: str, stream: IO[str], interval_sec: float) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        stream: IO[str],
+        interval_sec: float,
+        research_contract: ResearchContract | None = None,
+    ) -> None:
         self.run_id = run_id
         self.stream = stream
         self.interval_sec = max(0.05, interval_sec)
+        self.research_contract = research_contract
         self.started_monotonic = time.monotonic()
         self.stage = "startup"
         self.detail = ""
@@ -1227,16 +1277,19 @@ class _PipelineHeartbeat:
         with self._lock:
             stage = self.stage
             detail = self.detail
-        emit(
-            "pipeline_heartbeat",
-            stream=self.stream,
-            run_id=self.run_id,
-            stage=stage,
-            detail=detail,
-            elapsed_sec=round(time.monotonic() - self.started_monotonic, 3),
-            python_pid=os.getpid(),
-            python_executable=sys.executable,
-        )
+        event = {
+            "event": "pipeline_heartbeat",
+            "run_id": self.run_id,
+            "stage": stage,
+            "detail": detail,
+            "elapsed_sec": round(time.monotonic() - self.started_monotonic, 3),
+            "python_pid": os.getpid(),
+            "python_executable": sys.executable,
+        }
+        if self.research_contract is not None:
+            event = scope_event(event, self.research_contract)
+        fields = {key: value for key, value in event.items() if key != "event"}
+        emit("pipeline_heartbeat", stream=self.stream, **fields)
 
 
 def _heartbeat_interval_sec() -> float:
@@ -1268,31 +1321,38 @@ def serve_full(
 
     offline = _detect_offline_mode()
     source_research = source_research_requested_from_env()
-    app_run_id = os.environ.get("MUCHANIPO_APP_RUN_ID", "")
-    profile = depth_profile(depth)
     run_id = f"{int(time.time())}-{os.getpid()}-{uuid4().hex[:8]}"
+    app_run_id = os.environ.get("MUCHANIPO_APP_RUN_ID", "") or run_id
+    research_contract = ResearchContract.new(topic=topic, app_run_id=app_run_id)
+    profile = depth_profile(depth)
     started_at = datetime.now(timezone.utc).isoformat()
     heartbeat = _PipelineHeartbeat(
         run_id=run_id,
         stream=stdout,
         interval_sec=_heartbeat_interval_sec(),
+        research_contract=research_contract,
     )
+    def emit_scoped(event: str, **fields: Any) -> None:
+        scoped = scope_event({"event": event, **fields}, research_contract)
+        event_name = str(scoped.pop("event"))
+        emit(event_name, stream=stdout, **scoped)
+
+    scoped_stdout = _ScopedJSONLineWriter(stdout, research_contract)
+
     if not offline:
         try:
             assert_mimo_opencode_policy_credentials()
         except Exception as exc:
-            emit(
+            emit_scoped(
                 "error",
-                stream=stdout,
                 kind="live_mode_violation",
                 message=str(exc),
                 pipeline="full",
             )
-            emit("done", stream=stdout, pipeline="full", aborted=True)
+            emit_scoped("done", pipeline="full", aborted=True)
             return 1
-    emit(
+    emit_scoped(
         "run_started",
-        stream=stdout,
         run_id=run_id,
         pipeline="full",
         topic=topic,
@@ -1305,16 +1365,18 @@ def serve_full(
         python_executable=sys.executable,
         cwd=str(Path.cwd()),
     )
-    emit(
+    emit_scoped(
         "phase_change",
         phase="STARTUP",
-        stream=stdout,
         data={
             "topic": topic,
             "pipeline": "full",
             "offline": offline,
             "source_research": source_research,
             "depth": depth,
+            "research_session_id": research_contract.research_session_id,
+            "memory_policy": research_contract.memory_policy,
+            "imported_knowledge_refs": list(research_contract.imported_knowledge_refs),
             "app_run_id": app_run_id,
             "council_persona_pool_size": profile.persona_pool_size,
             "active_council_persona_count": profile.active_persona_count,
@@ -1327,16 +1389,16 @@ def serve_full(
             heartbeat.update(stage="interview", detail="waiting_for_interview_answers")
             interview_result = _collect_serve_interview_answers(
                 topic,
-                stdout=stdout,
+                stdout=scoped_stdout,
                 stdin=stdin or sys.stdin,
             )
             if interview_result.status == "aborted":
                 heartbeat.stop()
-                emit("done", stream=stdout, pipeline="full", aborted=True)
+                emit_scoped("done", pipeline="full", aborted=True)
                 return 0
             if interview_result.status == "error":
                 heartbeat.stop()
-                emit("error", stream=stdout, message=interview_result.message or "interview failed")
+                emit_scoped("error", message=interview_result.message or "interview failed")
                 return 1
             topic = interview_result.topic or topic
 
@@ -1349,10 +1411,9 @@ def serve_full(
             if name == "stage_started":
                 stage_name = str(fields.get("stage", ""))
                 heartbeat.update(stage=stage_name, detail="stage_started")
-                emit(
+                emit_scoped(
                     "phase_change",
                     phase=stage_name.upper(),
-                    stream=stdout,
                     data={"stage": fields.get("stage")},
                 )
             elif name == "stage_completed":
@@ -1366,10 +1427,10 @@ def serve_full(
             if name.startswith("council_"):
                 streamed_council_events += 1
                 heartbeat.update(stage="council", detail=name)
-            emit(name, stream=stdout, **fields)
+            emit_scoped(name, **fields)
 
         if wait_for_input:
-            hitl_adapter = JSONLineHITLAdapter(stdout=stdout, stdin=stdin or sys.stdin)
+            hitl_adapter = JSONLineHITLAdapter(stdout=scoped_stdout, stdin=stdin or sys.stdin)
         else:
             from src.hitl.plannotator_adapter import HITLAdapter
             hitl_adapter = HITLAdapter(mode="auto_approve", timeout_seconds=0)
@@ -1381,40 +1442,59 @@ def serve_full(
             require_live=not offline,
             depth=depth,
             hitl_adapter=hitl_adapter,
+            research_contract=research_contract,
         )
     except Exception as exc:
         from src.runtime.live_mode import LiveModeViolation
 
         heartbeat.stop()
         if not isinstance(exc, LiveModeViolation):
-            emit(
+            emit_scoped(
                 "error",
-                stream=stdout,
                 kind="pipeline_error",
                 error_class=exc.__class__.__name__,
                 message=str(exc),
                 pipeline="full",
             )
-            emit("done", stream=stdout, pipeline="full", aborted=True)
+            emit_scoped("done", pipeline="full", aborted=True)
             return 1
-        emit(
+        emit_scoped(
             "error",
-            stream=stdout,
             kind="live_mode_violation",
             message=str(exc),
             pipeline="full",
         )
-        emit("done", stream=stdout, pipeline="full", aborted=True)
+        emit_scoped("done", pipeline="full", aborted=True)
         return 1
+    if pipeline_result.get("research_quality_only"):
+        artifacts = pipeline_result.get("artifacts") or {}
+        readiness = str(artifacts.get("research_quality_readiness") or "ready")
+        terminal_status = "research_quality_ready" if readiness == "ready" else "research_quality_needs_review"
+        heartbeat.update(stage="quality_gate", detail=terminal_status)
+        heartbeat.stop()
+        emit_scoped(
+            "done",
+            pipeline="full",
+            depth=depth,
+            aborted=False,
+            status=terminal_status,
+            research_quality_only=True,
+            research_quality_readiness=readiness,
+            evidence_ledger_readiness=str(artifacts.get("evidence_ledger_readiness") or ""),
+            research_quality_stop=str(
+                pipeline_result.get("research_quality_only_stop") or "before_council"
+            ),
+            artifacts=artifacts,
+        )
+        return 0
     rounds = pipeline_result["rounds"]
     executed_round_count = int(pipeline_result.get("executed_council_round_count") or len(rounds))
     turn_transcript = list(pipeline_result.get("council_turn_transcript") or [])
 
     if streamed_council_events == 0:
         for round_no, digest in enumerate(rounds[:executed_round_count], start=1):
-            emit(
+            emit_scoped(
                 "council_round_start",
-                stream=stdout,
                 stage="council_progress",
                 pipeline_stage="council",
                 round=round_no,
@@ -1423,9 +1503,8 @@ def serve_full(
             for turn in turn_transcript:
                 if int(turn.get("round") or 0) != round_no:
                     continue
-                emit(
+                emit_scoped(
                     "council_turn",
-                    stream=stdout,
                     round=round_no,
                     layer=str(turn.get("layer_id") or digest.layer_id),
                     stage="council_progress",
@@ -1434,18 +1513,16 @@ def serve_full(
                     persona=str(turn.get("persona_id") or ""),
                     provider=str(turn.get("provider") or ""),
                 )
-            emit(
+            emit_scoped(
                 "council_persona_token",
-                stream=stdout,
                 stage="council_progress",
                 pipeline_stage="council",
                 council_stage="digest",
                 persona="agent",
                 delta=digest.key_claim,
             )
-            emit(
+            emit_scoped(
                 "council_round_done",
-                stream=stdout,
                 stage="council_progress",
                 pipeline_stage="council",
                 round=round_no,
@@ -1460,9 +1537,8 @@ def serve_full(
         chunk_md = _render_chapter_markdown(ch)
         md_parts.append(chunk_md)
         heartbeat.update(stage="report", detail=f"report_chunk:{ch.chapter_no}")
-        emit(
+        emit_scoped(
             "report_chunk",
-            stream=stdout,
             chapter_no=ch.chapter_no,
             title=ch.title,
             markdown=chunk_md,
@@ -1479,17 +1555,15 @@ def serve_full(
 
     heartbeat.update(stage="finalize", detail="final_report")
     heartbeat.stop()
-    emit(
+    emit_scoped(
         "final_report",
-        stream=stdout,
         report_path=str(report_path),
         vault_path=vault_path_str,
         chapter_count=len(chapters),
         markdown=final_md,
     )
-    emit(
+    emit_scoped(
         "done",
-        stream=stdout,
         report_path=str(report_path),
         vault_path=vault_path_str,
         pipeline="full",

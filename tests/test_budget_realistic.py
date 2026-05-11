@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 from src.eval.budget_simulator import render_markdown_report
@@ -78,10 +80,55 @@ def test_budget_simulator_renders_markdown_report():
     assert "Single Opus" in report
 
 
+def test_live_mode_rejects_short_primary_and_uses_fallback_chain():
+    gateway = GatewayV2(
+        providers={
+            "mimo": _SuccessProvider("mimo", "mimo-v2.5-pro", text=""),
+            "opencode": _SuccessProvider("opencode", "opencode-go", text="live council output with enough detail"),
+        },
+        stage_routes={"council": "mimo"},
+        fallback_chain={"council": ["mimo", "opencode"]},
+    )
+
+    result = gateway.call("council", "persona proposal prompt", require_live=True)
+
+    assert result.provider == "opencode"
+    assert result.is_fallback is True
+    assert "too-short" in (result.fallback_reason or "")
+    assert gateway.fallback_events[0]["provider"] == "mimo"
+
+
+def test_budgeted_live_mode_rejects_short_primary_and_uses_fallback_chain(tmp_path):
+    budget = RunBudget(max_usd=1.0, cost_log_path=tmp_path / "cost-log.jsonl")
+    gateway = GatewayV2(
+        providers={
+            "mimo": _SuccessProvider("mimo", "mimo-v2.5-pro", text=""),
+            "opencode": _SuccessProvider("opencode", "opencode-go", text="live council output with enough detail", cost_usd=0.01),
+        },
+        stage_routes={"council": "mimo"},
+        fallback_chain={"council": ["mimo", "opencode"]},
+        budget=budget,
+    )
+
+    result = gateway.call("council", "persona proposal prompt", require_live=True)
+
+    assert result.provider == "opencode"
+    assert result.is_fallback is True
+    assert "too-short" in (result.fallback_reason or "")
+    assert gateway.fallback_events[0]["provider"] == "mimo"
+
+
 class _SuccessProvider:
-    def __init__(self, name: str, model: str):
+    def __init__(self, name: str, model: str, *, text: str | None = None, cost_usd: float = 0.0):
         self.name = name
         self.model = model
+        self._text = text
+        self._cost_usd = cost_usd
 
     def call(self, stage: str, prompt: str, **kwargs):
-        return ModelResult(text=f"ok-{self.name}", provider=self.name, model=self.model)
+        return ModelResult(
+            text=self._text if self._text is not None else f"ok-{self.name}",
+            provider=self.name,
+            model=self.model,
+            cost_usd=self._cost_usd,
+        )

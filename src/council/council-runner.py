@@ -401,9 +401,6 @@ _CONSENSUS_ROLE_TO_POOL_ROLE: dict[str, str] = {
     "comparison_judge": "경쟁분석가",
 }
 
-_KOREAN_DOMAIN_KEYWORDS: tuple[str, ...] = (
-    "한국", "korean", "korea",
-)
 
 
 def _load_consensus_plan_ontology(path: Path) -> dict[str, Any]:
@@ -421,13 +418,6 @@ def _load_consensus_plan_ontology(path: Path) -> dict[str, Any]:
     if isinstance(seed, dict) and seed:
         return dict(seed)
     return dict(data)
-
-
-def _detect_korean_domain(text: str) -> bool:
-    if not text:
-        return False
-    low = text.lower()
-    return any(kw.lower() in low for kw in _KOREAN_DOMAIN_KEYWORDS)
 
 
 def _farmer_seed_to_persona(seed: dict[str, Any]) -> dict[str, Any]:
@@ -479,7 +469,7 @@ def _select_personas_from_consensus_plan(
     """ConsensusPlan ontology dict (to_ontology() 결과)에서 페르소나 선택.
 
     - roles 추상 역할 → _PERSONA_POOL의 구체 역할로 매핑
-    - "agtech_farmer" role 또는 Korean domain 감지 시 KoreaPersonaSampler 자동 호출
+    - `agtech_farmer` role이 온톨로지에 명시된 경우에만 KoreaPersonaSampler 호출
     - 부족한 자리는 _PERSONA_POOL에서 보충
     """
     roles_raw = ontology.get("roles") or []
@@ -488,15 +478,9 @@ def _select_personas_from_consensus_plan(
     selected: list[dict[str, Any]] = []
     used_roles: set[str] = set()
 
-    detection_text = " ".join(
-        [topic or "", str(ontology.get("design_doc_brief", ""))]
-        + [str(i) for i in ontology.get("intents", []) or []]
-    )
-    korean_detected = (
-        "agtech_farmer" in roles or _detect_korean_domain(detection_text)
-    )
+    agtech_farmer_requested = "agtech_farmer" in roles
 
-    if korean_detected:
+    if agtech_farmer_requested:
         farmer_count = max(1, min(2, count))
         for fp in _sample_korean_farmer_personas(farmer_count):
             if len(selected) >= count:
