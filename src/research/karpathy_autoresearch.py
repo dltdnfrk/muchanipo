@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from src.evidence.artifact import EvidenceRef, Finding
 
@@ -63,6 +63,7 @@ class SourceEvaluation:
     facet_ids: tuple[str, ...]
     relevance_score: float
     reason: str
+    relevance_basis: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +76,7 @@ class SourceEvaluation:
             "facet_ids": list(self.facet_ids),
             "relevance_score": self.relevance_score,
             "reason": self.reason,
+            "relevance_basis": dict(self.relevance_basis),
         }
 
 
@@ -130,6 +132,13 @@ class AutoresearchExperiment:
     status: str
     description: str
     query_count: int
+    hypothesis: str = ""
+    code_test_change: str = "research_plan_query_mutation"
+    query_plan_mutation: dict[str, Any] = field(default_factory=dict)
+    metrics_before: dict[str, Any] = field(default_factory=dict)
+    metrics_after: dict[str, Any] = field(default_factory=dict)
+    decision: str = ""
+    next_slice: str = ""
     quality_audit: ResearchQualityAudit | None = None
     error: str | None = None
 
@@ -143,6 +152,13 @@ class AutoresearchExperiment:
             "status": self.status,
             "description": self.description,
             "query_count": self.query_count,
+            "hypothesis": self.hypothesis,
+            "code_test_change": self.code_test_change,
+            "query_plan_mutation": dict(self.query_plan_mutation),
+            "metrics_before": dict(self.metrics_before),
+            "metrics_after": dict(self.metrics_after),
+            "decision": self.decision or self.status,
+            "next_slice": self.next_slice,
         }
         if self.quality_audit is not None:
             payload["quality_audit"] = self.quality_audit.to_dict()
@@ -196,6 +212,67 @@ class _CandidatePlan:
     plan: ResearchPlan
 
 
+def _experiment_hypothesis(candidate: _CandidatePlan) -> str:
+    return (
+        f"{candidate.description} will reduce {METRIC_NAME} "
+        "by changing only the bounded research-plan query surface"
+    )
+
+
+def _query_plan_mutation(base_plan: ResearchPlan, candidate: _CandidatePlan) -> dict[str, Any]:
+    base_queries = list(getattr(base_plan, "queries", ()) or ())
+    candidate_queries = list(getattr(candidate.plan, "queries", ()) or ())
+    changed = [query for query in candidate_queries if query not in base_queries]
+    removed = [query for query in base_queries if query not in candidate_queries]
+    mutation_type = "baseline" if not changed and not removed else "bounded_query_suffix_mutation"
+    return {
+        "surface": "research_plan.queries",
+        "mutation_type": mutation_type,
+        "candidate_id": candidate.candidate_id,
+        "description": candidate.description,
+        "base_query_count": len(base_queries),
+        "candidate_query_count": len(candidate_queries),
+        "changed_query_count": len(changed),
+        "removed_query_count": len(removed),
+    }
+
+
+def _experiment_metrics_before(*, best_metric: float, best_iteration: int) -> dict[str, Any]:
+    return {
+        "metric_name": METRIC_NAME,
+        "metric_direction": METRIC_DIRECTION,
+        "best_metric": None if best_metric == float("inf") else best_metric,
+        "best_iteration": best_iteration,
+    }
+
+
+def _experiment_metrics_after(
+    *,
+    metric: float,
+    evidence_count: int,
+    trusted_count: int,
+    query_count: int,
+    gap_count: int | None,
+) -> dict[str, Any]:
+    return {
+        "metric_name": METRIC_NAME,
+        "metric_direction": METRIC_DIRECTION,
+        "metric": metric,
+        "evidence_count": evidence_count,
+        "trusted_count": trusted_count,
+        "query_count": query_count,
+        "gap_count": gap_count,
+    }
+
+
+def _next_slice_for_decision(status: str) -> str:
+    if status == "keep":
+        return "promote_candidate_and_continue_next_bounded_query_plan_mutation"
+    if status == "discard":
+        return "retain_previous_best_and_try_next_bounded_query_plan_mutation"
+    return "discard_failed_candidate_and_try_next_bounded_query_plan_mutation"
+
+
 class KarpathyAutoresearchRunner:
     """Run source research through a keep/discard experiment loop.
 
@@ -247,6 +324,8 @@ class KarpathyAutoresearchRunner:
         for iteration, candidate in enumerate(self._candidate_plans(plan), start=1):
             if iteration > self.iteration_budget:
                 break
+            metrics_before = _experiment_metrics_before(best_metric=best_metric, best_iteration=best_iteration)
+            mutation = _query_plan_mutation(plan, candidate)
             try:
                 findings = list(self.base_runner.run(candidate.plan))
                 self._capture_backend_trace(iteration, candidate)
@@ -275,6 +354,19 @@ class KarpathyAutoresearchRunner:
                     status=status,
                     description=candidate.description,
                     query_count=len(candidate.plan.queries),
+                    hypothesis=_experiment_hypothesis(candidate),
+                    code_test_change="research_plan_query_mutation",
+                    query_plan_mutation=mutation,
+                    metrics_before=metrics_before,
+                    metrics_after=_experiment_metrics_after(
+                        metric=metric,
+                        evidence_count=len(evidence_refs),
+                        trusted_count=trusted_count,
+                        query_count=len(candidate.plan.queries),
+                        gap_count=len(quality_audit.gaps),
+                    ),
+                    decision=status,
+                    next_slice=_next_slice_for_decision(status),
                     quality_audit=quality_audit,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -288,6 +380,19 @@ class KarpathyAutoresearchRunner:
                     status="crash",
                     description=candidate.description,
                     query_count=len(candidate.plan.queries),
+                    hypothesis=_experiment_hypothesis(candidate),
+                    code_test_change="research_plan_query_mutation",
+                    query_plan_mutation=mutation,
+                    metrics_before=metrics_before,
+                    metrics_after=_experiment_metrics_after(
+                        metric=1.0,
+                        evidence_count=0,
+                        trusted_count=0,
+                        query_count=len(candidate.plan.queries),
+                        gap_count=None,
+                    ),
+                    decision="discard",
+                    next_slice="discard_failed_candidate_and_try_next_bounded_query_plan_mutation",
                     error=str(exc).splitlines()[0][:240],
                 )
                 findings = []
@@ -650,9 +755,10 @@ def _evaluate_source_ref(
     plan: ResearchPlan | None,
 ) -> SourceEvaluation:
     source_kind = _source_kind_for_ref(ref)
-    relevant = _ref_is_relevant_to_plan(ref, plan)
+    relevance_basis = _source_relevance_basis(ref, plan)
+    relevant = _source_meets_topic_relevance(ref, plan, relevance_basis=relevance_basis)
     generated = _is_generated_ref(ref)
-    relevance_score = _source_relevance_score(ref, plan)
+    relevance_score = round(float(relevance_basis.get("relevance_score") or 0.0), 3)
     search_result_echo = _is_search_result_echo_ref(ref, plan)
     facet_ids = tuple(
         facet.id
@@ -672,6 +778,8 @@ def _evaluate_source_ref(
         reason = "rejected: generated/mock/empty source is not live evidence"
     elif search_result_echo:
         reason = "rejected: search-result echo or landing page keyword match is not source evidence"
+    elif not relevance_basis.get("topic_anchor_present", True):
+        reason = "rejected: missing topic_anchor relevance basis"
     elif not relevant:
         reason = "rejected: source text does not overlap with topic-specific plan terms"
     elif relevance_score < _minimum_relevance_score(plan):
@@ -692,6 +800,7 @@ def _evaluate_source_ref(
         facet_ids=facet_ids,
         relevance_score=relevance_score,
         reason=reason,
+        relevance_basis=relevance_basis,
     )
 
 
@@ -702,6 +811,8 @@ def _source_kind_for_ref(ref: EvidenceRef) -> str:
     url = str(ref.source_url or metadata.get("source") or "").casefold()
     title = str(ref.source_title or "").casefold()
     text = f"{raw_kind} {url} {title} {ref.quote or ''}".casefold()
+    if raw_kind in {"mock", "empty", "generated", "synthetic"}:
+        return "generated" if raw_kind == "synthetic" else raw_kind
     if "doi.org" in url or raw_kind == "doi":
         return "doi"
     if raw_kind in {"academic", "openalex", "crossref", "pubmed", "semantic_scholar"}:
@@ -803,18 +914,77 @@ def _source_matches_facet_text(ref: EvidenceRef, facet: ResearchFacet) -> bool:
 
 
 def _source_relevance_score(ref: EvidenceRef, plan: ResearchPlan | None) -> float:
+    return round(float(_source_relevance_basis(ref, plan).get("relevance_score") or 0.0), 3)
+
+
+def _source_relevance_basis(ref: EvidenceRef, plan: ResearchPlan | None) -> dict[str, Any]:
+    """Explain exactly which topic surface drove source relevance.
+
+    When a topic anchor is present, it is the only relevance basis. Submitted
+    queries are intentionally excluded because production search APIs can echo
+    polluted query text next to unrelated high-authority records.
+    """
+
     if plan is None:
-        return 1.0
-    plan_terms = _expand_research_terms(
-        {term for query in plan.queries for term in _content_terms(query) if not _is_generic_research_word(term)}
-    )
-    domain_terms = {term for term in plan_terms if not _is_framework_research_word(term)}
-    if not domain_terms:
-        return 1.0
+        return {
+            "basis": "no_plan",
+            "topic_anchor_present": False,
+            "query_terms_used": False,
+            "fallback_query_used": False,
+            "topic_anchor_terms": [],
+            "matched_terms": [],
+            "overlap_count": 0,
+            "required_overlap": 0,
+            "minimum_relevance_score": 0.0,
+            "relevance_score": 1.0,
+            "meets_anchor_overlap_floor": True,
+        }
+
+    topic_anchor = str(getattr(plan, "topic_anchor", "") or "").strip()
+    canonical_terms = _source_canonical_topic_terms(plan)
+    domain_terms = _source_required_topic_terms(plan)
     text_terms = _content_terms(_source_item_text(ref))
-    overlap = len(domain_terms & text_terms)
-    required = max(1, min(4, len(domain_terms)))
-    return round(min(1.0, overlap / required), 3)
+    matched_terms = sorted(domain_terms & text_terms)
+    required_overlap = _topic_anchor_required_overlap(plan, canonical_terms or domain_terms)
+    score_denominator = max(1, min(4, len(domain_terms)))
+    relevance_score = 0.0 if not domain_terms else round(min(1.0, len(matched_terms) / score_denominator), 3)
+    if not topic_anchor:
+        basis = "topic_anchor_missing"
+    elif not domain_terms:
+        basis = "topic_anchor_empty_after_filtering"
+    else:
+        basis = "topic_anchor"
+
+    return {
+        "basis": basis,
+        "topic_anchor_present": bool(topic_anchor),
+        "query_terms_used": False,
+        "fallback_query_used": False,
+        "topic_anchor_excerpt": _compact_relevance_text(_topic_anchor_source_surface(topic_anchor)),
+        "topic_anchor_canonical_terms": sorted(canonical_terms),
+        "topic_anchor_terms": sorted(domain_terms),
+        "matched_terms": matched_terms,
+        "overlap_count": len(matched_terms),
+        "required_overlap": required_overlap,
+        "minimum_relevance_score": _minimum_relevance_score(plan),
+        "relevance_score": relevance_score,
+        "meets_anchor_overlap_floor": bool(domain_terms and len(matched_terms) >= required_overlap),
+    }
+
+
+def _source_meets_topic_relevance(
+    ref: EvidenceRef,
+    plan: ResearchPlan | None,
+    *,
+    relevance_basis: Mapping[str, Any] | None = None,
+) -> bool:
+    if plan is None:
+        return True
+    basis = dict(relevance_basis or _source_relevance_basis(ref, plan))
+    return bool(
+        basis.get("meets_anchor_overlap_floor")
+        and float(basis.get("relevance_score") or 0.0) >= _minimum_relevance_score(plan)
+    )
 
 
 def _source_has_topic_domain_anchor(ref: EvidenceRef, plan: ResearchPlan | None) -> bool:
@@ -829,12 +999,11 @@ def _source_has_topic_domain_anchor(ref: EvidenceRef, plan: ResearchPlan | None)
 
     if plan is None:
         return True
-    source_terms = _content_terms(_source_item_text(ref))
     anchor_terms = _topic_domain_anchor_terms(plan)
     if anchor_terms:
-        return len(anchor_terms & source_terms) >= _topic_anchor_required_overlap(plan, anchor_terms)
+        return _source_meets_topic_relevance(ref, plan)
 
-    return True
+    return False
 
 
 def _source_item_text(ref: EvidenceRef) -> str:
@@ -870,18 +1039,30 @@ def _source_item_text(ref: EvidenceRef) -> str:
 def _topic_anchor_required_overlap(plan: ResearchPlan | None, terms: set[str] | None = None) -> int:
     if plan is None:
         return 1
-    return 1
+    if not terms:
+        terms = _source_canonical_topic_terms(plan)
+    if not terms:
+        return 1
+    return max(1, min(3, len(terms) // 2))
 
 
 def _topic_domain_anchor_terms(plan: ResearchPlan | None) -> set[str]:
     """Extract source-required topic terms without channel/facet bridge words."""
 
-    if plan is None:
-        return set()
-    anchor_parts = [str(getattr(plan, "topic_anchor", "") or "").strip()]
-    anchor_parts.extend(str(query or "").strip() for query in (getattr(plan, "queries", []) or []))
-    anchor_text = " ".join(part for part in anchor_parts if part)
-    terms = _expand_research_terms(_content_terms(anchor_text))
+    return _source_required_topic_terms(plan)
+
+
+def _source_required_topic_terms(plan: ResearchPlan | None) -> set[str]:
+    """Return source-side topic terms from the clean topic surface.
+
+    Production query plans can accumulate bridge words, route suffixes, or even
+    unrelated result-title pollution. A populated topic_anchor is therefore the
+    only canonical current-topic surface. Query text is deliberately not used as
+    a fallback: missing anchors fail closed so production-shaped query pollution
+    cannot validate itself.
+    """
+
+    terms = _expand_research_terms(_source_canonical_topic_terms(plan))
     return {
         term
         for term in terms
@@ -889,6 +1070,49 @@ def _topic_domain_anchor_terms(plan: ResearchPlan | None) -> set[str]:
         and not _is_framework_research_word(term)
         and not _is_channel_or_geography_research_word(term)
     }
+
+
+def _source_canonical_topic_terms(plan: ResearchPlan | None) -> set[str]:
+    if plan is None:
+        return set()
+    topic_anchor = str(getattr(plan, "topic_anchor", "") or "").strip()
+    if not topic_anchor:
+        return set()
+    topic_surface = _topic_anchor_source_surface(topic_anchor)
+    terms = _content_terms(topic_surface)
+    return {
+        term
+        for term in terms
+        if not _is_generic_research_word(term)
+        and not _is_framework_research_word(term)
+        and not _is_channel_or_geography_research_word(term)
+    }
+
+
+def _topic_anchor_source_surface(topic_anchor: str) -> str:
+    """Trim prompt instruction tails from a stored topic anchor.
+
+    Live runs may persist the full operator prompt as ``topic_anchor``. The
+    source-relevance basis should be the user's current topic/research question,
+    not quality-bar, provider-routing, or deliverable instructions that unrelated
+    result pages can easily echo.
+    """
+
+    import re
+
+    return re.split(
+        r"\b(?:quality\s+bar|deliverable|provider\s+route|use\s+mimo|do\s+not\s+call)\b\s*: ?",
+        str(topic_anchor or ""),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+
+
+def _compact_relevance_text(text: str, *, limit: int = 240) -> str:
+    compacted = " ".join(str(text or "").split())
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[: limit - 3].rstrip() + "..."
 
 
 def _minimum_relevance_score(plan: ResearchPlan | None) -> float:
@@ -910,36 +1134,7 @@ def _gap_message_for_facet(facet: ResearchFacet) -> str:
 def _ref_is_relevant_to_plan(ref: EvidenceRef, plan: ResearchPlan | None) -> bool:
     if plan is None:
         return True
-    provenance = ref.provenance or {}
-    metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
-    query = str(metadata.get("query") or "").strip()
-    if not query:
-        query = " ".join(plan.queries)
-    query_terms = _expand_research_terms(
-        {term for term in _content_terms(query) if not _is_generic_research_word(term)}
-    )
-    # Provenance queries can be narrower than the full plan topic, especially
-    # when they come from a localized topic anchor. Merge the full plan terms so
-    # relevance can use domain-specific anchors introduced by additional query
-    # variants (for example assay/pathogen/field-validation terms) without
-    # relying on vertical-specific synonym tables.
-    fallback_terms = _expand_research_terms(
-        {
-            term
-            for plan_query in plan.queries
-            for term in _content_terms(plan_query)
-            if not _is_generic_research_word(term)
-        }
-    )
-    domain_terms = {
-        term
-        for term in (query_terms | fallback_terms)
-        if not _is_framework_research_word(term)
-    }
-    if not domain_terms:
-        return True
-    text_terms = _content_terms(_source_item_text(ref))
-    return len(domain_terms & text_terms) >= _topic_anchor_required_overlap(plan, domain_terms)
+    return _source_meets_topic_relevance(ref, plan)
 
 
 def _has_scientific_intent(text: str) -> bool:
@@ -1097,7 +1292,56 @@ def _is_generic_research_word(word: str) -> bool:
         "on",
         "no",
         "topic",
+        "question",
         "assess",
+        "evaluate",
+        "recall",
+        "verify",
+        "claim",
+        "claims",
+        "quality",
+        "bar",
+        "accepted",
+        "authoritative",
+        "relevant",
+        "directly",
+        "clearly",
+        "contextual",
+        "core",
+        "explicit",
+        "fixture",
+        "benchmark",
+        "metrics",
+        "api",
+        "gemini",
+        "mimo",
+        "opencode",
+        "max",
+        "go",
+        "call",
+        "use",
+        "must",
+        "not",
+        "do",
+        "or",
+        "of",
+        "be",
+        "only",
+        "against",
+        "unless",
+        "empty",
+        "mock",
+        "result",
+        "listing",
+        "search",
+        "protocols",
+        "star",
+        "performance",
+        "plant",
+        "sample",
+        "response",
+        "limit",
+        "companion",
         "to",
         "for",
         "with",
@@ -1212,7 +1456,12 @@ def _is_generated_ref(ref: EvidenceRef) -> bool:
             (ref.provenance or {}).get("kind"),
         )
     )
-    return any(marker in haystack for marker in ("mock-evidence", "empty-evidence", "mock research"))
+    generated_markers = ("generated", "synthetic", "mock", "empty")
+    provenance = ref.provenance or {}
+    metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
+    if str(provenance.get("kind") or metadata.get("kind") or "").casefold().strip() in generated_markers:
+        return True
+    return any(marker in haystack for marker in ("mock-evidence", "empty-evidence", "mock research", "synthetic generated"))
 
 
 def _mutate_query(query: str, suffix: str) -> str:

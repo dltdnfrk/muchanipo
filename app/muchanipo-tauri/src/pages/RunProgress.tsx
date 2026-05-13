@@ -1156,7 +1156,7 @@ function pushCouncilActivity(
   return [activity, ...withoutDuplicate].slice(0, 12);
 }
 
-export function deriveLiveE2eStatus({
+export function deriveBackendSignalStatus({
   runId,
   runtimeRunId,
   runtimeHeartbeatStage,
@@ -1170,7 +1170,7 @@ export function deriveLiveE2eStatus({
   if ((runtimeRunId === runId && runtimeHeartbeatStage) || hasVisibleBackendHeartbeat) {
     return "Backend run signals observed";
   }
-  return "Not proven in this UI session";
+  return "Waiting for live backend signal";
 }
 
 export default function RunProgress() {
@@ -2177,7 +2177,7 @@ export default function RunProgress() {
   const runtimeHeartbeatStage = runtimeEvidence?.heartbeatStage;
   const hasVisibleBackendHeartbeat = hasReceivedHeartbeat;
   const desktopRuntimeStatus = runtimeEvidence ? "Observed" : "Not observed yet";
-  const liveE2eStatus = deriveLiveE2eStatus({
+  const backendSignalStatus = deriveBackendSignalStatus({
     runId,
     runtimeRunId,
     runtimeHeartbeatStage,
@@ -2414,22 +2414,22 @@ export default function RunProgress() {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
-                Desktop/live evidence
+                Run health
               </p>
-              <h2 className="mt-1 text-sm font-medium text-white">Evidence gap surface</h2>
+              <h2 className="mt-1 text-sm font-medium text-white">Backend heartbeat and source visibility</h2>
             </div>
             <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 font-mono text-[10px] text-tertiary">
-              run scoped
+              current run
             </span>
           </div>
           <div className="grid gap-2 md:grid-cols-3">
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Desktop runtime</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Runtime</p>
               <p className="mt-1 text-xs text-white">{desktopRuntimeStatus}</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Live e2e</p>
-              <p className="mt-1 text-xs text-white">{liveE2eStatus}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Backend signal</p>
+              <p className="mt-1 text-xs text-white">{backendSignalStatus}</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Source access</p>

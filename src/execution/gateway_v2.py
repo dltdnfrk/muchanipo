@@ -203,10 +203,13 @@ def _requested_provider_chain() -> List[str]:
 def _with_mimo_opencode_only_routes(routes: Mapping[str, str]) -> Dict[str, str]:
     requested_chain = _requested_provider_chain()
     opencode_only = requested_chain == ["opencode"]
+    mimo_only = requested_chain == ["mimo"]
     updated = dict(routes)
     for stage in tuple(updated):
         if opencode_only:
             updated[stage] = "opencode"
+        elif mimo_only:
+            updated[stage] = "mimo"
         else:
             updated[stage] = "opencode" if stage in {"utilities", "implementation_review"} else "mimo"
     return updated
@@ -215,10 +218,13 @@ def _with_mimo_opencode_only_routes(routes: Mapping[str, str]) -> Dict[str, str]
 def _with_mimo_opencode_only_chain(fallback_chain: Mapping[str, Sequence[str]]) -> Dict[str, List[str]]:
     requested_chain = _requested_provider_chain()
     opencode_only = requested_chain == ["opencode"]
+    mimo_only = requested_chain == ["mimo"]
     updated: Dict[str, List[str]] = {}
     for stage in fallback_chain:
         if opencode_only:
             updated[stage] = ["opencode"]
+        elif mimo_only:
+            updated[stage] = ["mimo"]
         else:
             updated[stage] = ["opencode"] if stage in {"utilities", "implementation_review"} else ["mimo", "opencode"]
     return updated

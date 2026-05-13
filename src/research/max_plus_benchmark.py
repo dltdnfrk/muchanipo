@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from src.evidence.artifact import EvidenceRef, Finding
 from src.research.evidence_ledger import build_evidence_ledger_report
+from src.research.event_contract import RESEARCH_BACKEND_CONTRACT_VERSION
 
 
 DEFAULT_MAX_REPORT_PATH = Path("/tmp/muchanipo-deep-research-max/report.md")
@@ -27,6 +29,24 @@ DEFAULT_CROSS_DOMAIN_MATRIX_PATH = (
 BENCHMARK_ID = "muchanipo-deep-research-max-plus-b1"
 CROSS_DOMAIN_BENCHMARK_ID = "muchanipo-deep-research-cross-domain-matrix-rq46"
 LOG_SCHEMA = "muchanipo.autoresearch_log.v1"
+AHP_TARGET_SCORE = 0.86
+AHP_CRITICAL_MIN_SCORE = 0.75
+AHP_CRITERION_WEIGHTS: dict[str, float] = {
+    "source_authority_anchor_doi_recall": 0.22,
+    "claim_evidence_traceability": 0.20,
+    "scientific_workflow_fidelity": 0.18,
+    "non_overfit_generic_behavior": 0.14,
+    "contradiction_refutation_disclosure": 0.10,
+    "runtime_observability_event_quality": 0.08,
+    "final_report_usefulness": 0.08,
+}
+AHP_CRITICAL_CRITERIA = (
+    "source_authority_anchor_doi_recall",
+    "claim_evidence_traceability",
+    "scientific_workflow_fidelity",
+    "non_overfit_generic_behavior",
+    "contradiction_refutation_disclosure",
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +115,8 @@ class MaxPlusBenchmarkFixture:
     prompt_path: Path
     latest_response_path: Path
     expected_claims: tuple[ExpectedClaim, ...]
+    workflow_fidelity_facets: tuple[ExpectedClaim, ...] = ()
+    final_report_usefulness_facets: tuple[ExpectedClaim, ...] = ()
     source_discovery_queries: tuple[str, ...] = ()
     source_backed_evidence: tuple[FixtureEvidenceSource, ...] = ()
     must_not_call_paid_max_again: bool = True
@@ -111,6 +133,10 @@ class MaxPlusBenchmarkFixture:
                 "must_not_call_paid_max_again": self.must_not_call_paid_max_again,
             },
             "expected_claims": [claim.to_dict() for claim in self.expected_claims],
+            "workflow_fidelity_facets": [claim.to_dict() for claim in self.workflow_fidelity_facets],
+            "final_report_usefulness_facets": [
+                claim.to_dict() for claim in self.final_report_usefulness_facets
+            ],
             "source_discovery_queries": list(self.source_discovery_queries),
             "source_backed_evidence": [source.to_dict() for source in self.source_backed_evidence],
         }
@@ -200,20 +226,26 @@ class CrossDomainBenchmarkMatrix:
 @dataclass(frozen=True)
 class AutoresearchLogEntry:
     hypothesis: str
+    code_test_change: str
     changed_files: tuple[str, ...]
     metrics_before: Mapping[str, float]
     metrics_after: Mapping[str, float]
     decision: str
+    next_slice: str
     evidence: tuple[str, ...]
     created_at: str = ""
 
     def __post_init__(self) -> None:
         if not self.hypothesis.strip():
             raise ValueError("hypothesis must not be empty")
+        if not self.code_test_change.strip():
+            raise ValueError("code_test_change must not be empty")
         if not self.changed_files:
             raise ValueError("changed_files must not be empty")
         if self.decision not in {"keep", "discard"}:
             raise ValueError("decision must be 'keep' or 'discard'")
+        if not self.next_slice.strip():
+            raise ValueError("next_slice must not be empty")
         if not self.evidence:
             raise ValueError("evidence must not be empty")
 
@@ -223,10 +255,12 @@ class AutoresearchLogEntry:
             "schema": LOG_SCHEMA,
             "created_at": created_at,
             "hypothesis": self.hypothesis,
+            "code_test_change": self.code_test_change,
             "changed_files": list(self.changed_files),
             "metrics_before": dict(self.metrics_before),
             "metrics_after": dict(self.metrics_after),
             "decision": self.decision,
+            "next_slice": self.next_slice,
             "evidence": list(self.evidence),
         }
 
@@ -254,6 +288,13 @@ def build_b1_probe_fixture(
         )
         for item in payload["rubric"]["expected_claims"]
     )
+    ahp_payload = payload.get("rubric", {}).get("ahp", {})
+    workflow_fidelity_facets = _expected_claims_from_payload(
+        ahp_payload.get("workflow_fidelity_facets", [])
+    )
+    final_report_usefulness_facets = _expected_claims_from_payload(
+        ahp_payload.get("final_report_usefulness_facets", [])
+    )
     source_discovery_queries = tuple(
         str(query).strip()
         for query in payload.get("source_discovery", {}).get("queries", [])
@@ -278,6 +319,8 @@ def build_b1_probe_fixture(
         prompt_path=prompt_path,
         latest_response_path=latest_response_path,
         expected_claims=expected_claims,
+        workflow_fidelity_facets=workflow_fidelity_facets,
+        final_report_usefulness_facets=final_report_usefulness_facets,
         source_discovery_queries=source_discovery_queries,
         source_backed_evidence=source_backed_evidence,
     )
@@ -398,6 +441,37 @@ def evidence_quote_coverage(findings: Sequence[Finding]) -> float:
     return round(covered / len(findings), 3)
 
 
+def citation_density(findings: Sequence[Finding]) -> float:
+    """Average number of quote-bearing support refs per finding.
+
+    This is a deterministic Max-style density signal: it measures whether the
+    report is actually carrying source-backed citations at claim granularity,
+    without importing the separate eval-agent scoring stack into runtime gates.
+    """
+
+    if not findings:
+        return 0.0
+    cited_refs = sum(
+        1
+        for finding in findings
+        for ref in finding.support
+        if str(ref.quote or "").strip()
+    )
+    return round(cited_refs / len(findings), 3)
+
+
+_QUANT_CLAIM_RE = re.compile(
+    r"(?:\b\d+(?:\.\d+)?\s*(?:%|percent|배|x|×|cfu/ml|copies/ml|ppm|ppb|nm|μm|um|mm|cm|kg|g|mg|원|달러|usd|krw|분|초|일|년|minute|minutes|second|seconds|day|days|year|years)\b|\b\d+(?:\.\d+)?\s*(?:-|–|to)\s*\d+(?:\.\d+)?\b)",
+    re.IGNORECASE,
+)
+
+
+def quantitative_claim_count(findings: Sequence[Finding]) -> float:
+    """Count findings whose claim includes an explicit quantitative assertion."""
+
+    return float(sum(1 for finding in findings if _QUANT_CLAIM_RE.search(finding.claim or "")))
+
+
 def claim_traceability_score(findings: Sequence[Finding]) -> float:
     """Average claim-to-quote lexical overlap with light authority weighting.
 
@@ -492,20 +566,27 @@ def build_quality_gate_event(
     metrics: Mapping[str, float],
     decision: str,
     hypothesis: str,
+    ahp_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a stable progress event for future Tauri display."""
 
     if decision not in {"keep", "discard", "blocked"}:
         raise ValueError("decision must be keep, discard, or blocked")
-    return {
+    event = {
         "event": "research_progress",
         "stage": "quality_gate",
         "status": "max_plus_benchmark_scored",
+        "research_backend_contract_version": RESEARCH_BACKEND_CONTRACT_VERSION,
         "benchmark_id": benchmark_id,
         "decision": decision,
         "hypothesis": hypothesis,
         "metrics": dict(metrics),
     }
+    if ahp_report is not None:
+        event["ahp_quality_gate"] = dict(ahp_report)
+        event["ahp_score"] = ahp_report.get("score")
+        event["ahp_passed"] = ahp_report.get("passed")
+    return event
 
 
 def append_autoresearch_log_entry(path: Path, entry: AutoresearchLogEntry) -> None:
@@ -634,11 +715,21 @@ def benchmark_metrics(
         accepted_source_ids=allowlist,
     )
     authority = sum(source_authority_score(ref) for ref in refs) / len(refs) if refs else 0.0
+    anchor_coverage = anchor_doi_coverage(
+        findings,
+        fixture=fixture,
+        accepted_source_ids=allowlist,
+    )
     return {
         "source_authority_score": round(authority, 3),
         "weak_source_penalty": weak_source_penalty(refs),
         "expected_claim_recall": coverage.recall,
+        "anchor_doi_recall": anchor_coverage["recall"],
+        "required_anchor_doi_count": float(anchor_coverage["required_count"]),
+        "covered_anchor_doi_count": float(anchor_coverage["covered_count"]),
         "evidence_quote_coverage": evidence_quote_coverage(scored_findings),
+        "citation_density": citation_density(scored_findings),
+        "quant_claim_count": quantitative_claim_count(scored_findings),
         "claim_traceability": claim_traceability_score(scored_findings),
         "material_claim_support_coverage": ledger.metrics["material_claim_support_coverage"],
         "expected_claim_traceability_score": ledger.metrics["expected_claim_traceability_score"],
@@ -651,6 +742,129 @@ def benchmark_metrics(
         "unresolved_conflict_disclosure_rate": ledger.metrics[
             "unresolved_conflict_disclosure_rate"
         ],
+    }
+
+
+def anchor_doi_coverage(
+    findings: Sequence[Finding],
+    *,
+    fixture: MaxPlusBenchmarkFixture,
+    accepted_source_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Measure recall for DOI anchors declared by an explicit benchmark fixture."""
+
+    required = _required_anchor_dois(fixture)
+    allowlist = set(accepted_source_ids) if accepted_source_ids is not None else None
+    scored_findings = _findings_with_allowed_support(findings, allowlist)
+    observed = set(_extract_dois(_findings_text(scored_findings)))
+    covered = tuple(doi for doi in required if doi in observed)
+    missing = tuple(doi for doi in required if doi not in observed)
+    return {
+        "required": list(required),
+        "covered": list(covered),
+        "missing": list(missing),
+        "required_count": len(required),
+        "covered_count": len(covered),
+        "recall": round(len(covered) / len(required), 3) if required else 1.0,
+    }
+
+
+def ahp_quality_gate_report(
+    findings: Sequence[Finding],
+    *,
+    fixture: MaxPlusBenchmarkFixture,
+    accepted_source_ids: Iterable[str] | None = None,
+    benchmark_score_vector: Mapping[str, float] | None = None,
+    progress_events: Sequence[Mapping[str, Any]] = (),
+    final_report_text: str = "",
+    reference_report_text: str = "",
+    cross_domain_metrics: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Build a fixture-scoped AHP quality report without changing runtime behavior.
+
+    The scoring surface is generic: domain-specific facets and anchors come from
+    the explicit benchmark fixture, not topic sniffing or product code branches.
+    """
+
+    allowlist = set(accepted_source_ids) if accepted_source_ids is not None else None
+    metrics = dict(
+        benchmark_score_vector
+        or benchmark_metrics(findings, fixture=fixture, accepted_source_ids=allowlist)
+    )
+    anchor_coverage = anchor_doi_coverage(
+        findings,
+        fixture=fixture,
+        accepted_source_ids=allowlist,
+    )
+    evidence_text = _findings_text(_findings_with_allowed_support(findings, allowlist))
+    candidate_report_text = str(final_report_text or "")
+    comparison_text = "\n".join(
+        part for part in (evidence_text, candidate_report_text, str(reference_report_text or "")) if part
+    )
+    criterion_scores = {
+        "source_authority_anchor_doi_recall": _bounded_score(
+            (0.55 * _metric(metrics, "source_authority_score"))
+            + (0.45 * anchor_coverage["recall"])
+        ),
+        "claim_evidence_traceability": _average_score(
+            _metric(metrics, "claim_traceability"),
+            _metric(metrics, "quote_locator_coverage"),
+            _metric(metrics, "citation_integrity_score"),
+            _metric(metrics, "material_claim_support_coverage"),
+            _metric(metrics, "expected_claim_traceability_score"),
+            _metric(metrics, "evidence_quote_coverage"),
+        ),
+        "scientific_workflow_fidelity": _facet_term_coverage(
+            comparison_text,
+            fixture.workflow_fidelity_facets or fixture.expected_claims,
+        ),
+        "non_overfit_generic_behavior": _non_overfit_generic_score(
+            metrics,
+            cross_domain_metrics=cross_domain_metrics or {},
+        ),
+        "contradiction_refutation_disclosure": _average_score(
+            _metric(metrics, "unresolved_conflict_disclosure_rate", empty=1.0),
+            _metric(metrics, "material_contradiction_disclosure_rate", empty=1.0),
+        ),
+        "runtime_observability_event_quality": _runtime_observability_score(progress_events),
+        "final_report_usefulness": _facet_term_coverage(
+            candidate_report_text,
+            fixture.final_report_usefulness_facets or fixture.expected_claims,
+        )
+        if candidate_report_text.strip()
+        else 0.0,
+    }
+    weighted_score = round(
+        sum(criterion_scores[key] * AHP_CRITERION_WEIGHTS[key] for key in AHP_CRITERION_WEIGHTS),
+        3,
+    )
+    critical_below_min = {
+        key: criterion_scores[key]
+        for key in AHP_CRITICAL_CRITERIA
+        if criterion_scores[key] < AHP_CRITICAL_MIN_SCORE
+    }
+    passed = (
+        weighted_score >= AHP_TARGET_SCORE
+        and not critical_below_min
+        and not anchor_coverage["missing"]
+    )
+    return {
+        "schema": "muchanipo.max_plus_ahp.v1",
+        "benchmark_id": fixture.benchmark_id,
+        "score": weighted_score,
+        "passed": passed,
+        "target_score": AHP_TARGET_SCORE,
+        "critical_min_score": AHP_CRITICAL_MIN_SCORE,
+        "criteria_weights": dict(AHP_CRITERION_WEIGHTS),
+        "criterion_scores": criterion_scores,
+        "critical_criteria_below_min": critical_below_min,
+        "anchor_doi_recall": anchor_coverage["recall"],
+        "required_anchor_dois": anchor_coverage["required"],
+        "covered_anchor_dois": anchor_coverage["covered"],
+        "missing_anchor_dois": anchor_coverage["missing"],
+        "report_state": "available" if candidate_report_text.strip() else "not_available",
+        "top_gaps": _ahp_top_gaps(criterion_scores, anchor_coverage),
+        "benchmark_metrics": metrics,
     }
 
 
@@ -680,6 +894,144 @@ def _findings_with_allowed_support(
         )
         for finding in findings
     ]
+
+
+def _required_anchor_dois(fixture: MaxPlusBenchmarkFixture) -> tuple[str, ...]:
+    parts: list[str] = []
+    parts.extend(claim.text for claim in fixture.expected_claims)
+    parts.extend(fixture.source_discovery_queries)
+    for source in fixture.source_backed_evidence:
+        parts.extend((source.id, source.query, source.title, source.url, source.quote))
+    seen: set[str] = set()
+    out: list[str] = []
+    for doi in _extract_dois("\n".join(parts)):
+        if doi in seen:
+            continue
+        seen.add(doi)
+        out.append(doi)
+    return tuple(out)
+
+
+def _extract_dois(text: str) -> tuple[str, ...]:
+    import re
+
+    values: list[str] = []
+    for match in re.findall(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", str(text or "")):
+        doi = match.strip().strip(".,;:)])}>").casefold()
+        if doi:
+            values.append(doi)
+    return tuple(values)
+
+
+def _findings_text(findings: Sequence[Finding]) -> str:
+    parts: list[str] = []
+    for finding in findings:
+        parts.append(str(finding.claim or ""))
+        parts.extend(str(item or "") for item in finding.limitations)
+        for ref in finding.support:
+            parts.extend(
+                str(value or "")
+                for value in (
+                    ref.id,
+                    ref.source_url,
+                    ref.source_title,
+                    ref.quote,
+                    json.dumps(ref.provenance or {}, ensure_ascii=False, sort_keys=True),
+                )
+            )
+    return "\n".join(parts)
+
+
+def _metric(metrics: Mapping[str, Any], key: str, *, empty: float = 0.0) -> float:
+    value = metrics.get(key, empty)
+    if value is None:
+        value = empty
+    try:
+        return _bounded_score(float(value))
+    except (TypeError, ValueError):
+        return _bounded_score(empty)
+
+
+def _bounded_score(value: float) -> float:
+    return round(max(0.0, min(1.0, float(value))), 3)
+
+
+def _average_score(*values: float) -> float:
+    usable = [max(0.0, min(1.0, float(value))) for value in values]
+    return round(sum(usable) / len(usable), 3) if usable else 0.0
+
+
+def _facet_term_coverage(text: str, facets: Sequence[ExpectedClaim]) -> float:
+    if not facets:
+        return 1.0
+    corpus_terms = _terms(text)
+    covered = 0
+    for facet in facets:
+        required = {_normalize_term(term) for term in facet.required_terms if _normalize_term(term)}
+        if not required:
+            continue
+        if len(required & corpus_terms) >= int(facet.min_matched_terms or 1):
+            covered += 1
+    return round(covered / len(facets), 3)
+
+
+def _non_overfit_generic_score(
+    metrics: Mapping[str, Any],
+    *,
+    cross_domain_metrics: Mapping[str, Any],
+) -> float:
+    weak_penalty = _metric(metrics, "weak_source_penalty")
+    background_penalty = min(1.0, float(metrics.get("background_leak_count", 0.0) or 0.0))
+    unsupported_penalty = min(
+        1.0,
+        float(metrics.get("unsupported_high_confidence_claim_count", 0.0) or 0.0),
+    )
+    b1_leak_penalty = min(
+        1.0,
+        float(cross_domain_metrics.get("b1_overfit_leak_count", 0.0) or 0.0),
+    )
+    penalty = (
+        0.35 * weak_penalty
+        + 0.25 * background_penalty
+        + 0.25 * unsupported_penalty
+        + 0.15 * b1_leak_penalty
+    )
+    return _bounded_score(1.0 - penalty)
+
+
+def _runtime_observability_score(progress_events: Sequence[Mapping[str, Any]]) -> float:
+    if not progress_events:
+        return 0.0
+    statuses = {str(event.get("status") or "") for event in progress_events}
+    required_statuses = {
+        "source_audit_gate",
+        "source_decision_ledger_built",
+        "claim_evidence_gate",
+        "evidence_ledger_built",
+        "max_plus_benchmark_scored",
+    }
+    status_coverage = len(required_statuses & statuses) / len(required_statuses)
+    quality_stage_seen = any(str(event.get("stage") or "") == "quality_gate" for event in progress_events)
+    contract_seen = any(
+        str(event.get("research_backend_contract_version") or "").strip()
+        for event in progress_events
+    )
+    structure_score = 0.5 if quality_stage_seen else 0.0
+    contract_score = 1.0 if contract_seen else structure_score
+    return _bounded_score((0.75 * status_coverage) + (0.25 * contract_score))
+
+
+def _ahp_top_gaps(
+    criterion_scores: Mapping[str, float],
+    anchor_coverage: Mapping[str, Any],
+) -> list[str]:
+    gaps: list[tuple[float, str]] = []
+    for missing in anchor_coverage.get("missing", []):
+        gaps.append((0.0, f"missing_anchor_doi:{missing}"))
+    for criterion, score in criterion_scores.items():
+        if score < AHP_TARGET_SCORE:
+            gaps.append((score, f"{criterion}:{score:.3f}"))
+    return [gap for _, gap in sorted(gaps, key=lambda item: item[0])[:5]]
 
 
 def _ref_facet_id(ref: EvidenceRef) -> str:

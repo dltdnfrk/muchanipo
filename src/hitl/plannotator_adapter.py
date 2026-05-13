@@ -11,7 +11,7 @@ from uuid import uuid4
 
 
 SIGNOFF_QUEUE = Path("src/hitl/signoff-queue")
-VALID_STATUSES = {"approved", "changes_requested", "pending"}
+VALID_STATUSES = {"approved", "changes_requested", "pending", "rejected"}
 
 
 @dataclass
@@ -22,10 +22,15 @@ class HITLResult:
     gate_id: str | None = None
     path: str | None = None
     synthetic: bool = False
+    reviewer_id: str | None = None
+    decision_provenance: dict[str, Any] = field(default_factory=dict)
+    resumable: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
             raise ValueError(f"invalid HITL status: {self.status}")
+        if self.status == "changes_requested":
+            self.resumable = True
 
 
 class HITLAdapter:
@@ -67,7 +72,13 @@ class HITLAdapter:
                 status="approved",
                 comments=[f"auto-approved gate: {gate_name}"],
                 gate_id=f"{gate_name}-auto",
-                synthetic=False,
+                path=f"synthetic://auto-approve/{gate_name}",
+                synthetic=True,
+                decision_provenance={
+                    "mode": "auto_approve",
+                    "source": "local_headless_approval",
+                    "synthetic": True,
+                },
             )
         if self.mode == "plannotator":
             return self._plannotator_gate(gate_name, payload)
@@ -150,6 +161,12 @@ def _read_markdown_result(path: Path) -> HITLResult:
         comments=[str(item) for item in _coerce_list(frontmatter.get("comments"))],
         gate_id=str(frontmatter.get("id") or ""),
         path=str(path),
+        decision_provenance={
+            "mode": "markdown",
+            "source": "markdown_signoff_queue",
+            "path": str(path),
+            "synthetic": False,
+        },
     )
 
 

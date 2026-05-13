@@ -82,8 +82,13 @@ class QueryRoute:
 
 class ResearchPlanner:
     def plan(self, brief: ResearchBrief, *, max_queries: int = 8) -> ResearchPlan:
-        topic_anchor = str(getattr(brief, "original_topic", "") or "").strip()
-        query = topic_anchor or brief.research_question.strip() or brief.raw_idea.strip()
+        topic_anchor = str(
+            getattr(brief, "original_topic", "")
+            or brief.research_question.strip()
+            or brief.raw_idea.strip()
+            or ""
+        ).strip()
+        query = topic_anchor
         queries = expand_query(
             query,
             context=brief.context,
@@ -344,6 +349,78 @@ def adaptive_followup_query_plan(
         "source_gap_status": facet_gap_report.get("status") if isinstance(facet_gap_report, dict) else None,
         "adaptive_query_routes": routes,
         "model_role_routing_plan": _adaptive_model_role_routing_plan(bool(routes)),
+    }
+
+
+def adaptive_followup_execution_report(
+    adaptive_query_plan: dict[str, Any],
+    *,
+    facet_gap_report: dict[str, Any] | None = None,
+    executed_route_ids: set[str] | None = None,
+    pending_reason: str = "deferred_to_next_bounded_retrieval_pass",
+) -> dict[str, Any]:
+    """Record bounded iteration-2 status for adaptive follow-up routes.
+
+    The current quality gate is deterministic and offline. When callers do not
+    execute a second retrieval pass in-process, every planned adaptive route is
+    recorded as pending with an explicit reason instead of disappearing after
+    planning.
+    """
+
+    routes = [
+        dict(route)
+        for route in (adaptive_query_plan.get("adaptive_query_routes") if isinstance(adaptive_query_plan, dict) else []) or []
+        if isinstance(route, dict)
+    ]
+    executed = {str(route_id) for route_id in (executed_route_ids or set()) if str(route_id).strip()}
+    executed_followups = []
+    pending_followups = []
+    for route in routes:
+        route_id = str(route.get("route_id") or "")
+        row = {
+            "route_id": route_id,
+            "followup_of_route_id": route.get("followup_of_route_id"),
+            "facet_id": route.get("facet_id"),
+            "intent": route.get("intent"),
+            "query": route.get("query"),
+            "priority": route.get("priority"),
+            "adaptive_reason_codes": list(route.get("adaptive_reason_codes") or ()),
+        }
+        if route_id in executed:
+            executed_followups.append(row)
+        else:
+            pending_followups.append({**row, "pending_reason": pending_reason})
+
+    gap_report = facet_gap_report if isinstance(facet_gap_report, dict) else {}
+    candidate_count = int(gap_report.get("candidate_count") or len(routes))
+    status = "no_adaptive_followups"
+    if pending_followups:
+        status = "adaptive_followups_pending"
+    elif executed_followups:
+        status = "adaptive_followups_executed"
+
+    iteration_2 = {
+        "status": "facet_gaps_pending" if pending_followups else "complete",
+        "iteration": 2,
+        "source_iteration": 1,
+        "candidate_count": candidate_count,
+        "planned_count": len(routes),
+        "executed_count": len(executed_followups),
+        "pending_count": len(pending_followups),
+        "gap_count_before": candidate_count,
+        "gap_count_after_upper_bound": min(candidate_count, len(pending_followups)),
+        "executed_followups": executed_followups,
+        "pending_followups": pending_followups,
+    }
+    return {
+        "status": status,
+        "iteration": 2,
+        "planned_count": len(routes),
+        "executed_count": len(executed_followups),
+        "pending_count": len(pending_followups),
+        "executed_route_ids": [row["route_id"] for row in executed_followups],
+        "pending_followups": pending_followups,
+        "facet_gap_scheduler_report_iteration_2": iteration_2,
     }
 
 

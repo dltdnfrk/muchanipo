@@ -178,6 +178,32 @@ def test_mimo_opencode_only_policy_honors_explicit_opencode_only_chain(monkeypat
     assert gw.fallback_chain["utilities"] == ["opencode"]
 
 
+def test_mimo_opencode_only_policy_honors_explicit_mimo_only_chain(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_API_ROUTING", "mimo_opencode_only")
+    monkeypatch.setenv("MUCHANIPO_PROVIDER_CHAIN", "mimo")
+    monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "tp-test")
+
+    gw = default_gateway(
+        providers=build_default_providers(prefer_cli=False),
+        routes={"interview": "anthropic", "council": "anthropic", "report": "gemini", "utilities": "codex"},
+        fallback_chain={
+            "interview": ["anthropic", "mimo", "opencode", "mock"],
+            "council": ["anthropic", "gemini", "mimo", "opencode", "mock"],
+            "report": ["gemini", "anthropic", "mimo", "mock"],
+            "utilities": ["codex", "opencode", "mock"],
+        },
+    )
+
+    assert gw.stage_routes["interview"] == "mimo"
+    assert gw.stage_routes["council"] == "mimo"
+    assert gw.stage_routes["report"] == "mimo"
+    assert gw.stage_routes["utilities"] == "mimo"
+    assert gw.fallback_chain["interview"] == ["mimo"]
+    assert gw.fallback_chain["council"] == ["mimo"]
+    assert gw.fallback_chain["report"] == ["mimo"]
+    assert gw.fallback_chain["utilities"] == ["mimo"]
+
+
 # ---- FallbackChain primitive --------------------------------------------
 
 

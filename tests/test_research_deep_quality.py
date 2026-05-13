@@ -2,7 +2,14 @@ from pathlib import Path
 
 from src.evidence.artifact import EvidenceRef, Finding
 from src.interview.brief import ResearchBrief
-from src.research.karpathy_autoresearch import KarpathyAutoresearchRunner, build_research_quality_audit
+from src.research.karpathy_autoresearch import (
+    KarpathyAutoresearchRunner,
+    _source_relevance_basis,
+    _source_relevance_score,
+    _source_required_topic_terms,
+    _topic_anchor_required_overlap,
+    build_research_quality_audit,
+)
 from src.research.planner import ResearchPlan, ResearchPlanner
 
 
@@ -357,6 +364,301 @@ def test_live_verification_9_nigerian_banking_payload_gets_no_market_facet():
     assert evaluation.relevance_score < 0.35
     assert "market" not in evaluation.facet_ids
     assert "regional_adoption" not in evaluation.facet_ids
+
+
+def test_missing_topic_anchor_fails_closed_not_falls_back_to_queries() -> None:
+    """Query text can be polluted by retrieved titles; missing topic_anchor is not a relevance basis."""
+
+    plan = ResearchPlan(
+        brief_id="brief-missing-anchor",
+        topic_anchor="",
+        queries=[
+            "low cost molecular diagnostic kit market adoption pricing Korea field validation",
+            (
+                "Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector "
+                "cost compliance competency"
+            ),
+        ],
+    )
+    self_matching_polluted_source = EvidenceRef(
+        id="arxiv:polluted-query-self-match-no-anchor",
+        source_url="http://arxiv.org/abs/2511.00061v1",
+        source_title="Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector",
+        quote="Fraud detection adoption, implementation cost, compliance, and competency in Nigerian banking.",
+        source_grade="B",
+        provenance={"kind": "arxiv", "metadata": {"query": plan.queries[1]}},
+    )
+
+    assert _source_required_topic_terms(plan) == set()
+    assert _source_relevance_score(self_matching_polluted_source, plan) == 0.0
+
+    audit = build_research_quality_audit(
+        [Finding(claim="polluted query source should not pass without anchor", support=[self_matching_polluted_source])],
+        plan,
+    )
+
+    evaluation = audit.source_evaluations[0]
+    assert evaluation.accepted is False
+    assert evaluation.relevance_score == 0.0
+    assert "market" not in evaluation.facet_ids
+    assert "regional_adoption" not in evaluation.facet_ids
+
+
+def test_topic_anchor_overlap_floor_scales_with_anchor_length() -> None:
+    plan = ResearchPlan(
+        brief_id="brief-current-live-diagnostics",
+        topic_anchor="low cost molecular diagnostic kit market adoption pricing Korea field validation",
+        queries=["low cost molecular diagnostic kit market adoption pricing Korea field validation"],
+    )
+
+    assert _topic_anchor_required_overlap(plan, {"molecular", "diagnostic", "kit", "field"}) == 2
+    assert _topic_anchor_required_overlap(plan, {"molecular", "diagnostic", "kit", "field", "validation", "pricing"}) == 3
+
+
+def test_live_run_polluted_query_terms_do_not_become_topic_relevance() -> None:
+    """Production-shaped divergence: source-title pollution in a query must not
+    define the current topic.
+
+    The clean current topic is a diagnostic-kit market/field-validation study.
+    The second query resembles a live follow-up polluted with an unrelated
+    banking fraud source title. Relevance must be measured against topic_anchor,
+    not the polluted query text or the source can validate itself.
+    """
+
+    plan = ResearchPlan(
+        brief_id="brief-current-live-diagnostics",
+        topic_anchor="low cost molecular diagnostic kit market adoption pricing Korea field validation",
+        queries=[
+            "low cost molecular diagnostic kit market adoption pricing Korea field validation",
+            (
+                "low cost molecular diagnostic kit market adoption pricing Korea "
+                "Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector "
+                "cost compliance competency"
+            ),
+        ],
+    )
+    polluted_hit = EvidenceRef(
+        id="arxiv:polluted-query-self-match",
+        source_url="http://arxiv.org/abs/2511.00061v1",
+        source_title="Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector",
+        quote=(
+            "The study analyzes fraud detection system adoption, implementation cost, compliance, "
+            "and competency in Nigerian banking."
+        ),
+        source_grade="B",
+        provenance={
+            "kind": "arxiv",
+            "metadata": {
+                "query": plan.queries[1],
+                "source_text": (
+                    "The study analyzes fraud detection system adoption, implementation cost, "
+                    "compliance, and competency in Nigerian banking."
+                ),
+            },
+        },
+    )
+
+    audit = build_research_quality_audit(
+        [Finding(claim="polluted query source should not pass", support=[polluted_hit], confidence=0.84)],
+        plan,
+    )
+
+    evaluation = audit.source_evaluations[0]
+    assert evaluation.accepted is False
+    assert evaluation.relevance_score < 0.35
+    assert "market" not in evaluation.facet_ids
+    assert "regional_adoption" not in evaluation.facet_ids
+    assert "source text does not overlap" in evaluation.reason or "relevance score" in evaluation.reason
+
+
+def test_topic_anchor_is_sole_relevance_basis_even_when_query_self_matches() -> None:
+    plan = ResearchPlan(
+        brief_id="brief-anchor-only-relevance-basis",
+        topic_anchor="molecular diagnostic kit pathogen biosensor assay market adoption pricing",
+        queries=[
+            "molecular diagnostic kit pathogen biosensor assay market adoption pricing",
+            (
+                "molecular diagnostic kit market adoption pricing "
+                "Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector "
+                "implementation cost compliance competency"
+            ),
+        ],
+    )
+    polluted_query_hit = EvidenceRef(
+        id="arxiv:nigerian-banking-self-match",
+        source_url="http://arxiv.org/abs/2511.00061v1",
+        source_title="Adoption of AI-Driven Fraud Detection System in the Nigerian Banking Sector",
+        quote="Implementation cost, compliance, and competency affect fraud detection adoption in Nigerian banking.",
+        source_grade="A",
+        provenance={"kind": "arxiv", "metadata": {"query": plan.queries[1]}},
+    )
+
+    audit = build_research_quality_audit(
+        [Finding(claim="polluted query result must not become topical", support=[polluted_query_hit])],
+        plan,
+    )
+
+    evaluation = audit.source_evaluations[0]
+    payload = evaluation.to_dict()
+    basis = payload["relevance_basis"]
+    assert evaluation.accepted is False
+    assert basis["basis"] == "topic_anchor"
+    assert basis["query_terms_used"] is False
+    assert basis["fallback_query_used"] is False
+    assert basis["matched_terms"] == []
+    assert "nigerian" not in basis["topic_anchor_terms"]
+    assert "banking" not in basis["topic_anchor_terms"]
+
+
+def test_scaled_topic_anchor_overlap_floor_controls_source_acceptance() -> None:
+    plan = ResearchPlan(
+        brief_id="brief-scaled-anchor-floor",
+        topic_anchor="molecular diagnostic kit pathogen biosensor assay market adoption pricing",
+        queries=["molecular diagnostic kit pathogen biosensor assay market adoption pricing"],
+    )
+    partial_overlap_market_source = EvidenceRef(
+        id="gov:partial-diagnostic-market",
+        source_url="https://example.gov/molecular-diagnostic-market",
+        source_title="Molecular diagnostic market adoption statistics",
+        quote="Survey statistics report molecular diagnostic adoption and pricing trends.",
+        source_grade="A",
+        provenance={"kind": "government", "metadata": {"query": plan.queries[0]}},
+    )
+
+    basis = _source_relevance_basis(partial_overlap_market_source, plan)
+    assert _topic_anchor_required_overlap(plan, set(basis["topic_anchor_terms"])) == 3
+    assert basis["overlap_count"] == 2
+    assert basis["meets_anchor_overlap_floor"] is False
+
+    audit = build_research_quality_audit(
+        [Finding(claim="partial overlap market source should not satisfy topic", support=[partial_overlap_market_source])],
+        plan,
+    )
+
+    evaluation = audit.source_evaluations[0]
+    assert evaluation.accepted is False
+    assert evaluation.relevance_score >= 0.35
+    assert evaluation.to_dict()["relevance_basis"]["required_overlap"] == 3
+    assert "market" not in evaluation.facet_ids
+
+
+def test_live_b1_long_anchor_instruction_words_do_not_make_toc_page_relevant() -> None:
+    """A full live-run prompt can be stored as topic_anchor.
+
+    Instruction words from the quality bar/deliverable tail (academic, quality,
+    API, Gemini, use, etc.) and broad carriers such as plant/performance must not
+    let an unrelated journal table-of-contents page self-validate as B-1 fire
+    blight evidence.
+    """
+
+    long_anchor = (
+        "B-1 fluorescent probe for Erwinia amylovora fire blight bacteria. "
+        "Research question: evaluate source-backed evidence for B-1 detection of Erwinia amylovora/fire blight; "
+        "recall anchor DOI 10.1016/j.isci.2023.106557 and companion STAR Protocols DOI 10.1016/j.xpro.2023.102412; "
+        "verify field/sample validation performance claims (sensitivity, specificity, limit of detection, "
+        "fluorescence response, infected plant sample validation). Quality bar: accepted sources must be "
+        "peer-reviewed/DOI/academic sources or directly relevant authoritative sources; reject generic fluorescent "
+        "probe, unrelated plant disease, market, search-result/listing, mock/empty, strawberry, or Korea-only "
+        "sources unless clearly contextual and not core evidence. Deliverable: research-quality-only benchmark "
+        "metrics against the explicit B-1 Max fixture; use MIMO API only; do not call Gemini Deep Research Max "
+        "or OpenCode Go."
+    )
+    plan = ResearchPlan(brief_id="brief-live-b1-long-anchor", topic_anchor=long_anchor, queries=[long_anchor])
+    unrelated_toc = EvidenceRef(
+        id="crossref:10.52783/jier.v6i1.4539",
+        source_url="https://doi.org/10.52783/jier.v6i1.4539",
+        source_title=(
+            "Articles Harnessing Spirituality to Combat Workplace Stress. The Algorithmic Customer: "
+            "personalized marketing. A Study on Evaluating Psychological Factors Influencing Plant-Based Diet. "
+            "Guest Experience and Repeat Occupancy: Service Quality in Bengaluru's Star Hotels. "
+            "Performance Management Systems in Marketing. Artificial Intelligence in Higher Education."
+        ),
+        quote="Journal table-of-contents page mixing marketing, plant-based diet, star hotels, and performance papers.",
+        source_grade="B",
+        provenance={"kind": "crossref", "metadata": {"query": long_anchor}},
+    )
+
+    domain_terms = _source_required_topic_terms(plan)
+    assert {"erwinia", "amylovora", "blight", "bacteria"}.issubset(domain_terms)
+    assert "academic" not in domain_terms
+    assert "api" not in domain_terms
+    assert "gemini" not in domain_terms
+    assert "plant" not in domain_terms
+    assert "performance" not in domain_terms
+
+    audit = build_research_quality_audit(
+        [Finding(claim="unrelated journal TOC should not pass B-1 live quality", support=[unrelated_toc])],
+        plan,
+    )
+
+    evaluation = audit.source_evaluations[0]
+    assert evaluation.accepted is False
+    assert evaluation.relevance_score < 0.35
+    assert evaluation.facet_ids == ()
+
+
+def test_live_run_quality_audit_replay_rejects_previous_false_pass_sources() -> None:
+    """Replay the live-run artifact shape that previously produced a false PASS.
+
+    A 2026-05-12 autoresearch iteration accepted unrelated journal TOC / social
+    science records for B-1 Erwinia evidence because query suffixes and broad
+    source-kind signals were treated as relevance. The current audit must reject
+    those records and surface gaps when replayed through the runtime evaluator.
+    """
+
+    live_anchor = (
+        "B-1 fluorescent probe for Erwinia amylovora fire blight bacteria. "
+        "Research question: evaluate source-backed evidence for B-1 detection of Erwinia amylovora/fire blight; "
+        "recall anchor DOI 10.1016/j.isci.2023.106557 and companion STAR Protocols DOI 10.1016/j.xpro.2023.102412; "
+        "verify field/sample validation performance claims (sensitivity, specificity, limit of detection, "
+        "fluorescence response, infected plant sample validation). Quality bar: accepted sources must be "
+        "peer-reviewed/DOI/academic sources or directly relevant authoritative sources; reject generic fluorescent "
+        "probe, unrelated plant disease, market, search-result/listing, mock/empty, strawberry, or Korea-only sources "
+        "unless clearly contextual and not core evidence. Deliverable: research-quality-only benchmark metrics against "
+        "the explicit B-1 Max fixture; use MIMO API only; do not call Gemini Deep Research Max or OpenCode Go."
+    )
+    plan = ResearchPlan(
+        brief_id="brief-live-run-replay-current-audit",
+        topic_anchor=live_anchor,
+        queries=[
+            live_anchor,
+            f"{live_anchor} pricing adoption willingness to pay distribution Korea",
+        ],
+    )
+    replayed_false_passes = [
+        EvidenceRef(
+            id="crossref:10.52783/jier.v6i1.4539",
+            source_url="https://doi.org/10.52783/jier.v6i1.4539",
+            source_title=(
+                "Articles Harnessing Spirituality to Combat Workplace Stress; "
+                "The Algorithmic Customer: Artificial Intelligence and Machine Learning on Personalized Marketing; "
+                "Consumer Buying Behavior towards Luxury Branded Durable Goods; "
+                "A Study on Evaluating Psychological Factors Influencing Plant-Based Diet."
+            ),
+            quote="Journal table-of-contents page mixing workplace stress, marketing, consumers, and plant-based diet articles.",
+            source_grade="A",
+            provenance={"kind": "crossref", "metadata": {"query": plan.queries[1]}},
+        ),
+        EvidenceRef(
+            id="crossref:10.47205/jdss.2021(2-iv)74",
+            source_url="https://doi.org/10.47205/jdss.2021(2-iv)74",
+            source_title="Cultural impediments to the China Pakistan Economic Corridor in Balochistan",
+            quote="The study discusses culture, regional development, distribution, and policy adoption around CPEC.",
+            source_grade="A",
+            provenance={"kind": "crossref", "metadata": {"query": plan.queries[1]}},
+        ),
+    ]
+
+    audit = build_research_quality_audit(
+        [Finding(claim=ref.source_title or ref.id, support=[ref]) for ref in replayed_false_passes],
+        plan,
+    )
+
+    evaluations = {item.source_id: item for item in audit.source_evaluations}
+    assert all(item.accepted is False for item in evaluations.values())
+    assert all(item.relevance_score < 0.35 for item in evaluations.values())
+    assert all(item.facet_ids == () for item in evaluations.values())
+    assert {gap.facet_id for gap in audit.gaps} >= {"scientific", "field_validation"}
 
 
 def test_generic_korea_saas_market_source_does_not_satisfy_specific_healthcare_adoption_facets():

@@ -231,10 +231,24 @@ def run_pipeline(
         if live_required:
             assert_mimo_opencode_policy_credentials()
         gateway = default_gateway(force_offline=offline, require_live_default=live_required)
+        provider_candidates: dict[str, list[str]] = {}
         if live_required and hasattr(gateway, "assert_live_provider_candidates"):
-            gateway.assert_live_provider_candidates(
-                ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
+            provider_candidates = dict(
+                gateway.assert_live_provider_candidates(
+                    ("intake", "interview", "targeting", "research", "evidence", "council", "report", "eval")
+                )
             )
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "research_progress",
+                        "stage": "provider_routing",
+                        "status": "provider_route_candidates_ready",
+                        "live_required": True,
+                        "source_research": source_research,
+                        "route_candidates": provider_candidates,
+                    }
+                )
         pipeline = IdeaToCouncilPipeline(
             hitl_adapter=hitl_adapter
             or HITLAdapter(
@@ -383,6 +397,8 @@ def _bounded_source_research_policy(
 
 def _hitl_mode_from_env(*, live_required: bool) -> str:
     env_mode = os.environ.get("MUCHANIPO_HITL_MODE", "").strip().lower()
+    if live_required and env_mode == "auto_approve":
+        raise RuntimeError("live mode rejects MUCHANIPO_HITL_MODE=auto_approve; use markdown or plannotator")
     if env_mode in {"auto_approve", "plannotator", "markdown"}:
         return env_mode
     if os.environ.get("PLANNOTATOR_API_KEY") or os.environ.get("PLANNOTATOR_OFFLINE", "").lower() in {

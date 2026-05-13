@@ -999,6 +999,22 @@ def status_report(*, probe: bool = False) -> dict[str, Any]:
 
 def json_contracts_report() -> dict[str, Any]:
     """Return the documented CLI JSON contracts in a stable JSON shape."""
+    from src.muchanipo.events import goals_event_contract_report
+    from src.pipeline.goals_artifacts import goals_stage_artifact_contract_report
+    from src.pipeline.goals_stages import goals_stage_contract_report
+    from src.interview.ontology_state import (
+        ontology_extraction_stage_artifact_contract_report,
+    )
+    from src.research.deep_research_max_artifact import (
+        deep_research_max_stage_artifact_contract_report,
+    )
+    from src.hitl.plannotator_review_artifact import (
+        plannotator_review_stage_artifact_contract_report,
+    )
+    from src.pipeline.persona_artifact import (
+        persona_generation_stage_artifact_contract_report,
+    )
+
     contracts: dict[str, Any] = {}
     for command, contract in CLI_JSON_CONTRACTS_V1.items():
         contracts[command] = {
@@ -1010,6 +1026,21 @@ def json_contracts_report() -> dict[str, Any]:
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "command": "muchanipo contracts",
+        "goals_stage_contract": goals_stage_contract_report(),
+        "goals_stage_artifact_contract": goals_stage_artifact_contract_report(),
+        "goals_event_contract": goals_event_contract_report(),
+        "deep_research_max_stage_artifact_contract": (
+            deep_research_max_stage_artifact_contract_report()
+        ),
+        "ontology_extraction_stage_artifact_contract": (
+            ontology_extraction_stage_artifact_contract_report()
+        ),
+        "plannotator_review_stage_artifact_contract": (
+            plannotator_review_stage_artifact_contract_report()
+        ),
+        "persona_generation_stage_artifact_contract": (
+            persona_generation_stage_artifact_contract_report()
+        ),
         "contracts": contracts,
     }
 
@@ -1025,6 +1056,17 @@ def render_json_contracts(*, stdout: IO[str] | None = None) -> dict[str, Any]:
         out.write(f"  schema_version: {contract['schema_version']}\n")
         out.write(f"  required keys: {keys}\n")
         out.write(f"  compatibility: {contract['compatibility']}\n")
+    out.write("\nCanonical GOALS public stages\n")
+    for stage in report["goals_stage_contract"]["stages"]:
+        out.write(
+            f"  {stage['order']}. {stage['stage_id']} - "
+            f"{stage['label_en']} / {stage['label_ko']}\n"
+        )
+    artifact = report["goals_stage_artifact_contract"]
+    event_contract = report["goals_event_contract"]
+    out.write("\nGOALS stage artifact/event contract\n")
+    out.write(f"  artifact fields: {', '.join(artifact['artifact_fields'])}\n")
+    out.write(f"  events: {', '.join(event_contract['events'])}\n")
     out.write("\n")
     out.flush()
     return report

@@ -112,6 +112,11 @@ class PlannotatorClient:
             annotations=normalized_annotations,
             comments=comments,
             synthetic=self.offline,
+            decision_provenance={
+                "mode": "plannotator_offline" if self.offline else "plannotator_http",
+                "source": "plannotator_client",
+                "synthetic": self.offline,
+            },
         )
 
     def _request(

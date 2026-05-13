@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .goals_stages import goals_stage_contract_report
 from .reference_contracts import CONTRACTS
 
 
@@ -268,6 +269,32 @@ REFERENCE_INVENTORY: tuple[ReferenceInventoryItem, ...] = (
             "review external release packaging."
         ),
         source_url="https://github.com/karpathy/autoresearch",
+    ),
+    ReferenceInventoryItem(
+        name="Google Gemini Deep Research Max",
+        category=CATEGORY_CLEAN_ROOM,
+        license="observed public/provider behavior; Google service terms; no upstream code copied",
+        stages=(3,),
+        aliases=("Deep Research Max", "Gemini Deep Research Max"),
+        code_paths=(
+            "src/research/autoresearch_runtime.py",
+            "src/governance/cost_simulator.py",
+            "src/pipeline/idea_to_council.py",
+        ),
+        test_paths=(
+            "tests/test_autoresearch_runtime.py",
+            "tests/test_cost_simulator_depth.py",
+            "tests/test_pipeline_runner.py",
+        ),
+        implementation_notes=(
+            "Muchanipo does not call or clone Google's private Deep Research Max runtime. "
+            "The local max-depth contract clean-room ports observed product/API behavior: "
+            "background async execution, phase trace templates, stream event types, stale-job "
+            "guards, HITL plan gate state, client timeout, and a provider-neutral token ledger "
+            "with tool-use and thought-token fields. The observed 699116-token Max probe is "
+            "calibration metadata only, not a bundled dataset or parity claim."
+        ),
+        source_url="https://gemini.google/overview/deep-research/",
     ),
     ReferenceInventoryItem(
         name="InsightForge",
@@ -620,6 +647,7 @@ def reference_readiness_report(*, repo_root: Path | None = None) -> dict[str, An
     return {
         "schema_version": 1,
         "command": "muchanipo references",
+        "goals_stage_contract": goals_stage_contract_report(),
         "stages": _stage_summaries(references),
         "references": references,
         "gaps": gaps,

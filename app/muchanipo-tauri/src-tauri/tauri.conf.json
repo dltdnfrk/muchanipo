@@ -21,8 +21,6 @@
         "minHeight": 480,
         "resizable": true,
         "fullscreen": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
         "backgroundColor": "#1b1b1a"
       }
     ],

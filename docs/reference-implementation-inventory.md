@@ -41,6 +41,32 @@ to runnable runtime behavior, an adapter, a dataset, a faithful constrained
 port, or an explicit license/compliance boundary. They do not turn a partial
 port into full parity; they make the product-standard boundary visible.
 
+## S0 Reference Classification Audit
+
+This audit classifies the named GOALS / Autonomous Science reference stack by
+what Muchanipo can honestly claim today. Stage claims must use these labels, not
+decorative reference names.
+
+| Reference | Classification | Current claim boundary |
+|---|---:|---|
+| GPTaku `show-me-the-prd` | vendored code + local runtime adapter | Vendored prompt/skill templates plus `src/interview/show_me_the_prd_port.py`; upstream declares MIT in metadata but the pinned snapshot lacks a standalone `LICENSE`, so release packaging must preserve metadata or exclude the vendored prompt material. |
+| Karpathy Autoresearch | vendored source snapshot + partial clean-room port | `src/research/karpathy_autoresearch.py` runs a local keep/discard loop over `ResearchPlan.queries`; no claim to upstream GPU training parity or git-reset workflow. |
+| Google Gemini Deep Research Max | clean-room runtime contract | Local max-depth behavior models observed async phases, stream events, timeout/cost/token ledgers, and HITL planning; it does not call, clone, or claim parity with Google's private runtime. |
+| Plannotator | vendored code + faithful constrained in-app port | `third_party/plannotator` is source evidence; Tauri uses a constrained parser/types/annotation/export port and does not package the full upstream workspace as product code. |
+| Nemotron-Personas-Korea | dataset | Local Korean agtech/farmer sample is attributed CC-BY-4.0 and sampler output preserves dataset provenance or marks synthetic fallback. |
+| HACHIMI | clean-room implementation | Local persona generator implements propose/validate/revise/deduplicate controls; it does not claim to reproduce HACHIMI-1M or upstream provider/UI behavior. |
+| MAP-Elites / EvoAgentX | clean-room algorithmic adaptation | Local diversity grid keeps representative personas across risk/innovation axes; no vendored EvoAgentX runtime. |
+| MiroFish | partial port / local runtime adaptation | Stage 5 emits local world graph, agent environment, simulation events, report-agent and deep-interaction records; AGPL boundary remains for any further upstream copying. |
+| OASIS / CAMEL-AI | clean-room implementation | Council protocol implements local individual analysis, blinded peer review, chair synthesis, world state, memory, and interactions; no upstream runtime vendored. |
+| GBrain | clean-room implementation | Local compiled-truth pages, append-only event ledger, typed links, brain-first lookup, graph search, and stale-state policy; MIT status verified during prior audit. |
+| MemPalace | clean-room implementation | Local stdlib memory rooms/wings index and source-backed note persistence; no upstream source is bundled. |
+| InsightForge | partial port / AGPL-sensitive local adaptation | Local query generation, MemPalace lookup, RRF fusion, dedup, stale markers, entity/relationship extraction, and ReACT backend execution; treat AGPL compliance as active if copying/adapting more material. |
+
+`python -m muchanipo references --json` is the enforcement view. In the current
+S0 audit it reports zero `not_stage_contract_covered_references`; the only
+reported gap is the stage-less Codex Skills packaging concept, which is not part
+of the GOALS stage contract.
+
 Stage 1 `show-me-the-prd` now has an in-app deep-interview runtime: the JSONL
 server emits research-batch progress, renders the four PRD documents from live
 answers, and the Tauri app displays the document manifest during the run. Stage

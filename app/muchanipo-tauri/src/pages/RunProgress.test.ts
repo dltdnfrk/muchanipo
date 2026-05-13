@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  deriveLiveE2eStatus,
+  deriveBackendSignalStatus,
   eventFeedsCurrentSessionEvidenceLedger,
   normalizeImportedKnowledgeRefs,
   normalizeResearchQualityReadyActivity,
@@ -14,10 +14,10 @@ import {
   updateResearchContractFromEvent,
 } from "./RunProgress";
 
-describe("deriveLiveE2eStatus", () => {
-  it("proves live e2e when runtime status matches the current app run", () => {
+describe("deriveBackendSignalStatus", () => {
+  it("shows backend signal when runtime status matches the current app run", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: "run-current",
         runtimeHeartbeatStage: "interview",
@@ -26,9 +26,9 @@ describe("deriveLiveE2eStatus", () => {
     ).toBe("Backend run signals observed");
   });
 
-  it("proves live e2e from visible heartbeat when runtime polling has not refreshed app_run_id yet", () => {
+  it("shows backend signal from visible heartbeat when runtime polling has not refreshed app_run_id yet", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: undefined,
         runtimeHeartbeatStage: "interview",
@@ -37,15 +37,15 @@ describe("deriveLiveE2eStatus", () => {
     ).toBe("Backend run signals observed");
   });
 
-  it("does not prove live e2e for a stale runtime without visible heartbeat", () => {
+  it("waits for backend signal for a stale runtime without visible heartbeat", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: "run-old",
         runtimeHeartbeatStage: "interview",
         hasVisibleBackendHeartbeat: false,
       }),
-    ).toBe("Not proven in this UI session");
+    ).toBe("Waiting for live backend signal");
   });
 });
 

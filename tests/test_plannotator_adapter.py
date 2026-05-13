@@ -3,14 +3,17 @@ from pathlib import Path
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
 
 
-def test_auto_approve_gate_returns_approved():
+def test_auto_approve_gate_returns_synthetic_approved():
     adapter = HITLAdapter(mode="auto_approve")
 
     result = adapter.gate("brief", {"x": 1})
 
     assert result.status == "approved"
     assert result.comments == ["auto-approved gate: brief"]
-    assert result.synthetic is False
+    assert result.synthetic is True
+    assert result.path == "synthetic://auto-approve/brief"
+    assert result.decision_provenance["mode"] == "auto_approve"
+    assert result.decision_provenance["synthetic"] is True
 
 
 def test_markdown_gate_writes_pending_queue_item(tmp_path: Path):
@@ -22,9 +25,18 @@ def test_markdown_gate_writes_pending_queue_item(tmp_path: Path):
     assert result.path is not None
     path = Path(result.path)
     assert path.exists()
+    assert result.decision_provenance["mode"] == "markdown"
+    assert result.decision_provenance["path"] == str(path)
+    assert result.decision_provenance["synthetic"] is False
     text = path.read_text(encoding="utf-8")
     assert "status: pending" in text
     assert '"refs": [' in text
+
+
+def test_changes_requested_results_are_resumable():
+    result = HITLResult(status="changes_requested")
+
+    assert result.resumable is True
 
 
 def test_plannotator_mode_uses_configured_client():

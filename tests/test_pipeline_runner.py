@@ -125,6 +125,36 @@ def test_council_progress_gateway_allows_fallback_provider_after_primary_timeout
     assert "council_provider_call_timeout" not in event_names
 
 
+def test_council_progress_gateway_exposes_sanitized_live_usage_fields():
+    from src.pipeline.idea_to_council import _CouncilProviderProgressGateway
+
+    class UsageGateway:
+        stage_routes = {"council": "opencode"}
+        fallback_chain = {"council": ["opencode"]}
+
+        def call(self, stage: str, prompt: str, **kwargs) -> ModelResult:
+            return ModelResult(
+                text="source-backed live response",
+                provider="opencode",
+                model="opencode/kimi-k2.6",
+                raw={"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}},
+            )
+
+    events: list[dict] = []
+    gateway = _CouncilProviderProgressGateway(UsageGateway(), events.append)
+
+    gateway.call("council", "persona prompt", council_stage="persona_propose", layer_id="persona_generation")
+
+    done = next(event for event in events if event["event"] == "council_provider_call_done")
+    assert done["provider"] == "opencode"
+    assert done["model"] == "opencode/kimi-k2.6"
+    assert done["http_status_class"] == "2xx"
+    assert done["usage_prompt_tokens"] == 11
+    assert done["usage_completion_tokens"] == 7
+    assert done["usage_total_tokens"] == 18
+    assert done["response_chars"] > 0
+
+
 
 def test_run_pipeline_returns_ten_rounds_six_chapter_report_and_progress():
     events = []
@@ -353,6 +383,15 @@ def test_run_pipeline_explicit_require_live_uses_live_hitl_gate(monkeypatch):
     assert captured == [("markdown", True)]
 
 
+def test_run_pipeline_explicit_live_rejects_auto_approve_env(monkeypatch):
+    import src.pipeline.runner as runner_mod
+
+    monkeypatch.setenv("MUCHANIPO_HITL_MODE", "auto_approve")
+
+    with pytest.raises(RuntimeError, match="live mode rejects MUCHANIPO_HITL_MODE=auto_approve"):
+        runner_mod.run_pipeline("explicit live", offline=False, require_live=True)
+
+
 def test_run_pipeline_preflights_live_provider_candidates(monkeypatch):
     import src.pipeline.runner as runner_mod
 
@@ -493,10 +532,12 @@ def test_run_pipeline_live_source_research_applies_bounded_runtime_defaults(monk
     monkeypatch.setenv("MUCHANIPO_VERIFICATION_ROUTING", "mimo_opencode_go_only")
     monkeypatch.setenv("XIAOMI_MIMO_API_KEY", "tp-test")
     observed_env: dict[str, str | None] = {}
+    events: list[dict] = []
 
     class _Gateway:
         def assert_live_provider_candidates(self, stages):
             observed_env["provider_gate_seen"] = ",".join(stages)
+            return {stage: ["mimo", "opencode"] for stage in stages}
 
     class _StopAfterRuntimePolicyPipeline:
         def __init__(self, **kwargs):
@@ -513,8 +554,19 @@ def test_run_pipeline_live_source_research_applies_bounded_runtime_defaults(monk
     monkeypatch.setattr(runner_mod, "IdeaToCouncilPipeline", _StopAfterRuntimePolicyPipeline)
 
     with pytest.raises(RuntimeError, match="bounded source runtime policy"):
-        runner_mod.run_pipeline("live source topic", offline=False, require_live=True, depth="shallow")
+        runner_mod.run_pipeline(
+            "live source topic",
+            offline=False,
+            require_live=True,
+            depth="shallow",
+            progress_callback=events.append,
+        )
 
+    provider_ready = next(event for event in events if event.get("status") == "provider_route_candidates_ready")
+    assert provider_ready["stage"] == "provider_routing"
+    assert provider_ready["live_required"] is True
+    assert provider_ready["route_candidates"]["research"] == ["mimo", "opencode"]
+    assert provider_ready["route_candidates"]["evidence"] == ["mimo", "opencode"]
     assert observed_env["provider_gate_seen"]
     assert observed_env["public_timeout"] == "4.0"
     assert observed_env["academic_timeout"] == "4.0"

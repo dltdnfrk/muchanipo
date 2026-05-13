@@ -39,6 +39,7 @@ def test_research_quality_audit_reports_facet_coverage_and_gaps() -> None:
     plan = ResearchPlan(
         brief_id="brief-market-diagnostics",
         queries=["low cost strawberry molecular diagnostic kit market pricing adoption"],
+        topic_anchor="low cost strawberry molecular diagnostic kit market pricing adoption",
     )
     findings = [
         Finding(
@@ -165,7 +166,15 @@ def test_research_progress_events_carry_route_metadata_and_gap_marker() -> None:
                 quote="Korea consumer trend purchase price survey government public data statistics for diagnostic kits",
                 url="https://www.data.go.kr/data/15156401/fileData.do",
                 query=routed_query,
-            )
+            ),
+            _ref(
+                "gov-route-progress-unrouted",
+                kind="government",
+                title="Unrouted Korea Diagnostic Kit Market Consumer Trends",
+                quote="Korea consumer trend purchase price survey government public data statistics for diagnostic kits",
+                url="https://www.data.go.kr/data/15156401/fileData.do?unrouted=1",
+                query=unmatched_query,
+            ),
         ],
     )
     pipeline = IdeaToCouncilPipeline(
@@ -189,6 +198,27 @@ def test_research_progress_events_carry_route_metadata_and_gap_marker() -> None:
         assert event["backend"] == route["backend"]
         assert event["authority_requirement"] == route["authority_requirement"]
         assert event["acceptance_rules"] == route["acceptance_rules"]
+
+    gap_events = [event for event in pipeline.progress_events if event.get("status") == "route_metadata_gap"]
+    assert any(
+        event["origin_status"] == "searching"
+        and event["query"] == unmatched_query
+        and event["route_id"] == "unrouted"
+        and event["reason"] == "planned_route_not_found"
+        for event in gap_events
+    )
+    assert any(
+        event["origin_status"] == "source_found"
+        and event["source_title"] == "Unrouted Korea Diagnostic Kit Market Consumer Trends"
+        and event["route_id"] == "unrouted"
+        for event in gap_events
+    )
+    assert any(
+        event["origin_status"] == "source_evaluated"
+        and event["source_title"] == "Unrouted Korea Diagnostic Kit Market Consumer Trends"
+        and event["route_id"] == "unrouted"
+        for event in gap_events
+    )
 
 
 def test_serve_full_streams_source_evaluation_and_knowledge_gap_events(tmp_path, monkeypatch) -> None:

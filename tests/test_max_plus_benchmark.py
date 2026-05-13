@@ -8,9 +8,13 @@ from src.research.evidence_ledger import build_evidence_ledger_report
 from src.research.karpathy_autoresearch import build_research_quality_audit
 from src.research.planner import ResearchPlan
 from src.research.max_plus_benchmark import (
+    AHP_CRITICAL_MIN_SCORE,
+    AHP_TARGET_SCORE,
     AutoresearchLogEntry,
     ExpectedClaim,
     append_autoresearch_log_entry,
+    ahp_quality_gate_report,
+    anchor_doi_coverage,
     benchmark_metrics,
     build_b1_probe_fixture,
     build_cross_domain_benchmark_matrix,
@@ -45,6 +49,40 @@ def _ref(
     )
 
 
+def _fixture_findings():
+    fixture = build_b1_probe_fixture()
+    findings = [
+        Finding(
+            claim=source.quote,
+            support=[
+                _ref(
+                    source.id,
+                    title=source.title,
+                    quote=source.quote,
+                    grade=source.source_grade,
+                    kind=source.source_kind,
+                    url=source.url,
+                    metadata={"benchmark_id": fixture.benchmark_id},
+                )
+            ],
+            confidence=0.9,
+        )
+        for source in fixture.source_backed_evidence
+    ]
+    return fixture, findings
+
+
+def _useful_b1_report_text() -> str:
+    return """
+    The report distinguishes what the papers actually did, what is inferred from
+    evidence, and what is proposed as AI acceleration. It covers public database
+    URL, access, license, fields, and spectral sources. The local architecture
+    includes table columns for compounds, spectra, bacterial targets, assay
+    outcomes, and model features. It discloses gaps, uncertainty, failure modes,
+    false positives, controls, and selectivity risks.
+    """
+
+
 def test_b1_probe_fixture_points_to_existing_max_report_without_requiring_paid_rerun() -> None:
     fixture = build_b1_probe_fixture(report_path=Path("/tmp/muchanipo-deep-research-max/report.md"))
 
@@ -62,6 +100,8 @@ def test_b1_probe_fixture_points_to_existing_max_report_without_requiring_paid_r
         "b1-xpro-protocol-anchor",
         "b1-field-validation-performance",
     }
+    assert payload["workflow_fidelity_facets"]
+    assert payload["final_report_usefulness_facets"]
 
 
 def test_max_plus_benchmark_fixture_selection_is_explicit(monkeypatch) -> None:
@@ -130,6 +170,72 @@ def test_source_scoring_primitives_reward_authoritative_traceable_quotes_and_pen
     assert "expected_claim_traceability_score" in metrics
     assert "citation_integrity_score" in metrics
     assert "background_leak_count" in metrics
+
+
+def test_ahp_quality_gate_passes_with_fixture_sources_reference_report_and_observability_events() -> None:
+    fixture, findings = _fixture_findings()
+    report_text = _useful_b1_report_text()
+    progress_events = [
+        {"stage": "quality_gate", "status": "source_audit_gate"},
+        {"stage": "quality_gate", "status": "source_decision_ledger_built"},
+        {"stage": "quality_gate", "status": "claim_evidence_gate"},
+        {"stage": "quality_gate", "status": "evidence_ledger_built"},
+        {
+            "stage": "quality_gate",
+            "status": "max_plus_benchmark_scored",
+            "research_backend_contract_version": "research-backend.v1",
+        },
+    ]
+
+    report = ahp_quality_gate_report(
+        findings,
+        fixture=fixture,
+        accepted_source_ids={ref.id for finding in findings for ref in finding.support},
+        progress_events=progress_events,
+        final_report_text=report_text,
+        reference_report_text=report_text,
+    )
+
+    assert report["passed"] is True
+    assert report["score"] >= AHP_TARGET_SCORE
+    assert report["missing_anchor_dois"] == []
+    assert set(report["covered_anchor_dois"]) == {
+        "10.1016/j.isci.2023.106557",
+        "10.1016/j.xpro.2023.102412",
+    }
+    assert all(score >= AHP_CRITICAL_MIN_SCORE for score in report["criterion_scores"].values())
+
+
+def test_ahp_quality_gate_blocks_missing_required_anchor_doi() -> None:
+    fixture, findings = _fixture_findings()
+    isci_only = [
+        finding
+        for finding in findings
+        if "xpro.2023.102412" not in " ".join(ref.source_url for ref in finding.support)
+    ]
+
+    anchor_coverage = anchor_doi_coverage(isci_only, fixture=fixture)
+    report = ahp_quality_gate_report(
+        isci_only,
+        fixture=fixture,
+        progress_events=[
+            {"stage": "quality_gate", "status": "source_audit_gate"},
+            {"stage": "quality_gate", "status": "source_decision_ledger_built"},
+            {"stage": "quality_gate", "status": "claim_evidence_gate"},
+            {"stage": "quality_gate", "status": "evidence_ledger_built"},
+            {
+                "stage": "quality_gate",
+                "status": "max_plus_benchmark_scored",
+                "research_backend_contract_version": "research-backend.v1",
+            },
+        ],
+        final_report_text=_useful_b1_report_text(),
+    )
+
+    assert anchor_coverage["recall"] == 0.5
+    assert report["passed"] is False
+    assert report["missing_anchor_dois"] == ["10.1016/j.xpro.2023.102412"]
+    assert any(gap.startswith("missing_anchor_doi:10.1016/j.xpro.2023.102412") for gap in report["top_gaps"])
 
 
 def test_rq17d_offtopic_authority_sources_do_not_satisfy_b1_relevance_fixture() -> None:
@@ -221,6 +327,39 @@ def test_source_audit_allowlist_blocks_offtopic_sources_from_ledger_and_benchmar
     assert gated_metrics["source_authority_score"] == 0.0
 
 
+def test_benchmark_metrics_emits_citation_density_and_quant_claim_count() -> None:
+    fixture = build_b1_probe_fixture()
+    numeric_ref = _ref(
+        "numeric-doi",
+        title="B-1 detection validation",
+        quote="B-1 detected Erwinia amylovora within 1 minute at 10 CFU/mL with 95% sensitivity.",
+        url="https://doi.org/10.1016/j.isci.2023.106557",
+    )
+    qualitative_ref = _ref(
+        "qualitative-doi",
+        title="B-1 protocol",
+        quote="The companion STAR Protocols article describes sample handling for B-1 fluorescence assays.",
+        url="https://doi.org/10.1016/j.xpro.2023.102412",
+    )
+    findings = [
+        Finding(
+            claim="B-1 reports 95% sensitivity and a 10 CFU/mL detection limit for Erwinia amylovora.",
+            support=[numeric_ref, qualitative_ref],
+            confidence=0.9,
+        ),
+        Finding(
+            claim="B-1 protocol evidence remains sample-handling focused.",
+            support=[qualitative_ref],
+            confidence=0.8,
+        ),
+    ]
+
+    metrics = benchmark_metrics(findings, fixture)
+
+    assert metrics["citation_density"] == 1.5
+    assert metrics["quant_claim_count"] == 1.0
+
+
 def test_cross_domain_benchmark_matrix_scores_generic_facet_source_and_claim_coverage() -> None:
     matrix = build_cross_domain_benchmark_matrix()
 
@@ -297,10 +436,12 @@ def test_autoresearch_log_entry_is_append_only_jsonl_with_decision_evidence(tmp_
     log_path = tmp_path / "autoresearch-log.jsonl"
     entry = AutoresearchLogEntry(
         hypothesis="Authority-weighted quote coverage will expose Max report weak market claims.",
+        code_test_change="Add benchmark metrics and regression coverage for quote-backed source scoring.",
         changed_files=("src/research/max_plus_benchmark.py", "tests/test_max_plus_benchmark.py"),
         metrics_before={"expected_claim_recall": 0.0},
         metrics_after={"expected_claim_recall": 0.67, "weak_source_penalty": 0.0},
         decision="keep",
+        next_slice="Apply the same accepted-source gate to cross-domain benchmark cases.",
         evidence=("pytest tests/test_max_plus_benchmark.py",),
     )
 
@@ -309,10 +450,12 @@ def test_autoresearch_log_entry_is_append_only_jsonl_with_decision_evidence(tmp_
         log_path,
         AutoresearchLogEntry(
             hypothesis="A stricter weak-source penalty should be measured before UI exposure.",
+            code_test_change="Prototype stricter weak-source penalty without accepting the behavior yet.",
             changed_files=("src/research/max_plus_benchmark.py",),
             metrics_before={"weak_source_penalty": 0.0},
             metrics_after={"weak_source_penalty": 0.25},
             decision="discard",
+            next_slice="Revisit after source-role metadata is available in live findings.",
             evidence=("synthetic D-grade source regression",),
         ),
     )
@@ -322,7 +465,9 @@ def test_autoresearch_log_entry_is_append_only_jsonl_with_decision_evidence(tmp_
     assert [row["decision"] for row in rows] == ["keep", "discard"]
     assert rows[0]["schema"] == "muchanipo.autoresearch_log.v1"
     assert rows[0]["hypothesis"]
+    assert rows[0]["code_test_change"] == "Add benchmark metrics and regression coverage for quote-backed source scoring."
     assert rows[0]["changed_files"] == ["src/research/max_plus_benchmark.py", "tests/test_max_plus_benchmark.py"]
+    assert rows[0]["next_slice"] == "Apply the same accepted-source gate to cross-domain benchmark cases."
     assert rows[0]["evidence"] == ["pytest tests/test_max_plus_benchmark.py"]
 
 
@@ -344,6 +489,7 @@ def test_quality_gate_event_exposes_benchmark_metrics_for_future_tauri_progress(
         "event": "research_progress",
         "stage": "quality_gate",
         "status": "max_plus_benchmark_scored",
+        "research_backend_contract_version": "research-backend.v1",
         "benchmark_id": "muchanipo-deep-research-max-plus-b1",
         "decision": "keep",
         "hypothesis": "Benchmark event contract is enough for RunProgress later.",

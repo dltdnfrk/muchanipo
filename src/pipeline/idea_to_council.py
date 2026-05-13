@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Mapping
 from uuid import uuid4
 
 from src.agents.generator import DebateAgentGenerator, DebateAgentSpec
@@ -35,9 +35,19 @@ from src.intent.office_hours import DesignDoc, OfficeHours
 from src.intent.plan_review import ConsensusPlan, PlanReview
 from src.intent.retro import Retro, Retrospective
 from src.interview.brief import ResearchBrief
+from src.interview.ontology_state import (
+    OntologyExtractionArtifactInput,
+    build_ontology_extraction_stage_artifact,
+)
 from src.interview.product_planning import build_product_planning_projection, default_research_question
 from src.interview.session import InterviewSession
 from src.interview.show_me_the_prd_port import show_me_the_prd_artifacts
+from src.pipeline.persona_artifact import (
+    PersonaGenerationArtifactInput,
+    assert_persona_artifact_ready_for_llm_council,
+    build_persona_generation_stage_artifact,
+    persona_payload_from_stage_artifact,
+)
 from src.research.autoresearch_runtime import runtime_contract_for_profile
 from src.research.depth import ResearchDepthProfile, depth_profile, effective_query_limit, normalize_depth
 from src.research.karpathy_autoresearch import (
@@ -48,14 +58,16 @@ from src.research.karpathy_autoresearch import (
     iteration_budget_for_profile,
 )
 from src.research.evidence_ledger import build_evidence_ledger_report
-from src.research.event_contract import assert_research_event_contract
+from src.research.event_contract import RESEARCH_BACKEND_CONTRACT_VERSION, assert_research_event_contract
 from src.research.max_plus_benchmark import (
+    ahp_quality_gate_report,
     benchmark_metrics,
     build_quality_gate_event,
     selected_max_plus_benchmark_fixture,
 )
 from src.research.planner import (
     ResearchPlanner,
+    adaptive_followup_execution_report,
     adaptive_followup_query_plan,
     query_route_ledger,
     with_source_discovery_queries,
@@ -65,6 +77,7 @@ from src.research.readiness import ResearchReadinessInput, decide_research_readi
 from src.research.refutation_loop import RefutationLoopReport, run_refutation_loop
 from src.research.runner import MockResearchRunner, build_runner
 from src.research.session_contract import ResearchContract, scope_event
+from src.research.source_family_contracts import build_source_family_contract_report, parse_json_artifact
 from src.research.source_decision_ledger import (
     SourceDecisionLedger,
     build_source_decision_ledger,
@@ -542,6 +555,22 @@ class IdeaToCouncilPipeline:
             "adaptive_followup_query_plan",
             json.dumps(adaptive_query_plan, ensure_ascii=False, sort_keys=True),
         )
+        adaptive_execution_report = adaptive_followup_execution_report(
+            adaptive_query_plan,
+            facet_gap_report=facet_gap_report,
+        )
+        state.record_artifact(
+            "adaptive_followup_execution_report",
+            json.dumps(adaptive_execution_report, ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact(
+            "facet_gap_scheduler_report_iteration_2",
+            json.dumps(
+                adaptive_execution_report["facet_gap_scheduler_report_iteration_2"],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
         self._emit_progress(
             {
                 "event": "research_progress",
@@ -550,6 +579,26 @@ class IdeaToCouncilPipeline:
                 **adaptive_query_plan,
                 "status": "adaptive_followup_query_plan",
                 "adaptive_followup_status": adaptive_query_plan["status"],
+            }
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "adaptive_followup_execution_report",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **adaptive_execution_report,
+            }
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "facet_gap_scheduler_report_iteration_2",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                "facet_gap_scheduler_report_iteration_2": adaptive_execution_report[
+                    "facet_gap_scheduler_report_iteration_2"
+                ],
             }
         )
         self._emit_progress(
@@ -599,18 +648,38 @@ class IdeaToCouncilPipeline:
                 fixture=benchmark_fixture,
                 accepted_source_ids=accepted_evidence_ids,
             )
+            ahp_report = ahp_quality_gate_report(
+                findings,
+                fixture=benchmark_fixture,
+                accepted_source_ids=accepted_evidence_ids,
+                benchmark_score_vector=benchmark_score_vector,
+                progress_events=[
+                    *self.progress_events,
+                    {
+                        "stage": "quality_gate",
+                        "status": "max_plus_benchmark_scored",
+                        "research_backend_contract_version": RESEARCH_BACKEND_CONTRACT_VERSION,
+                    },
+                ],
+            )
             benchmark_decision = _max_plus_benchmark_decision(benchmark_score_vector)
             state.record_artifact("max_plus_benchmark_id", benchmark_fixture.benchmark_id)
             state.record_artifact(
                 "max_plus_benchmark_metrics",
                 json.dumps(benchmark_score_vector, ensure_ascii=False, sort_keys=True),
             )
+            state.record_artifact(
+                "max_plus_ahp_quality_gate",
+                json.dumps(ahp_report, ensure_ascii=False, sort_keys=True),
+            )
+            state.record_artifact("max_plus_ahp_score", str(ahp_report["score"]))
             state.record_artifact("max_plus_benchmark_decision", benchmark_decision)
             benchmark_event = build_quality_gate_event(
                 benchmark_id=benchmark_fixture.benchmark_id,
                 metrics=benchmark_score_vector,
                 decision=benchmark_decision,
                 hypothesis="score live findings against an explicitly selected local Deep Research Max fixture without re-calling paid Max",
+                ahp_report=ahp_report,
             )
             benchmark_event["topic_anchor"] = getattr(plan, "topic_anchor", "")
             self._emit_progress(benchmark_event)
@@ -657,6 +726,32 @@ class IdeaToCouncilPipeline:
                 "status": "research_process_completeness",
                 "topic_anchor": getattr(plan, "topic_anchor", ""),
                 **process_completeness_payload,
+            }
+        )
+        source_family_contract_report = build_source_family_contract_report(
+            progress_statuses=[str(event.get("status") or "") for event in self.progress_events],
+            artifacts=state.artifacts,
+            source_decision_summary=source_decision_ledger.summary(),
+            source_decisions=source_decision_ledger.to_dict()["decisions"],
+            claim_evidence_summary=claim_evidence_summary,
+            refutation_summary=refutation_loop_report.summary(),
+            adaptive_followup_execution_report=adaptive_execution_report,
+            karpathy_autoresearch_runtime=parse_json_artifact(
+                state.artifacts.get("karpathy_autoresearch_runtime", {})
+            ),
+            max_plus_benchmark_metrics=benchmark_score_vector or {},
+        )
+        state.record_artifact(
+            "source_family_contract_report",
+            json.dumps(source_family_contract_report, ensure_ascii=False, sort_keys=True),
+        )
+        self._emit_progress(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "source_family_contract_report",
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                **source_family_contract_report,
             }
         )
         research_audit_appendix = build_research_audit_appendix_payload(
@@ -714,6 +809,31 @@ class IdeaToCouncilPipeline:
             raise ResearchQualityOnlyComplete(state)
 
         agents = DebateAgentGenerator().from_report(report)
+        ontology_artifact = _build_pipeline_ontology_extraction_artifact(
+            topic=original_topic,
+            brief=brief,
+            report=report,
+            evidence_refs=evidence_refs,
+        )
+        state.record_artifact(
+            "ontology_extraction_artifact",
+            json.dumps(ontology_artifact, ensure_ascii=False, sort_keys=True),
+        )
+        ontology_payload = _ontology_payload_from_stage_artifact(ontology_artifact)
+        state.record_artifact("ontology_extraction_consumable", "true" if ontology_payload.get("consumable") else "false")
+        state.record_artifact("ontology_entity_count", str(len(ontology_payload.get("entities") or [])))
+        state.record_artifact("ontology_relation_count", str(len(ontology_payload.get("relations") or [])))
+        self._emit_progress(
+            {
+                "event": "stage_completed" if ontology_payload.get("consumable") else "stage_blocked",
+                "stage": "ontology_extraction",
+                "status": ontology_artifact["status"],
+                "artifact_ref": "state:ontology_extraction_artifact",
+                "ontology_entity_count": len(ontology_payload.get("entities") or []),
+                "ontology_relation_count": len(ontology_payload.get("relations") or []),
+                "needs_review_entity_count": len(ontology_payload.get("needs_review_entity_labels") or []),
+            }
+        )
         state.record_artifact("agents", ",".join(agent.name for agent in agents))
         personas, persona_telemetry = _generate_council_personas(
             report=report,
@@ -724,7 +844,47 @@ class IdeaToCouncilPipeline:
             depth_profile=self.depth_profile,
             require_live=self.require_live,
             progress_callback=self.progress_callback,
+            ontology_artifact=ontology_payload,
         )
+        persona_stage_artifact = build_persona_generation_stage_artifact(
+            PersonaGenerationArtifactInput(
+                ontology_artifact=ontology_payload,
+                personas=personas,
+                telemetry=persona_telemetry,
+                min_council_size=max(1, min(len(personas), active_persona_count)),
+                mode="live" if self.require_live else "offline",
+                metadata={
+                    "depth_profile": str(self.depth_profile.name),
+                    "target_persona_pool_size": self.depth_profile.persona_pool_size,
+                    "active_persona_count": active_persona_count,
+                },
+            )
+        )
+        persona_payload = persona_payload_from_stage_artifact(persona_stage_artifact)
+        state.record_artifact(
+            "persona_generation_artifact",
+            json.dumps(persona_stage_artifact, ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact(
+            "persona_generation_llm_council_ready",
+            "true" if persona_payload["downstream_consumability"].get("llm_council_ready") else "false",
+        )
+        self._emit_progress(
+            {
+                "event": "stage_completed"
+                if persona_payload["downstream_consumability"].get("llm_council_ready")
+                else "stage_blocked",
+                "stage": "persona_generation",
+                "status": persona_stage_artifact["status"],
+                "artifact_ref": "state:persona_generation_artifact",
+                "admitted_persona_count": len(persona_payload.get("admitted_personas") or []),
+                "rejected_persona_count": len(persona_payload.get("rejected_personas") or []),
+                "llm_council_ready": bool(
+                    persona_payload["downstream_consumability"].get("llm_council_ready")
+                ),
+            }
+        )
+        assert_persona_artifact_ready_for_llm_council(persona_payload)
 
         state.advance(Stage.COUNCIL)
         for key, value in persona_telemetry.items():
@@ -1061,19 +1221,19 @@ class IdeaToCouncilPipeline:
         routes_by_query = {str(route.get("query") or ""): route for route in query_routes}
         for index, query in enumerate(queries, start=1):
             route = routes_by_query.get(str(query), {})
-            self._emit_progress(
-                {
-                    "event": "research_progress",
-                    "stage": Stage.RESEARCH.value,
-                    "status": "searching",
-                    "query": query,
-                    "topic_anchor": getattr(plan, "topic_anchor", ""),
-                    "query_index": index,
-                    "query_count": len(queries),
-                    **_route_progress_metadata(route),
-                    "backends": backends,
-                }
-            )
+            event = {
+                "event": "research_progress",
+                "stage": Stage.RESEARCH.value,
+                "status": "searching",
+                "query": query,
+                "topic_anchor": getattr(plan, "topic_anchor", ""),
+                "query_index": index,
+                "query_count": len(queries),
+                **_route_progress_metadata(route),
+                "backends": backends,
+            }
+            self._emit_progress(event)
+            self._emit_route_metadata_gap_progress(event, origin_status="searching")
 
     def _record_source_decision_ledger(
         self,
@@ -1137,11 +1297,18 @@ class IdeaToCouncilPipeline:
                 "source_role": decision.source_role,
                 "accepted": decision.accepted,
                 "decision": decision.decision,
+                "relevance_score": decision.relevance_score,
                 "rejection_codes": list(decision.rejection_codes),
                 "reason": decision.reason,
+                "source_confidence_axis": dict(decision.source_confidence_axis),
+                "source_freshness": dict(decision.source_freshness),
+                "source_freshness_stale": decision.source_freshness_stale,
+                "source_freshness_followup_reason": decision.source_freshness_followup_reason,
             }
             self._emit_progress({**base_event, "status": "source_resolved"})
+            self._emit_route_metadata_gap_progress(base_event, origin_status="source_resolved")
             self._emit_progress({**base_event, "status": "source_decision"})
+            self._emit_route_metadata_gap_progress(base_event, origin_status="source_decision")
         return ledger
 
     def _record_refutation_loop(
@@ -1224,8 +1391,10 @@ class IdeaToCouncilPipeline:
                         }
                     )
                 self._emit_progress({**base_event, "status": "source_found"})
+                self._emit_route_metadata_gap_progress(base_event, origin_status="source_found")
                 if evaluation is not None:
                     self._emit_progress({**base_event, "status": "source_evaluated"})
+                    self._emit_route_metadata_gap_progress(base_event, origin_status="source_evaluated")
                 max_emitted = int(os.getenv("MUCHANIPO_MAX_RESEARCH_PROGRESS_SOURCES", "24"))
                 if emitted >= max_emitted:
                     break
@@ -1259,6 +1428,38 @@ class IdeaToCouncilPipeline:
         self.progress_events.append(event)
         if self.progress_callback is not None:
             self.progress_callback(event)
+
+    def _emit_route_metadata_gap_progress(
+        self,
+        event: dict[str, Any],
+        *,
+        origin_status: str,
+        reason: str = "planned_route_not_found",
+    ) -> None:
+        if event.get("route_metadata_gap") is not True:
+            return
+        gap_event: dict[str, Any] = {
+            "event": "research_progress",
+            "stage": event.get("stage") or Stage.RESEARCH.value,
+            "status": "route_metadata_gap",
+            "topic_anchor": event.get("topic_anchor", ""),
+            "origin_status": origin_status,
+            "reason": reason,
+            "route_id": event.get("route_id") or "unrouted",
+        }
+        for key in (
+            "query",
+            "query_index",
+            "query_count",
+            "source_id",
+            "source_title",
+            "source_url",
+            "decision",
+            "resolver_status",
+        ):
+            if key in event:
+                gap_event[key] = event[key]
+        self._emit_progress(gap_event)
 
     def _save_to_vault(self, brief_id: str, report_md: str, *, run_id: str | None = None) -> Path:
         self.vault_dir.mkdir(parents=True, exist_ok=True)
@@ -1665,13 +1866,16 @@ def _round_digests(
                 for claim in (_visible_report_claim(value) for value in list(round_record.body_claims))
                 if claim and claim != key_claim
             ]
+            round_evidence_ids = list(round_record.evidence_ref_ids)
+            if not round_evidence_ids and not require_live:
+                round_evidence_ids = evidence_ids
             digests.append(
                 RoundDigest(
                     layer_id=round_record.layer_id,
                     chapter_title=round_record.chapter_title,
                     key_claim=key_claim or _fallback_layer_claim(round_record.chapter_title),
                     body_claims=body_claims,
-                    evidence_ref_ids=list(round_record.evidence_ref_ids),
+                    evidence_ref_ids=round_evidence_ids,
                     confidence=round_record.confidence_score,
                     framework=round_record.framework,
                 )
@@ -1814,6 +2018,98 @@ def _chain_watchdog_timeout_sec(gateway: Any, stage: str, per_provider_timeout_s
     return float(per_provider_timeout_sec) * candidate_count + grace
 
 
+def _council_compact_retry_enabled() -> bool:
+    raw = os.environ.get("MUCHANIPO_COUNCIL_COMPACT_RETRY", "1")
+    return raw.strip().casefold() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _council_progress_failure_kind(exc: Exception) -> str:
+    text = str(exc).casefold()
+    if "empty or too-short" in text:
+        return "empty_live_output"
+    if isinstance(exc, TimeoutError) or "timed out" in text:
+        return "provider_timeout"
+    if any(
+        marker in text
+        for marker in (
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "invalid key",
+            "invalid_key",
+            "api key is not configured",
+            "missing_credential",
+            "mock_or_offline",
+            "no live provider",
+        )
+    ):
+        return "auth_or_policy_failure"
+    if "rejected mock model result" in text or "placeholder model output" in text:
+        return "mock_live_output"
+    return "provider_error"
+
+
+def _should_compact_retry_council_progress(exc: Exception) -> bool:
+    if not _council_compact_retry_enabled():
+        return False
+    return _council_progress_failure_kind(exc) in {"empty_live_output", "provider_timeout"}
+
+
+def _compact_council_retry_prompt(
+    prompt: str,
+    *,
+    council_stage: str,
+    layer_id: str,
+    persona: str,
+) -> str:
+    max_chars = _council_compact_retry_prompt_chars()
+    prompt_excerpt = _head_tail_excerpt(prompt, max_chars)
+    return "\n".join(
+        [
+            "Return only valid JSON. No markdown.",
+            "This is a compact retry after a live council provider returned empty, too-short, or timed out.",
+            "Preserve the exact JSON schema requested by the original prompt.",
+            "If evidence is insufficient, express uncertainty with needs_review or the closest schema field; do not fabricate facts.",
+            f"Council stage: {council_stage}",
+            f"Layer: {layer_id}",
+            f"Persona: {persona}",
+            "Original prompt excerpt follows:",
+            prompt_excerpt,
+        ]
+    )
+
+
+def _head_tail_excerpt(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    head_chars = max(1, max_chars // 2)
+    tail_chars = max(1, max_chars - head_chars)
+    return f"{text[:head_chars]}\n\n[...middle of original prompt omitted for compact retry...]\n\n{text[-tail_chars:]}"
+
+
+def _council_compact_retry_prompt_chars() -> int:
+    raw = os.environ.get("MUCHANIPO_COUNCIL_COMPACT_RETRY_PROMPT_CHARS", "6000")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 6000
+    return max(1000, min(value, 12000))
+
+
+def _council_compact_retry_max_tokens(council_stage: str, current_max_tokens: Any) -> int:
+    raw = os.environ.get("MUCHANIPO_COUNCIL_COMPACT_RETRY_MAX_TOKENS", "")
+    try:
+        configured = int(raw) if raw else 2048
+    except (TypeError, ValueError):
+        configured = 2048
+    try:
+        current = int(current_max_tokens)
+    except (TypeError, ValueError):
+        current = _council_stage_max_tokens(council_stage)
+    return max(512, min(current, configured, 4096))
+
+
 class _CouncilProviderProgressGateway:
     """Emit council provider-call progress around council preparation calls."""
 
@@ -1853,37 +2149,17 @@ class _CouncilProviderProgressGateway:
             kwargs.setdefault("timeout", timeout_sec)
         started_at = time.monotonic()
         try:
-            if timeout_sec > 0:
-                result = self._call_with_watchdog(
-                    stage,
-                    prompt,
-                    _chain_watchdog_timeout_sec(self._gateway, stage, timeout_sec),
-                    kwargs,
-                )
-            else:
-                result = self._gateway.call(stage, prompt, **kwargs)
-        except TimeoutError:
-            self._emit(
-                {
-                    "event": "council_provider_call_timeout",
-                    **base_event,
-                    "elapsed_sec": round(time.monotonic() - started_at, 3),
-                    "blocks_product_pass": True,
-                }
-            )
-            raise
+            result = self._call_once(stage, prompt, timeout_sec, kwargs)
         except Exception as exc:
-            self._emit(
-                {
-                    "event": "council_provider_call_error",
-                    **base_event,
-                    "elapsed_sec": round(time.monotonic() - started_at, 3),
-                    "error_class": exc.__class__.__name__,
-                    "error": _redact_text(exc),
-                    "blocks_product_pass": True,
-                }
+            result, base_event, started_at = self._retry_compact_or_raise(
+                stage=stage,
+                prompt=prompt,
+                kwargs=kwargs,
+                timeout_sec=timeout_sec,
+                base_event=base_event,
+                started_at=started_at,
+                exc=exc,
             )
-            raise
 
         response_text = getattr(result, "text", str(result)) if result else ""
         self._emit(
@@ -1894,9 +2170,113 @@ class _CouncilProviderProgressGateway:
                 "provider": str(getattr(result, "provider", "")),
                 "model": str(getattr(result, "model", "")),
                 "response_chars": len(response_text),
+                "http_status_class": "2xx",
+                **_usage_token_fields_from_result(result),
             }
         )
         return result
+
+    def _call_once(
+        self,
+        stage: str,
+        prompt: str,
+        timeout_sec: float,
+        kwargs: dict[str, Any],
+    ) -> Any:
+        if timeout_sec > 0:
+            return self._call_with_watchdog(
+                stage,
+                prompt,
+                _chain_watchdog_timeout_sec(self._gateway, stage, timeout_sec),
+                kwargs,
+            )
+        return self._gateway.call(stage, prompt, **kwargs)
+
+    def _retry_compact_or_raise(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        kwargs: dict[str, Any],
+        timeout_sec: float,
+        base_event: dict[str, Any],
+        started_at: float,
+        exc: Exception,
+    ) -> tuple[Any, dict[str, Any], float]:
+        failure_kind = _council_progress_failure_kind(exc)
+        should_retry = _should_compact_retry_council_progress(exc)
+        self._emit_provider_failure(
+            base_event,
+            started_at,
+            exc,
+            failure_kind=failure_kind,
+            retry="compact_council_prompt" if should_retry else "none",
+        )
+        if not should_retry:
+            raise exc
+
+        council_stage = str(base_event["council_stage"])
+        persona = str(base_event["persona"])
+        compact_prompt = _compact_council_retry_prompt(
+            prompt,
+            council_stage=council_stage,
+            layer_id=str(base_event["layer"]),
+            persona=persona,
+        )
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["max_tokens"] = _council_compact_retry_max_tokens(
+            council_stage,
+            retry_kwargs.get("max_tokens"),
+        )
+        retry_event = {
+            **base_event,
+            "prompt_chars": len(compact_prompt),
+            "retry": "compact_council_prompt",
+            "failure_kind": failure_kind,
+            "retry_max_tokens": retry_kwargs["max_tokens"],
+        }
+        self._emit({"event": "council_provider_call_start", **retry_event})
+        retry_started_at = time.monotonic()
+        try:
+            result = self._call_once(stage, compact_prompt, timeout_sec, retry_kwargs)
+        except Exception as retry_exc:
+            retry_failure_kind = _council_progress_failure_kind(retry_exc)
+            self._emit_provider_failure(
+                retry_event,
+                retry_started_at,
+                retry_exc,
+                failure_kind=retry_failure_kind,
+                retry="compact_council_prompt",
+            )
+            raise
+        return result, retry_event, retry_started_at
+
+    def _emit_provider_failure(
+        self,
+        base_event: dict[str, Any],
+        started_at: float,
+        exc: Exception,
+        *,
+        failure_kind: str,
+        retry: str,
+    ) -> None:
+        event_name = (
+            "council_provider_call_timeout"
+            if failure_kind == "provider_timeout"
+            else "council_provider_call_error"
+        )
+        event = {
+            "event": event_name,
+            **base_event,
+            "elapsed_sec": round(time.monotonic() - started_at, 3),
+            "failure_kind": failure_kind,
+            "retry": retry,
+            "error_class": exc.__class__.__name__,
+            "http_status_class": _http_status_class_from_exception(exc),
+            "error": _redact_text(exc),
+            "blocks_product_pass": True,
+        }
+        self._emit(event)
 
     def _call_with_watchdog(
         self,
@@ -1965,6 +2345,42 @@ def _redact_text(value: Any) -> str:
         lambda match: f"{match.group(1)}=[REDACTED]",
         str(value),
     )
+
+
+def _http_status_class_from_exception(exc: Exception) -> str:
+    code = getattr(exc, "code", None) or getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if code is None:
+        match = re.search(r"\b([1-5]\d{2})\b", str(exc))
+        code = match.group(1) if match else None
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        return "unknown"
+    return f"{status // 100}xx"
+
+
+def _usage_token_fields_from_result(result: Any) -> dict[str, int]:
+    raw = getattr(result, "raw", None)
+    if not isinstance(raw, dict):
+        return {}
+    usage = raw.get("usage") or raw.get("usageMetadata") or {}
+    if not isinstance(usage, dict):
+        return {}
+    aliases = {
+        "usage_prompt_tokens": ("prompt_tokens", "input_tokens", "promptTokenCount"),
+        "usage_completion_tokens": ("completion_tokens", "output_tokens", "candidatesTokenCount"),
+        "usage_total_tokens": ("total_tokens", "totalTokenCount"),
+    }
+    fields: dict[str, int] = {}
+    for output_key, input_keys in aliases.items():
+        for input_key in input_keys:
+            if input_key in usage:
+                try:
+                    fields[output_key] = max(0, int(usage.get(input_key) or 0))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return fields
 
 
 def _use_real_research_from_env() -> bool:
@@ -2550,6 +2966,168 @@ def _detect_offline_mode() -> bool:
     return True
 
 
+def _ontology_payload_from_stage_artifact(stage_artifact: Mapping[str, Any]) -> dict[str, Any]:
+    for output in stage_artifact.get("outputs", []) or []:
+        if isinstance(output, Mapping) and output.get("artifact_id") == "ontology_extraction":
+            payload = output.get("payload")
+            if isinstance(payload, Mapping):
+                return dict(payload)
+    raise ValueError("ontology_extraction stage artifact is missing ontology payload")
+
+
+def _build_pipeline_ontology_extraction_artifact(
+    *,
+    topic: str,
+    brief: ResearchBrief,
+    report: ResearchReport,
+    evidence_refs: list[EvidenceRef],
+) -> dict[str, Any]:
+    interview_turns: list[dict[str, Any]] = []
+    for idx, turn in enumerate(getattr(brief, "interview_trace", []) or [], start=1):
+        if isinstance(turn, Mapping):
+            interview_turns.append(
+                {
+                    "turn_id": str(turn.get("id") or turn.get("turn_id") or f"interview:turn-{idx}"),
+                    "question": str(turn.get("question") or ""),
+                    "answer": str(turn.get("answer") or turn.get("response") or ""),
+                    "source_ref": str(turn.get("source_ref") or f"interview:turn-{idx}"),
+                }
+            )
+    if not interview_turns:
+        interview_turns.append(
+            {
+                "turn_id": "brief:summary",
+                "question": "canonical research brief",
+                "answer": " ".join(
+                    str(item)
+                    for item in (
+                        getattr(brief, "objective", ""),
+                        getattr(brief, "audience", ""),
+                        getattr(brief, "domain_boundary", ""),
+                        getattr(brief, "decision_criteria", ""),
+                    )
+                    if str(item).strip()
+                ),
+                "source_ref": "brief:summary",
+            }
+        )
+    source_fragments = [
+        {
+            "source_ref": "report:title",
+            "text": str(getattr(report, "title", "") or topic),
+        }
+    ]
+    source_fragments.extend(
+        {
+            "source_ref": str(getattr(ref, "id", "") or getattr(ref, "source_url", "") or f"evidence:{idx}"),
+            "text": " ".join(
+                str(value)
+                for value in (
+                    getattr(ref, "source_title", ""),
+                    getattr(ref, "quote", ""),
+                    getattr(ref, "snippet", ""),
+                    getattr(ref, "source_url", ""),
+                )
+                if str(value).strip()
+            ),
+        }
+        for idx, ref in enumerate(evidence_refs, start=1)
+    )
+    source_fragments.extend(
+        {
+            "source_ref": f"report:finding-{idx}",
+            "text": str(getattr(finding, "claim", "") or ""),
+        }
+        for idx, finding in enumerate(getattr(report, "findings", []) or [], start=1)
+    )
+    manual_entities = [
+        {
+            "label": str(topic),
+            "kind": "research_topic",
+            "source_refs": ["topic:anchor"],
+            "confidence": 0.76,
+        },
+        {
+            "label": str(getattr(report, "title", "") or topic),
+            "kind": "research",
+            "source_refs": ["report:title", "topic:anchor"],
+            "confidence": 0.74,
+        },
+    ]
+    if getattr(brief, "audience", ""):
+        manual_entities.append(
+            {
+                "label": str(getattr(brief, "audience")),
+                "kind": "actor",
+                "source_refs": ["brief:summary"],
+                "confidence": 0.68,
+            }
+        )
+    relations = [
+        {
+            "source": str(topic),
+            "predicate": "scopes",
+            "target": str(getattr(report, "title", "") or topic),
+            "source_refs": ["topic:anchor", "report:title"],
+            "confidence": 0.64,
+        }
+    ]
+    if getattr(brief, "audience", ""):
+        relations.append(
+            {
+                "source": str(getattr(brief, "audience")),
+                "predicate": "evaluates",
+                "target": str(getattr(report, "title", "") or topic),
+                "source_refs": ["brief:summary"],
+                "confidence": 0.62,
+            }
+        )
+    return build_ontology_extraction_stage_artifact(
+        OntologyExtractionArtifactInput(
+            topic=topic,
+            interview_turns=interview_turns,
+            source_fragments=source_fragments,
+            manual_entities=manual_entities,
+            relations=relations,
+        )
+    )
+
+
+def _ontology_entities_for_persona_generation(
+    ontology_artifact: Mapping[str, Any] | None,
+    *,
+    topic: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(ontology_artifact, Mapping):
+        raise ValueError("persona generation requires canonical ontology_extraction artifact")
+    if ontology_artifact.get("artifact_id") != "ontology_extraction":
+        ontology_artifact = _ontology_payload_from_stage_artifact(ontology_artifact)
+    if not ontology_artifact.get("consumable"):
+        raise ValueError("ontology_extraction artifact is not consumable by downstream stages")
+    entities: list[dict[str, Any]] = []
+    for entity in ontology_artifact.get("entities", []) or []:
+        if not isinstance(entity, Mapping) or entity.get("status") != "supported":
+            continue
+        entities.append(
+            {
+                "name": str(entity.get("label") or entity.get("normalized_id") or topic),
+                "type": str(entity.get("kind") or "ontology_entity"),
+                "summary": f"Source-grounded ontology entity {entity.get('normalized_id', '')}",
+                "facts": [str(ref) for ref in entity.get("source_refs", []) or []],
+                "attributes": {
+                    "normalized_id": str(entity.get("normalized_id") or ""),
+                    "aliases": list(entity.get("aliases", []) or []),
+                    "uncertainty": entity.get("uncertainty"),
+                    "status": str(entity.get("status") or ""),
+                },
+                "source": "ontology_extraction_artifact",
+            }
+        )
+    if not entities:
+        raise ValueError("ontology_extraction artifact has no supported entities for persona generation")
+    return entities
+
+
 def _generate_council_personas(
     *,
     report: ResearchReport,
@@ -2560,13 +3138,12 @@ def _generate_council_personas(
     depth_profile: ResearchDepthProfile,
     require_live: bool = False,
     progress_callback: Callable[[dict], None] | None = None,
+    ontology_artifact: Mapping[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     consensus_ontology = consensus_plan.to_ontology()
-    ontology_entities = _build_mirofish_ontology_entities(
-        report=report,
-        agents=agents,
-        consensus_plan=consensus_plan,
-        targeting_map=targeting_map,
+    ontology_entities = _ontology_entities_for_persona_generation(
+        ontology_artifact,
+        topic=report.title,
     )
     base_value_axes = dict(
         consensus_ontology.get("value_axes") or {

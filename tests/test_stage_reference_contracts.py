@@ -13,6 +13,7 @@ def test_reference_contract_maps_runtime_stages():
     assert "GPTaku show-me-the-prd" in references_for_stage(Stage.INTERVIEW)
     assert "GStack plan-review" in references_for_stage(Stage.TARGETING)
     assert "Karpathy Autoresearch" in references_for_stage(Stage.RESEARCH)
+    assert "Google Gemini Deep Research Max" in references_for_stage(Stage.RESEARCH)
     assert "출처 기반 연구 원칙" in references_for_stage(Stage.EVIDENCE)
     assert "HACHIMI" in references_for_stage(Stage.COUNCIL)
     assert "GStack learnings_log" in references_for_stage(Stage.DONE)
@@ -118,6 +119,15 @@ def test_reference_readiness_report_surfaces_gaps_and_license_warnings():
     assert react["claim_level"] == "runtime_ready"
     assert react["source_url"] == "https://react-lm.github.io"
     assert "tests/test_react_report_executor.py" in react["test_paths"]
+    deep_research_max = next(
+        item for item in report["references"] if item["name"] == "Google Gemini Deep Research Max"
+    )
+    assert deep_research_max["category"] == "clean-room implementation"
+    assert deep_research_max["ready"] is True
+    assert deep_research_max["claim_level"] == "runtime_ready"
+    assert "src/research/autoresearch_runtime.py" in deep_research_max["code_paths"]
+    assert "tests/test_autoresearch_runtime.py" in deep_research_max["test_paths"]
+    assert "private Deep Research Max runtime" in deep_research_max["implementation_notes"]
     wiki = next(item for item in report["references"] if item["name"] == "Karpathy LLM Wiki Pattern")
     assert wiki["ready"] is True
     assert wiki["claim_level"] == "runtime_ready"

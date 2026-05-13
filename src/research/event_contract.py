@@ -12,10 +12,12 @@ from typing import Any, Mapping
 
 RESEARCH_PROGRESS_EVENT = "research_progress"
 TERMINAL_RESEARCH_EVENTS = {"research_quality_ready", "research_quality_needs_review"}
+RESEARCH_BACKEND_CONTRACT_VERSION = "research-backend.v1"
 BASE_REQUIRED_FIELDS = (
     "event",
     "status",
     "stage",
+    "research_backend_contract_version",
     "research_session_id",
     "app_run_id",
     "memory_policy",
@@ -69,6 +71,8 @@ def validate_research_event_contract(event: Mapping[str, Any]) -> EventContractD
         decision = event.get("research_readiness_decision")
         if isinstance(decision, Mapping):
             _require(decision, ("readiness", "stop_state", "reasons"), missing, codes, prefix="research_readiness_decision")
+    elif status == "provider_route_candidates_ready":
+        _require_present(event, ("live_required", "route_candidates"), missing, codes)
     elif status == "research_plan_ready":
         if _empty(event.get("queries")) and _empty(event.get("query_routes")):
             missing.append("queries_or_query_routes")
@@ -100,6 +104,8 @@ def validate_research_event_contract(event: Mapping[str, Any]) -> EventContractD
         if "route_id" in event and _empty(event.get("route_id")):
             missing.append("route_id")
             codes.append("missing:route_id")
+    elif status == "route_metadata_gap":
+        _require(event, ("origin_status", "reason", "route_id"), missing, codes)
     elif status in {"source_resolved", "source_decision"}:
         _require(event, ("source_id", "route_id", "decision", "reason"), missing, codes)
         if _empty(event.get("canonical_id")) and _empty(event.get("resolver_status")):
@@ -114,6 +120,8 @@ def validate_research_event_contract(event: Mapping[str, Any]) -> EventContractD
         if "missing_steps" not in event:
             missing.append("missing_steps")
             codes.append("missing:missing_steps")
+    elif status == "source_family_contract_report":
+        _require_present(event, ("contract_version", "contracts", "summary"), missing, codes)
 
     return EventContractDecision(
         in_scope=True,
@@ -126,10 +134,14 @@ def validate_research_event_contract(event: Mapping[str, Any]) -> EventContractD
 def assert_research_event_contract(event: Mapping[str, Any]) -> dict[str, Any]:
     """Return a JSON-safe copy or raise ValueError with stable missing codes."""
 
-    decision = validate_research_event_contract(event)
+    payload = dict(event)
+    event_name = str(payload.get("event") or "")
+    if event_name == RESEARCH_PROGRESS_EVENT or event_name in TERMINAL_RESEARCH_EVENTS:
+        payload.setdefault("research_backend_contract_version", RESEARCH_BACKEND_CONTRACT_VERSION)
+    decision = validate_research_event_contract(payload)
     if decision.in_scope and not decision.valid:
         raise ValueError("research_event_contract_invalid: " + ",".join(decision.error_codes))
-    return dict(event)
+    return payload
 
 
 def _require(

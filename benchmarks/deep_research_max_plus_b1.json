@@ -29,6 +29,136 @@
       "unsupported_high_confidence_claim_count",
       "unresolved_conflict_disclosure_rate"
     ],
+    "ahp": {
+      "workflow_fidelity_facets": [
+        {
+          "id": "probe-discovery-screening",
+          "text": "Probe discovery workflow explains dye libraries, screening, hit selection, and confocal or microscopy-based bacteria-dye testing.",
+          "required_terms": [
+            "probe",
+            "discovery",
+            "dye",
+            "library",
+            "screening",
+            "confocal",
+            "hit"
+          ],
+          "min_matched_terms": 4
+        },
+        {
+          "id": "spectra-and-lod-performance",
+          "text": "Performance evidence covers spectral properties, fluorescence response, response time, limit of detection, sensitivity, or specificity.",
+          "required_terms": [
+            "spectral",
+            "fluorescence",
+            "response",
+            "limit",
+            "detection",
+            "sensitivity",
+            "specificity",
+            "time"
+          ],
+          "min_matched_terms": 4
+        },
+        {
+          "id": "outer-membrane-mechanism",
+          "text": "Mechanism evidence covers lipopolysaccharide, LPS, outer membrane, lipoprotein, or membrane interaction uncertainty.",
+          "required_terms": [
+            "lipopolysaccharide",
+            "lps",
+            "outer",
+            "membrane",
+            "lipoprotein",
+            "interaction",
+            "uncertain"
+          ],
+          "min_matched_terms": 3
+        },
+        {
+          "id": "validation-and-selectivity",
+          "text": "Validation evidence covers infected plant samples, field or sample validation, controls, selectivity, specificity, or off-target bacteria.",
+          "required_terms": [
+            "validation",
+            "infected",
+            "plant",
+            "field",
+            "sample",
+            "selectivity",
+            "specificity",
+            "control"
+          ],
+          "min_matched_terms": 4
+        },
+        {
+          "id": "ai-acceleration-data-infrastructure",
+          "text": "AI acceleration evidence covers public databases, molecular or spectral prediction, computational experiments, local data architecture, and validation loop.",
+          "required_terms": [
+            "ai",
+            "database",
+            "spectral",
+            "prediction",
+            "computational",
+            "architecture",
+            "validation"
+          ],
+          "min_matched_terms": 4
+        }
+      ],
+      "final_report_usefulness_facets": [
+        {
+          "id": "papers-vs-inference-vs-proposal",
+          "text": "Final report distinguishes what the anchor papers did, what is inferred from evidence, and what is proposed as AI acceleration.",
+          "required_terms": [
+            "actually",
+            "inferred",
+            "proposed",
+            "ai",
+            "acceleration"
+          ],
+          "min_matched_terms": 3
+        },
+        {
+          "id": "database-inventory-and-access",
+          "text": "Final report inventories public chemical, spectral, bacterial, literature, or assay databases with access method and useful fields.",
+          "required_terms": [
+            "database",
+            "url",
+            "access",
+            "license",
+            "fields",
+            "spectral"
+          ],
+          "min_matched_terms": 4
+        },
+        {
+          "id": "local-data-architecture",
+          "text": "Final report provides practical local data architecture with tables, columns, compounds, spectra, bacterial targets, assay outcomes, or model features.",
+          "required_terms": [
+            "local",
+            "architecture",
+            "table",
+            "columns",
+            "compounds",
+            "spectra",
+            "assay"
+          ],
+          "min_matched_terms": 4
+        },
+        {
+          "id": "gaps-and-failure-modes",
+          "text": "Final report discloses gaps, uncertainty, failure modes, false positives, controls, or selectivity risks.",
+          "required_terms": [
+            "gaps",
+            "uncertainty",
+            "failure",
+            "false",
+            "controls",
+            "selectivity"
+          ],
+          "min_matched_terms": 3
+        }
+      ]
+    },
     "expected_claims": [
       {
         "id": "b1-isci-anchor-probe",
@@ -99,11 +229,47 @@
       "source_kind": "academic"
     },
     {
+      "id": "fixture-b1-isci-workflow-screening",
+      "query": "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "title": "B-1 fluorescent probe discovery workflow using dye-library screening",
+      "url": "https://doi.org/10.1016/j.isci.2023.106557",
+      "quote": "The iScience workflow for B-1 probe discovery used dye-library screening, bacteria-dye combination screening, confocal microscopy, and hit selection for Erwinia amylovora fluorescence response.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
+      "id": "fixture-b1-isci-spectra-lod",
+      "query": "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "title": "B-1 spectra, detection limit, response time, and selectivity evidence",
+      "url": "https://doi.org/10.1016/j.isci.2023.106557",
+      "quote": "B-1 performance evidence includes spectral excitation and emission behavior, fluorescence response, limit of detection near 10^2 CFU/mL, rapid response time, sensitivity, specificity, and selectivity against off-target bacteria.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
+      "id": "fixture-b1-isci-lps-outer-membrane",
+      "query": "B-1 Erwinia amylovora fire blight fluorescent probe 10.1016/j.isci.2023.106557",
+      "title": "B-1 interaction with LPS, lipopolysaccharide, outer membrane, and lipoprotein targets",
+      "url": "https://doi.org/10.1016/j.isci.2023.106557",
+      "quote": "Mechanistic evidence links B-1 fluorescence turn-on to Erwinia amylovora lipopolysaccharide (LPS), outer membrane environment, and a lipoprotein interaction, while the exact binding site remains uncertain.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
       "id": "fixture-b1-xpro-102412",
       "query": "B-1 Erwinia amylovora STAR Protocols detection protocol 10.1016/j.xpro.2023.102412",
       "title": "Protocol for detection of Erwinia amylovora using the B-1 fluorescent probe",
       "url": "https://doi.org/10.1016/j.xpro.2023.102412",
       "quote": "The companion STAR Protocols article describes a B-1 probe detection protocol for Erwinia amylovora with DOI 10.1016/j.xpro.2023.102412, including sample handling and fluorescence detection steps.",
+      "source_grade": "A",
+      "source_kind": "academic"
+    },
+    {
+      "id": "fixture-b1-xpro-validation-controls",
+      "query": "B-1 Erwinia amylovora STAR Protocols detection protocol 10.1016/j.xpro.2023.102412",
+      "title": "B-1 protocol validation controls for infected plant samples and field use",
+      "url": "https://doi.org/10.1016/j.xpro.2023.102412",
+      "quote": "The STAR Protocols workflow describes B-1 validation with infected plant samples, sample handling controls, field-use steps, fluorescence detection, selectivity, specificity, and false-positive mitigation.",
       "source_grade": "A",
       "source_kind": "academic"
     },
