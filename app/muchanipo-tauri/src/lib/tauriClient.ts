@@ -8,6 +8,15 @@ export interface BackendEvent {
   // Common optional fields the server emits.
   stage?: string;
   phase?: string;
+  artifact_ref?: string;
+  artifacts?: Record<string, unknown>;
+  reference_projects?: string[];
+  blockers?: unknown[];
+  final_report_ready?: boolean | string | number;
+  llm_council_ready?: boolean | string | number;
+  llm_council_final_report_ready?: boolean | string | number;
+  persona_generation_llm_council_ready?: boolean | string | number;
+  blocks_product_pass?: boolean | string | number;
   round?: number;
   layer?: string;
   persona?: string;
@@ -88,6 +97,11 @@ export interface BackendEvent {
   active_persona_ids?: string[];
   council_stage?: string;
   provider?: string;
+  provider_route?: string;
+  model?: string;
+  error?: string;
+  error_class?: string;
+  failure_kind?: string;
   prompt_chars?: number;
   response_chars?: number;
   stopped?: boolean;

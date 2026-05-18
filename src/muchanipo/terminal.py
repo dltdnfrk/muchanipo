@@ -1014,6 +1014,12 @@ def json_contracts_report() -> dict[str, Any]:
     from src.pipeline.persona_artifact import (
         persona_generation_stage_artifact_contract_report,
     )
+    from src.pipeline.council_artifact import (
+        llm_council_stage_artifact_contract_report,
+    )
+    from src.pipeline.final_artifact import (
+        final_report_stage_artifact_contract_report,
+    )
 
     contracts: dict[str, Any] = {}
     for command, contract in CLI_JSON_CONTRACTS_V1.items():
@@ -1040,6 +1046,12 @@ def json_contracts_report() -> dict[str, Any]:
         ),
         "persona_generation_stage_artifact_contract": (
             persona_generation_stage_artifact_contract_report()
+        ),
+        "llm_council_stage_artifact_contract": (
+            llm_council_stage_artifact_contract_report()
+        ),
+        "final_report_html_yaml_stage_artifact_contract": (
+            final_report_stage_artifact_contract_report()
         ),
         "contracts": contracts,
     }

@@ -70,3 +70,6 @@ app/muchanipo-tauri/target/
 app/muchanipo-tauri/node_modules/
 app/muchanipo-tauri/dist/
 app/muchanipo-tauri/.tauri/
+
+# Tauri dev-screen verification evidence (local/generated)
+.tauri-dev-screen/

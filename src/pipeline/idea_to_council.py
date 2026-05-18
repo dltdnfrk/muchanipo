@@ -29,6 +29,10 @@ from src.execution.gateway_v2 import GatewayV2, default_gateway
 from src.execution.models import ModelGateway
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
+from src.hitl.plannotator_review_artifact import (
+    PlannotatorReviewArtifactInput,
+    build_plannotator_review_stage_artifact,
+)
 from src.intake.normalizer import capture_idea
 from src.intent.learnings_log import LearningsLog
 from src.intent.office_hours import DesignDoc, OfficeHours
@@ -42,6 +46,19 @@ from src.interview.ontology_state import (
 from src.interview.product_planning import build_product_planning_projection, default_research_question
 from src.interview.session import InterviewSession
 from src.interview.show_me_the_prd_port import show_me_the_prd_artifacts
+from src.pipeline.council_artifact import (
+    LLMCouncilArtifactInput,
+    assert_council_artifact_ready_for_final_report,
+    build_llm_council_stage_artifact,
+    council_payload_from_stage_artifact,
+)
+from src.pipeline.final_artifact import (
+    FinalReportArtifactInput,
+    assert_final_report_artifact_ready_for_knowledge_write,
+    build_final_report_stage_artifact,
+    final_report_event_metadata,
+    final_report_payload_from_stage_artifact,
+)
 from src.pipeline.persona_artifact import (
     PersonaGenerationArtifactInput,
     assert_persona_artifact_ready_for_llm_council,
@@ -49,6 +66,10 @@ from src.pipeline.persona_artifact import (
     persona_payload_from_stage_artifact,
 )
 from src.research.autoresearch_runtime import runtime_contract_for_profile
+from src.research.deep_research_max_artifact import (
+    DeepResearchMaxArtifactInput,
+    build_deep_research_max_stage_artifact,
+)
 from src.research.depth import ResearchDepthProfile, depth_profile, effective_query_limit, normalize_depth
 from src.research.karpathy_autoresearch import (
     KarpathyAutoresearchRunner,
@@ -768,6 +789,62 @@ class IdeaToCouncilPipeline:
             "research_audit_appendix",
             json.dumps(research_audit_appendix, ensure_ascii=False, sort_keys=True),
         )
+        deep_research_max_artifact = build_deep_research_max_stage_artifact(
+            DeepResearchMaxArtifactInput(
+                brief_id=brief.id,
+                depth=self.depth,
+                mode="source_research" if self.source_research else "local",
+                provider_status="completed",
+                research_agenda={
+                    "topic_anchor": getattr(plan, "topic_anchor", ""),
+                    "questions": list(getattr(plan, "queries", []) or []),
+                    "decision_criteria": list(getattr(brief, "success_criteria", []) or []),
+                },
+                query_route_ledger=route_ledger,
+                source_audit_summary=source_audit_summary,
+                source_decision_summary=source_decision_ledger.summary(),
+                claim_evidence_summary=claim_evidence_summary,
+                evidence_ledger_readiness=evidence_ledger_report.readiness,
+                evidence_ledger_metrics=evidence_ledger_report.metrics,
+                refutation_loop_readiness=refutation_loop_report.readiness,
+                refutation_loop_summary=refutation_loop_report.summary(),
+                max_plus_benchmark_decision=benchmark_decision,
+                max_plus_benchmark_metrics=benchmark_score_vector or {},
+                progress_events=tuple(self.progress_events),
+                phase_trace=tuple(runtime_contract.phase_trace_template()),
+                usage_ledger=parse_json_artifact(
+                    state.artifacts.get("deep_research_max_observed_usage", {})
+                ),
+                evidence_refs=list(claim_evidence_summary.get("evidence_refs", []) or []),
+                source_refs=list(
+                    source_decision_ledger.summary().get("accepted_source_refs", []) or []
+                ),
+                metadata={
+                    "source_research": self.source_research,
+                    "require_live": self.require_live,
+                    "offline_mock_continuation": not self.require_live and not self.source_research,
+                },
+            )
+        )
+        state.record_artifact(
+            "deep_research_max_artifact",
+            json.dumps(deep_research_max_artifact, ensure_ascii=False, sort_keys=True),
+        )
+        self._emit_progress(
+            {
+                "event": "stage_completed"
+                if deep_research_max_artifact["status"] == "completed"
+                else "stage_blocked",
+                "stage": "deep_research_max",
+                "status": deep_research_max_artifact["status"],
+                "artifact_ref": "state:deep_research_max_artifact",
+                "blockers": [
+                    str(blocker.get("code") or "")
+                    for blocker in deep_research_max_artifact.get("blockers", []) or []
+                    if isinstance(blocker, dict)
+                ],
+            }
+        )
         if _research_quality_only_requested():
             research_quality_stop = readiness_decision.stop_state
             research_quality_readiness = readiness_decision.readiness
@@ -928,6 +1005,71 @@ class IdeaToCouncilPipeline:
         if isinstance(protocol_trace, dict):
             state.record_artifact("council_protocol_runtime", str(protocol_trace.get("runtime", "")))
             state.record_artifact("council_protocol_phase_count", str(protocol_trace.get("phase_count", "")))
+        llm_council_artifact = build_llm_council_stage_artifact(
+            LLMCouncilArtifactInput(
+                persona_artifact=persona_stage_artifact,
+                rounds=list(council.rounds),
+                turn_transcript=list(council.turn_transcript),
+                protocol_traces_by_round=dict(getattr(council, "protocol_traces_by_round", {}) or {}),
+                progress_events=list(self.progress_events),
+                evidence_refs=evidence_refs,
+                expected_layer_ids=[
+                    str(layer.layer_id)
+                    for layer in getattr(council, "layers", []) or []
+                    if getattr(layer, "layer_id", "")
+                ],
+                council_session_id=report.id,
+                mode="live" if self.require_live else "offline",
+                require_live=self.require_live,
+                plateau_converged=bool(getattr(council, "stopped", False)),
+                stop_reason=str(getattr(council, "stop_reason", "") or ""),
+                metadata={
+                    "depth_profile": str(self.depth_profile.name),
+                    "council_round_budget": council_round_budget,
+                    "active_persona_count": active_persona_count,
+                },
+            )
+        )
+        council_payload = council_payload_from_stage_artifact(llm_council_artifact)
+        state.record_artifact(
+            "llm_council_artifact",
+            json.dumps(llm_council_artifact, ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact(
+            "llm_council_final_report_ready",
+            "true" if council_payload["downstream_consumability"].get("final_report_ready") else "false",
+        )
+        state.record_artifact(
+            "llm_council_round_digest_count",
+            str(len(council_payload.get("round_digests") or [])),
+        )
+        state.record_artifact(
+            "llm_council_synthetic_aggregate_round_count",
+            str(len(council_payload.get("synthetic_fallback_markers") or [])),
+        )
+        council_blocker_codes = [
+            str(blocker.get("code") or "")
+            for blocker in llm_council_artifact.get("blockers", []) or []
+            if isinstance(blocker, dict)
+        ]
+        state.record_artifact("llm_council_blockers", ",".join(council_blocker_codes))
+        self._emit_progress(
+            {
+                "event": "stage_completed"
+                if council_payload["downstream_consumability"].get("final_report_ready")
+                else "stage_blocked",
+                "stage": "llm_council",
+                "status": llm_council_artifact["status"],
+                "artifact_ref": "state:llm_council_artifact",
+                "round_digest_count": len(council_payload.get("round_digests") or []),
+                "synthetic_aggregate_round_count": len(council_payload.get("synthetic_fallback_markers") or []),
+                "final_report_ready": bool(
+                    council_payload["downstream_consumability"].get("final_report_ready")
+                ),
+                "blockers": council_blocker_codes,
+            }
+        )
+        assert_council_artifact_ready_for_final_report(llm_council_artifact)
         self._emit(state, Stage.COUNCIL)
 
         reference_runtime_artifacts = build_reference_runtime_artifacts(
@@ -1021,9 +1163,106 @@ class IdeaToCouncilPipeline:
         self._record_hitl_gate(state, "report", hitl_results["report"])
         self._require_approved_gate("report", hitl_results["report"])
 
+        plannotator_review_artifacts = [
+            _build_pipeline_plannotator_review_artifact(
+                gate_name,
+                hitl_results[gate_name],
+                mode=str(getattr(self.hitl_adapter, "mode", "custom")),
+                live_mode=self.require_live,
+                target_artifact_refs=_plannotator_target_refs(gate_name),
+            )
+            for gate_name in ("plan", "evidence", "report")
+            if gate_name in hitl_results
+        ]
+        state.record_artifact(
+            "plannotator_review_artifacts",
+            json.dumps(plannotator_review_artifacts, ensure_ascii=False, sort_keys=True),
+        )
+        final_artifact_dir = self.vault_dir / "_final_report_artifacts" / _safe_filename(brief.id)
+        preliminary_final_artifact = build_final_report_stage_artifact(
+            FinalReportArtifactInput(
+                report_id=report.id,
+                title=report.title,
+                report_markdown=report_md,
+                output_dir=final_artifact_dir,
+                upstream_artifacts={
+                    "deep_research_max": deep_research_max_artifact,
+                    "plannotator_review": plannotator_review_artifacts,
+                    "ontology_extraction": ontology_artifact,
+                    "persona_generation": persona_stage_artifact,
+                    "llm_council": llm_council_artifact,
+                },
+                evidence_refs=evidence_refs,
+                open_gaps=list(report.open_questions or []),
+                gates={
+                    "plan": hitl_results.get("plan"),
+                    "evidence": hitl_results.get("evidence"),
+                    "report": hitl_results.get("report"),
+                },
+                reference_runtime_artifacts=reference_runtime_artifacts,
+                require_live=self.require_live,
+                metadata={
+                    "run_id": state.run_id,
+                    "depth_profile": str(self.depth_profile.name),
+                },
+            )
+        )
+        if preliminary_final_artifact["status"] != "completed":
+            state.record_artifact(
+                "final_report_html_yaml_artifact",
+                json.dumps(preliminary_final_artifact, ensure_ascii=False, sort_keys=True),
+            )
+            self._emit_progress(
+                _final_report_progress_event(preliminary_final_artifact)
+            )
+        assert_final_report_artifact_ready_for_knowledge_write(preliminary_final_artifact)
+
         state.advance(Stage.VAULT)
         vault_path = self._save_to_vault(brief.id, report_md, run_id=state.run_id)
         state.record_artifact("vault_path", str(vault_path))
+        final_report_artifact = build_final_report_stage_artifact(
+            FinalReportArtifactInput(
+                report_id=report.id,
+                title=report.title,
+                report_markdown=report_md,
+                output_dir=final_artifact_dir,
+                upstream_artifacts={
+                    "deep_research_max": deep_research_max_artifact,
+                    "plannotator_review": plannotator_review_artifacts,
+                    "ontology_extraction": ontology_artifact,
+                    "persona_generation": persona_stage_artifact,
+                    "llm_council": llm_council_artifact,
+                },
+                evidence_refs=evidence_refs,
+                open_gaps=list(report.open_questions or []),
+                gates={
+                    "plan": hitl_results.get("plan"),
+                    "evidence": hitl_results.get("evidence"),
+                    "report": hitl_results.get("report"),
+                },
+                reference_runtime_artifacts=reference_runtime_artifacts,
+                require_live=self.require_live,
+                obsidian_write_path=str(vault_path),
+                obsidian_write_attempted=True,
+                metadata={
+                    "run_id": state.run_id,
+                    "depth_profile": str(self.depth_profile.name),
+                },
+            )
+        )
+        assert_final_report_artifact_ready_for_knowledge_write(final_report_artifact)
+        final_payload = final_report_payload_from_stage_artifact(final_report_artifact)
+        final_manifest = final_payload["artifact_manifest"]
+        state.record_artifact(
+            "final_report_html_yaml_artifact",
+            json.dumps(final_report_artifact, ensure_ascii=False, sort_keys=True),
+        )
+        state.record_artifact("final_report_html_path", final_manifest["html_path"])
+        state.record_artifact("final_report_yaml_path", final_manifest["yaml_path"])
+        state.record_artifact("final_report_evidence_bundle_path", final_manifest["evidence_bundle_path"])
+        state.record_artifact("final_report_gbrain_record_path", final_manifest["gbrain_record_path"])
+        state.record_artifact("final_report_obsidian_write_status", final_manifest["obsidian_write_status"])
+        self._emit_progress(_final_report_progress_event(final_report_artifact))
         retrospective = self._maybe_record_learning(report, council, evidence_summary)
         if retrospective is not None:
             state.record_artifact("learning_count", str(len(retrospective.learnings)))
@@ -1867,8 +2106,12 @@ def _round_digests(
                 if claim and claim != key_claim
             ]
             round_evidence_ids = list(round_record.evidence_ref_ids)
-            if not round_evidence_ids and not require_live:
+            evidence_association = "direct" if round_evidence_ids else "missing"
+            synthetic_fallback = False
+            if not round_evidence_ids and not require_live and evidence_ids:
                 round_evidence_ids = evidence_ids
+                evidence_association = "synthetic_aggregate"
+                synthetic_fallback = True
             digests.append(
                 RoundDigest(
                     layer_id=round_record.layer_id,
@@ -1876,6 +2119,8 @@ def _round_digests(
                     key_claim=key_claim or _fallback_layer_claim(round_record.chapter_title),
                     body_claims=body_claims,
                     evidence_ref_ids=round_evidence_ids,
+                    evidence_association=evidence_association,
+                    synthetic_fallback=synthetic_fallback,
                     confidence=round_record.confidence_score,
                     framework=round_record.framework,
                 )
@@ -1905,14 +2150,18 @@ def _round_digests(
             for claim in (_visible_report_claim(str(point)) for point in first.get("key_points", []) if point)
             if claim and claim != analysis
         ]
+        fallback_evidence_ids = list(evidence_ids) if not require_live and evidence_ids else []
         digests.append(
             RoundDigest(
                 layer_id=f"L{idx}_fallback",
                 chapter_title=f"Layer {idx}",
                 key_claim=analysis,
                 body_claims=key_points,
-                evidence_ref_ids=evidence_ids,
+                evidence_ref_ids=fallback_evidence_ids,
+                evidence_association="synthetic_aggregate" if fallback_evidence_ids else "missing",
+                synthetic_fallback=bool(fallback_evidence_ids),
                 confidence=float(first.get("confidence") or round_mapping.get("confidence") or 0.6),
+                framework="synthetic_aggregate_evidence" if fallback_evidence_ids else None,
             )
         )
     if digests and not any(digest.layer_id.startswith("L10") for digest in digests):
@@ -1943,8 +2192,10 @@ def _fallback_executive_digest(
     evidence_ids: list[str],
 ) -> RoundDigest:
     cited = _dedupe_strings([evidence_id for digest in digests for evidence_id in digest.evidence_ref_ids])
+    synthetic_aggregate = False
     if not cited:
         cited = list(evidence_ids[:4])
+        synthetic_aggregate = bool(cited)
     return RoundDigest(
         layer_id="L10_executive_synthesis",
         chapter_title="Executive Summary + Recommendation",
@@ -1955,8 +2206,10 @@ def _fallback_executive_digest(
             "다음 의사결정은 결론 확정이 아니라 보강할 출처·개념·반례를 정하는 것이다.",
         ],
         evidence_ref_ids=cited,
+        evidence_association="synthetic_aggregate" if synthetic_aggregate else "direct",
+        synthetic_fallback=synthetic_aggregate,
         confidence=min(0.64, max((digest.confidence for digest in digests), default=0.6)),
-        framework="SCR",
+        framework="SCR synthetic_aggregate_evidence" if synthetic_aggregate else "SCR",
     )
 
 
@@ -3093,6 +3346,45 @@ def _build_pipeline_ontology_extraction_artifact(
     )
 
 
+def _build_pipeline_plannotator_review_artifact(
+    gate_name: str,
+    result: HITLResult,
+    *,
+    mode: str,
+    live_mode: bool,
+    target_artifact_refs: list[str],
+) -> dict[str, Any]:
+    return build_plannotator_review_stage_artifact(
+        PlannotatorReviewArtifactInput(
+            gate_name=gate_name,
+            result=result,
+            mode=mode,
+            live_mode=live_mode,
+            target_artifact_refs=target_artifact_refs,
+        )
+    )
+
+
+def _plannotator_target_refs(gate_name: str) -> list[str]:
+    refs = {
+        "plan": ["state:plan_review_gate", "state:planning_prd_sections"],
+        "evidence": ["state:evidence_validation_summary", "state:evidence_ledger_report"],
+        "report": ["state:report_id", "state:claim_evidence_matrix_summary"],
+    }
+    return list(refs.get(gate_name, [f"state:{gate_name}"]))
+
+
+def _final_report_progress_event(final_artifact: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "event": "stage_completed"
+        if final_artifact.get("status") == "completed"
+        else "stage_blocked",
+        "stage": "final_report_html_yaml",
+        "status": str(final_artifact.get("status") or ""),
+        **final_report_event_metadata(final_artifact),
+    }
+
+
 def _ontology_entities_for_persona_generation(
     ontology_artifact: Mapping[str, Any] | None,
     *,
@@ -3180,11 +3472,14 @@ def _generate_council_personas(
         "value_axes": base_value_axes,
         "targeting_domains": list(targeting_map.domains),
     }
-    generator = PersonaGenerator(
-        gateway=_CouncilProviderProgressGateway(gateway, progress_callback)
-        if progress_callback is not None
-        else gateway
-    )
+    persona_gateway: Any = None
+    if require_live:
+        persona_gateway = (
+            _CouncilProviderProgressGateway(gateway, progress_callback)
+            if progress_callback is not None
+            else gateway
+        )
+    generator = PersonaGenerator(gateway=persona_gateway)
     diversity_map = DiversityMap(
         bins_per_axis=_diversity_bins_for_pool(depth_profile.persona_pool_size)
     )

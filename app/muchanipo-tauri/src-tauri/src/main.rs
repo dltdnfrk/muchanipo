@@ -15,7 +15,7 @@ fn ping() -> &'static str {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .manage(PythonBridge::default())
         .invoke_handler(tauri::generate_handler![
             ping,
@@ -26,7 +26,14 @@ fn main() {
             open_cli_auth,
             get_buffered_events,
             pipeline_runtime_status
-        ])
+        ]);
+
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+    }
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running Muchanipo Tauri app");
 }

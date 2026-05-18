@@ -1,8 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from src.evidence.artifact import EvidenceRef, Finding
 from src.hitl.plannotator_adapter import HITLAdapter
 from src.pipeline.idea_to_council import IdeaToCouncilPipeline
+
+
+@pytest.fixture(autouse=True)
+def _force_mock_pipeline_offline(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MUCHANIPO_OFFLINE", "1")
+    monkeypatch.delenv("MUCHANIPO_ONLINE", raising=False)
+    monkeypatch.delenv("MUCHANIPO_REAL_RESEARCH", raising=False)
 
 
 class MockAcademicRunner:
