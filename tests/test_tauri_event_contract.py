@@ -184,14 +184,16 @@ def test_browser_restart_clears_run_scoped_observability_state() -> None:
     assert 'key.startsWith(`muchanipo:auto-approve:${runId}:`)' in source
 
 
-def test_browser_header_surfaces_desktop_live_e2e_evidence_gap() -> None:
+def test_browser_header_surfaces_runtime_progress_health() -> None:
     source = (TAURI_SRC / "pages" / "RunProgress.tsx").read_text(encoding="utf-8")
 
-    assert "Desktop/live evidence" in source
-    assert "Desktop runtime" in source
-    assert "Live e2e" in source
+    assert "Run health" in source
+    assert "Runtime" in source
+    assert "Backend signal" in source
     assert "Not observed yet" in source
-    assert "Not proven in this UI session" in source
+    assert "Waiting for live backend signal" in source
+    assert "Desktop/live evidence" not in source
+    assert "Evidence gap surface" not in source
 
 
 def test_browser_live_e2e_status_uses_runtime_status_app_run_id() -> None:

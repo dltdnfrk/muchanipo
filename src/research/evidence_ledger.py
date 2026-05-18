@@ -69,6 +69,15 @@ class ClaimSupportEdge:
     quote_overlap: float
     canonical_id: str | None = None
     source_decision: str = ""
+    verification_status: str = "not_found"
+    claim_type: str = "unsupported"
+    url_verified: bool = False
+    passage_found: bool = False
+    directly_supports_claim: bool = False
+    weak_support: bool = False
+    contradiction: bool = False
+    not_found: bool = True
+    verification_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +93,15 @@ class ClaimSupportEdge:
             "quote_overlap": self.quote_overlap,
             "canonical_id": self.canonical_id,
             "source_decision": self.source_decision,
+            "verification_status": self.verification_status,
+            "claim_type": self.claim_type,
+            "url_verified": self.url_verified,
+            "passage_found": self.passage_found,
+            "directly_supports_claim": self.directly_supports_claim,
+            "weak_support": self.weak_support,
+            "contradiction": self.contradiction,
+            "not_found": self.not_found,
+            "verification_reason": self.verification_reason,
         }
 
 
@@ -93,6 +111,7 @@ class ClaimLedgerEntry:
     claim: str
     claim_role: str
     confidence: float
+    claim_type: str
     support_edges: tuple[ClaimSupportEdge, ...] = field(default_factory=tuple)
     limitations: tuple[str, ...] = field(default_factory=tuple)
 
@@ -105,6 +124,7 @@ class ClaimLedgerEntry:
             "id": self.id,
             "claim": self.claim,
             "claim_role": self.claim_role,
+            "claim_type": self.claim_type,
             "confidence": self.confidence,
             "support_edges": [edge.to_dict() for edge in self.support_edges],
             "limitations": list(self.limitations),
@@ -191,6 +211,7 @@ def build_evidence_ledger_report(
     claim_entries = tuple(_claim_entries(findings, source_by_id))
     uncertainty_entries = tuple(_uncertainty_entries(claim_entries))
     expected_traceability = _expected_claim_traceability(findings, source_by_id, expected_claims or ())
+    contradiction_disclosures = _contradiction_disclosures(claim_entries)
     metrics = _metrics(source_entries, claim_entries, uncertainty_entries, expected_traceability)
     readiness = _readiness(metrics)
     return EvidenceLedgerReport(
@@ -199,7 +220,7 @@ def build_evidence_ledger_report(
         uncertainty_entries=uncertainty_entries,
         metrics=metrics,
         readiness=readiness,
-        quality_gate_events=_quality_gate_events(metrics),
+        quality_gate_events=_quality_gate_events(metrics, contradiction_disclosures=contradiction_disclosures),
         expected_claim_traceability=expected_traceability,
     )
 
@@ -283,6 +304,7 @@ def _claim_entries(findings: Sequence[Finding], source_by_id: Mapping[str, Sourc
                 id=claim_id,
                 claim=finding.claim,
                 claim_role=role,
+                claim_type=_claim_type_for_edges(finding, edges),
                 confidence=round(float(finding.confidence or 0.0), 3),
                 support_edges=edges,
                 limitations=tuple(str(item) for item in finding.limitations),
@@ -301,8 +323,10 @@ def _support_edge(
     if source is None:
         source = SourceLedgerEntry(ref.id, "", "", "D", "unknown", "unknown", "low", False, "missing source entry", False, False)
     overlap = _claim_quote_overlap(finding.claim, ref)
+    explicit_verification_status = _explicit_verification_status(ref)
     can_support = (
-        source.accepted
+        explicit_verification_status not in {"weak_support", "passage_found", "url_verified", "not_found", "contradiction"}
+        and source.accepted
         and source.has_quote
         and source.has_locator
         and source.source_role != "background"
@@ -317,10 +341,29 @@ def _support_edge(
         support_type = "rejected"
     elif not source.has_quote or not source.has_locator:
         support_type = "incomplete_citation"
+    elif (
+        source.accepted
+        and source.has_quote
+        and source.has_locator
+        and source.source_role != "background"
+        and claim_role == "material"
+        and overlap >= MIN_SUPPORT_QUOTE_OVERLAP
+    ):
+        support_type = "weak_support"
+    elif explicit_verification_status == "weak_support":
+        support_type = "weak_support"
     elif claim_role == "material" and overlap < MIN_SUPPORT_QUOTE_OVERLAP:
         support_type = "off_topic_quote"
     else:
         support_type = "non_material"
+    verification_status = _verification_status(
+        can_support=can_support,
+        source=source,
+        claim_role=claim_role,
+        quote_overlap=overlap,
+        explicit_verification_status=explicit_verification_status,
+    )
+    claim_type = _edge_claim_type(finding, verification_status)
     return ClaimSupportEdge(
         claim_id=claim_id,
         source_id=ref.id,
@@ -334,7 +377,107 @@ def _support_edge(
         quote_overlap=overlap,
         canonical_id=source.canonical_id,
         source_decision=source.source_decision,
+        verification_status=verification_status,
+        claim_type=claim_type,
+        url_verified=source.has_locator,
+        passage_found=source.has_quote,
+        directly_supports_claim=verification_status == "directly_supports_claim",
+        weak_support=verification_status == "weak_support",
+        contradiction=verification_status == "contradiction",
+        not_found=verification_status == "not_found",
+        verification_reason=_verification_reason(verification_status, support_type),
     )
+
+
+def _verification_status(
+    *,
+    can_support: bool,
+    source: SourceLedgerEntry,
+    claim_role: str,
+    quote_overlap: float,
+    explicit_verification_status: str = "",
+) -> str:
+    if explicit_verification_status in {
+        "directly_supports_claim",
+        "weak_support",
+        "passage_found",
+        "url_verified",
+        "contradiction",
+        "not_found",
+    }:
+        return explicit_verification_status
+    if can_support:
+        return "directly_supports_claim"
+    if not source.has_locator:
+        return "not_found"
+    if not source.has_quote:
+        return "url_verified"
+    if (
+        source.accepted
+        and source.source_role != "background"
+        and claim_role == "material"
+        and quote_overlap >= MIN_SUPPORT_QUOTE_OVERLAP
+    ):
+        return "weak_support"
+    return "passage_found"
+
+
+def _explicit_verification_status(ref: EvidenceRef) -> str:
+    provenance = ref.provenance or {}
+    metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
+    return str(provenance.get("verification_status") or metadata.get("verification_status") or "").strip().casefold()
+
+
+def _edge_claim_type(finding: Finding, verification_status: str) -> str:
+    if verification_status == "directly_supports_claim":
+        return "source_says"
+    if verification_status == "weak_support":
+        return "inferred_from_source"
+    if _is_hypothesis_claim(finding):
+        return "model_hypothesis"
+    return "unsupported"
+
+
+def _claim_type_for_edges(finding: Finding, edges: Sequence[ClaimSupportEdge]) -> str:
+    statuses = {edge.verification_status for edge in edges}
+    if "directly_supports_claim" in statuses:
+        return "source_says"
+    if "weak_support" in statuses:
+        return "inferred_from_source"
+    if _is_hypothesis_claim(finding):
+        return "model_hypothesis"
+    return "unsupported"
+
+
+def _is_hypothesis_claim(finding: Finding) -> bool:
+    text = " ".join([finding.claim, *finding.limitations]).casefold()
+    markers = (
+        "hypothesis",
+        "hypothesize",
+        "may ",
+        "might ",
+        "could ",
+        "suggests",
+        "recommend",
+        "proposal",
+        "propose",
+        "next step",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _verification_reason(verification_status: str, support_type: str) -> str:
+    if verification_status == "directly_supports_claim":
+        return "accepted material source has locator, passage, and sufficient quote overlap"
+    if verification_status == "weak_support":
+        return "passage is present but does not meet direct material support requirements"
+    if verification_status == "passage_found":
+        return "passage exists, but it does not support this claim"
+    if verification_status == "url_verified":
+        return "source locator exists, but no cited passage was found"
+    if verification_status == "contradiction":
+        return "source passage contradicts the claim"
+    return f"citation not found or incomplete: {support_type}"
 
 
 def _uncertainty_entries(claim_entries: Sequence[ClaimLedgerEntry]) -> list[UncertaintyLedgerEntry]:
@@ -399,6 +542,26 @@ def _expected_claim_traceability(
     return out
 
 
+def _contradiction_disclosures(claim_entries: Sequence[ClaimLedgerEntry]) -> tuple[dict[str, Any], ...]:
+    disclosures: list[dict[str, Any]] = []
+    for claim in claim_entries:
+        if claim.claim_role != "material":
+            continue
+        source_ids = [edge.source_id for edge in claim.support_edges if edge.contradiction]
+        if not source_ids:
+            continue
+        disclosures.append(
+            {
+                "claim_id": claim.id,
+                "claim": claim.claim,
+                "source_ids": source_ids,
+                "readiness_impact": "needs_review",
+                "disclosure": "material claim has unresolved contradictory evidence",
+            }
+        )
+    return tuple(disclosures)
+
+
 def _metrics(
     sources: Sequence[SourceLedgerEntry],
     claims: Sequence[ClaimLedgerEntry],
@@ -411,6 +574,8 @@ def _metrics(
     quote_locator_count = sum(1 for source in accepted_sources if source.has_quote and source.has_locator)
     edges = [edge for claim in claims for edge in claim.support_edges]
     integral_edges = [edge for edge in edges if edge.supported and edge.has_quote and edge.has_locator]
+    claim_type_counts = _claim_type_counts(claims)
+    citation_status_counts = _citation_status_counts(edges)
     leaks = [
         edge
         for claim in material
@@ -422,34 +587,93 @@ def _metrics(
     ]
     conflicts = [entry for entry in uncertainties if entry.conflict]
     disclosed_conflicts = [entry for entry in conflicts if entry.disclosed]
+    material_contradiction_claims = [
+        claim
+        for claim in material
+        if any(edge.contradiction for edge in claim.support_edges)
+    ]
+    disclosed_material_contradictions = material_contradiction_claims
     expected_total = len(expected_traceability)
     expected_supported = sum(1 for row in expected_traceability.values() if row.get("supported"))
-    return {
+    expected_gap_count = max(0, expected_total - expected_supported)
+    metrics = {
         "material_claim_support_coverage": _ratio(len(material_supported), len(material)),
         "expected_claim_traceability_score": _ratio(expected_supported, expected_total),
+        "expected_claim_count": float(expected_total),
+        "expected_claim_gap_count": float(expected_gap_count),
         "quote_locator_coverage": _ratio(quote_locator_count, len(accepted_sources)),
         "citation_integrity_score": _ratio(len(integral_edges), len(edges)),
         "background_leak_count": float(len(leaks)),
         "unsupported_high_confidence_claim_count": float(len(high_conf_unsupported)),
         "unresolved_conflict_count": float(len(conflicts)),
         "unresolved_conflict_disclosure_rate": _ratio(len(disclosed_conflicts), len(conflicts), empty=1.0),
+        "material_contradiction_count": float(len(material_contradiction_claims)),
+        "material_contradiction_disclosure_rate": _ratio(
+            len(disclosed_material_contradictions),
+            len(material_contradiction_claims),
+            empty=1.0,
+        ),
     }
+    for claim_type in ("source_says", "inferred_from_source", "model_hypothesis", "unsupported"):
+        metrics[f"claim_type.{claim_type}_count"] = float(claim_type_counts.get(claim_type, 0))
+    for status in ("directly_supports_claim", "weak_support", "passage_found", "url_verified", "contradiction", "not_found"):
+        metric_key = "direct_support" if status == "directly_supports_claim" else status
+        metrics[f"citation.{metric_key}_count"] = float(citation_status_counts.get(status, 0))
+    metrics["citation.direct_support_rate"] = _ratio(
+        citation_status_counts.get("directly_supports_claim", 0),
+        len(edges),
+    )
+    return metrics
 
 
-def _quality_gate_events(metrics: Mapping[str, float]) -> tuple[dict[str, Any], ...]:
-    return (
+def _claim_type_counts(claims: Sequence[ClaimLedgerEntry]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for claim in claims:
+        counts[claim.claim_type] = counts.get(claim.claim_type, 0) + 1
+    return counts
+
+
+def _citation_status_counts(edges: Sequence[ClaimSupportEdge]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for edge in edges:
+        counts[edge.verification_status] = counts.get(edge.verification_status, 0) + 1
+    return counts
+
+
+def _quality_gate_events(
+    metrics: Mapping[str, float],
+    *,
+    contradiction_disclosures: Sequence[Mapping[str, Any]] = (),
+) -> tuple[dict[str, Any], ...]:
+    events = [
         {"event": "research_progress", "stage": "quality_gate", "status": "evidence_ledger_built", "metrics": dict(metrics)},
         {"event": "research_progress", "stage": "quality_gate", "status": "claim_traceability_scored", "metrics": dict(metrics)},
         {"event": "research_progress", "stage": "quality_gate", "status": "uncertainty_ledger_built", "metrics": dict(metrics)},
-    )
+    ]
+    if contradiction_disclosures:
+        events.append(
+            {
+                "event": "research_progress",
+                "stage": "quality_gate",
+                "status": "contradiction_disclosure_built",
+                "readiness_impact": "needs_review",
+                "metrics": dict(metrics),
+                "contradictions": [dict(item) for item in contradiction_disclosures],
+            }
+        )
+    return tuple(events)
 
 
 def _readiness(metrics: Mapping[str, float]) -> str:
+    if float(metrics.get("expected_claim_gap_count", 0.0)) > 0:
+        return "needs_review"
     if float(metrics.get("background_leak_count", 0.0)) > 0:
         return "needs_review"
     if float(metrics.get("unsupported_high_confidence_claim_count", 0.0)) > 0:
         return "needs_review"
     if float(metrics.get("unresolved_conflict_count", 0.0)) > 0:
+        return "needs_review"
+    if float(metrics.get("material_contradiction_count", 0.0)) > 0:
         return "needs_review"
     if float(metrics.get("unresolved_conflict_disclosure_rate", 1.0)) < 1.0:
         return "needs_review"
@@ -465,10 +689,44 @@ def _claim_role(finding: Finding) -> str:
     ]
     if any(role in {"background", "material", "uncertainty"} for role in provenance_roles):
         return next(role for role in provenance_roles if role in {"background", "material", "uncertainty"})
+    if _is_metadata_only_publication_claim(finding.claim):
+        return "background"
     text = " ".join([finding.claim, *finding.limitations]).casefold()
     if any(marker in text for marker in ("uncertain", "unclear", "unknown", "gap", "conflict", "상충", "불확실")):
         return "uncertainty"
     return "material"
+
+
+def _is_metadata_only_publication_claim(claim: str) -> bool:
+    normalized = str(claim or "").casefold()
+    if not any(marker in normalized for marker in ("published", "publication", "retrieved", "accessed", "updated", "date")):
+        return False
+    metadata_terms = {
+        "access",
+        "accessed",
+        "at",
+        "date",
+        "day",
+        "fetched",
+        "in",
+        "last",
+        "metadata",
+        "month",
+        "on",
+        "publication",
+        "published",
+        "retrieval",
+        "retrieved",
+        "source",
+        "updated",
+        "year",
+    }
+    substantive_terms = {
+        term
+        for term in _terms(normalized)
+        if term not in metadata_terms and not term.isdigit()
+    }
+    return not substantive_terms
 
 
 def _accepted(

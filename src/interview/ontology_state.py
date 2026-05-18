@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,10 @@ class OntologyEntity:
     description: str = ""
     confidence: float = 0.0
     source_turn_ids: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    uncertainty: float = 1.0
+    status: str = "supported"
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,9 @@ class OntologyRelation:
     target: str
     confidence: float = 0.0
     source_turn_ids: list[str] = field(default_factory=list)
+    source_refs: list[str] = field(default_factory=list)
+    uncertainty: float = 1.0
+    status: str = "supported"
 
 
 @dataclass(frozen=True)
@@ -126,6 +133,346 @@ def build_interview_ontology_state(
     )
 
 
+ONTOLOGY_EXTRACTION_STAGE_ID = "ontology_extraction"
+ONTOLOGY_EXTRACTION_ARTIFACT_CONTRACT = "ontology_extraction_stage_artifact.v1"
+ONTOLOGY_EXTRACTION_RUBRIC_VERSION = "goals-loop2-ontology-extraction.v1"
+ONTOLOGY_TOPIC_ANCHOR_REF = "topic:anchor"
+
+ONTOLOGY_DOWNSTREAM_CONSUMERS: tuple[str, ...] = (
+    "persona_generation",
+    "llm_council",
+    "final_report_html_yaml",
+)
+
+ONTOLOGY_RELATION_VOCABULARY: tuple[str, ...] = (
+    "causes",
+    "prevents",
+    "enables",
+    "requires",
+    "contradicts",
+    "supports",
+    "defines",
+    "instantiates",
+    "contains",
+    "part_of",
+    "measures",
+    "affects",
+    "correlates_with",
+    "precedes",
+    "follows",
+    "authored_by",
+    "stakeholder_of",
+    "evaluated_by",
+    "validated_by",
+    "derived_from",
+)
+
+ONTOLOGY_FAILURE_MODES: tuple[str, ...] = (
+    "unsupported_entities_need_review",
+    "blocked_ontology_too_sparse",
+    "blocked_identifier_conflict",
+    "blocked_sensitive_entity",
+    "missing_source_grounding",
+    "missing_consumability_check",
+)
+
+
+@dataclass(frozen=True)
+class OntologyExtractionArtifactInput:
+    """Inputs for the standalone GOALS ontology_extraction artifact."""
+
+    topic: str
+    interview_turns: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    source_fragments: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    aliases: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    relations: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    rejected_extractions: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    manual_entities: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def build_ontology_extraction_stage_artifact(
+    artifact_input: OntologyExtractionArtifactInput,
+) -> dict[str, Any]:
+    """Build a consumable, source-grounded GOALS ontology stage artifact."""
+
+    ontology = build_source_grounded_ontology_artifact(artifact_input)
+    needs_review_count = len(ontology["needs_review_entity_labels"])
+    blockers = _ontology_blockers(ontology)
+    blocker_codes = [str(blocker["code"]) for blocker in blockers]
+    status = "blocked" if blockers else "completed"
+    blocker_code = blocker_codes[0] if blocker_codes else ""
+    relation_count = len(ontology["relations"])
+    entity_count = len(ontology["entities"])
+    rejected_count = len(ontology["rejected_extractions"])
+    progress_percent = 65.0 if status == "blocked" else 100.0
+
+    from src.pipeline.goals_artifacts import build_goals_stage_artifact
+
+    return build_goals_stage_artifact(
+        ONTOLOGY_EXTRACTION_STAGE_ID,
+        status=status,
+        inputs=[
+            {"artifact_id": "topic", "present": bool(str(artifact_input.topic).strip())},
+            {"artifact_id": "interview_turns", "count": len(artifact_input.interview_turns)},
+            {"artifact_id": "source_fragments", "count": len(artifact_input.source_fragments)},
+        ],
+        outputs=[
+            {
+                "artifact_id": "ontology_extraction",
+                "contract": ONTOLOGY_EXTRACTION_ARTIFACT_CONTRACT,
+                "present": True,
+                "payload": ontology,
+            },
+            {
+                "artifact_id": "consumability_check",
+                "present": True,
+                "payload": {
+                    "consumability": ontology["consumability"],
+                    "downstream_consumability": ontology["downstream_consumability"],
+                    "gap_records": ontology["gap_records"],
+                },
+            },
+        ],
+        blockers=blockers,
+        gates=[
+            {
+                "gate_id": "ontology_consumability",
+                "status": "failed" if blockers else "passed",
+                "required_for": list(ONTOLOGY_DOWNSTREAM_CONSUMERS),
+                "checks": ontology["consumability"],
+                "downstream_consumability": ontology["downstream_consumability"],
+            }
+        ],
+        human_decision={
+            "required": bool(blockers),
+            "status": "pending" if blockers else "not_required",
+            "mode": "review_ontology_consumability" if blockers else "",
+            "rationale": (
+                "Ontology blockers prevent silent persona/council consumption."
+                if blockers
+                else "Ontology is source-grounded and downstream-consumable."
+            ),
+            "required_action": _ontology_required_action(blocker_code),
+        },
+        evidence_refs=_artifact_evidence_refs(ontology),
+        source_refs=_artifact_source_refs(ontology),
+        metrics={
+            "entity_count": entity_count,
+            "relation_count": relation_count,
+            "alias_count": sum(len(item.get("aliases", [])) for item in ontology["entities"]),
+            "needs_review_entity_count": needs_review_count,
+            "supported_entity_count": sum(
+                1 for item in ontology["entities"] if item.get("status") == "supported"
+            ),
+            "supported_relation_count": sum(
+                1 for item in ontology["relations"] if item.get("status") == "supported"
+            ),
+            "rejected_extraction_count": rejected_count,
+            "gap_count": len(ontology["gap_records"]),
+            "consumable": ontology["consumable"],
+            "persona_generation_ready": ontology["downstream_consumability"]["persona_generation_ready"],
+            "llm_council_ready": ontology["downstream_consumability"]["llm_council_ready"],
+        },
+        progress_percent=progress_percent,
+        legacy_subactivity={
+            "subactivity": "source_grounded_ontology_extraction",
+            "downstream_consumers": list(ONTOLOGY_DOWNSTREAM_CONSUMERS),
+        },
+        hermes_scoring={
+            "score": 5.0 if not blockers else 3.0,
+            "readiness": "ready" if not blockers else "needs_review",
+            "confidence": _average_confidence(ontology["entities"]),
+            "rubric_version": ONTOLOGY_EXTRACTION_RUBRIC_VERSION,
+            "issues": blocker_codes,
+        },
+        retry={
+            "retryable": bool(blockers),
+            "next_action": _ontology_required_action(blocker_code) if blockers else "consume_downstream",
+        },
+        failure_semantics={
+            "code": blocker_code,
+            "terminal": False,
+            "retryable": bool(blockers),
+            "failure_modes": list(ONTOLOGY_FAILURE_MODES),
+        },
+        metadata={
+            "specific_contract": ONTOLOGY_EXTRACTION_ARTIFACT_CONTRACT,
+            "claim_boundary": (
+                "Ontology extraction uses explicit source/interview evidence and marks "
+                "unsupported candidates as needs_review instead of rebuilding hidden ontology from topic strings."
+            ),
+            **dict(artifact_input.metadata),
+        },
+    )
+
+
+def build_source_grounded_ontology_artifact(
+    artifact_input: OntologyExtractionArtifactInput,
+) -> dict[str, Any]:
+    source_texts = _source_text_records(artifact_input)
+    source_ref_index = {str(item.get("source_ref") or "") for item in source_texts}
+    corpus = " ".join(item["text"] for item in source_texts)
+    entities_by_label: dict[str, dict[str, Any]] = {}
+
+    for label in list(dict.fromkeys([*_candidate_entity_labels(artifact_input.topic, corpus), *artifact_input.aliases.keys()])):
+        refs = _refs_for_label(label, source_texts)
+        if refs:
+            entities_by_label[label] = _artifact_entity(
+                label=label,
+                kind=_entity_kind(label),
+                aliases=list(artifact_input.aliases.get(label, []) or []),
+                source_refs=refs,
+                confidence=0.72 if label == artifact_input.topic else 0.64,
+            )
+
+    for raw in artifact_input.manual_entities:
+        if not isinstance(raw, Mapping):
+            continue
+        label = str(raw.get("label") or raw.get("name") or "").strip()
+        if not label:
+            continue
+        refs = _string_list(raw.get("source_refs") or raw.get("source_ref"))
+        if not refs:
+            refs = _refs_for_label(label, source_texts)
+        entities_by_label[label] = _artifact_entity(
+            label=label,
+            kind=str(raw.get("kind") or raw.get("type") or _entity_kind(label)),
+            aliases=[
+                *list(artifact_input.aliases.get(label, []) or []),
+                *_string_list(raw.get("aliases")),
+            ],
+            source_refs=refs,
+            confidence=float(raw.get("confidence") or (0.68 if refs else 0.35)),
+        )
+
+    relations = _artifact_relations(artifact_input.relations, entities_by_label, source_texts)
+    rejected_extractions = [
+        _rejected_extraction(item)
+        for item in artifact_input.rejected_extractions
+        if isinstance(item, Mapping)
+    ]
+    rejected_extractions.extend(_auto_rejected_extractions(entities_by_label.values(), relations))
+    needs_review = sorted(
+        entity["label"] for entity in entities_by_label.values() if entity["status"] == "needs_review"
+    )
+    gap_records = _ontology_gap_records(entities_by_label.values(), relations)
+    downstream_consumability = _downstream_consumability(
+        entities_by_label.values(),
+        relations,
+        gap_records,
+    )
+    consumability = _ontology_consumability(
+        entities_by_label.values(),
+        relations,
+        needs_review=needs_review,
+        source_ref_index=source_ref_index,
+        downstream_consumability=downstream_consumability,
+    )
+    consumable = all(value is True for value in consumability.values())
+    return {
+        "schema_version": 1,
+        "artifact_id": "ontology_extraction",
+        "contract": ONTOLOGY_EXTRACTION_ARTIFACT_CONTRACT,
+        "ontology_id": f"ontology:{_slug(artifact_input.topic)}",
+        "topic": artifact_input.topic,
+        "domain_boundary": str(artifact_input.metadata.get("domain_boundary") or artifact_input.topic),
+        "entities": sorted(entities_by_label.values(), key=lambda item: item["normalized_id"]),
+        "nodes": sorted(entities_by_label.values(), key=lambda item: item["normalized_id"]),
+        "relations": relations,
+        "edges": relations,
+        "alias_resolutions": _alias_resolutions(entities_by_label.values()),
+        "uncertainty_summary": _uncertainty_summary(entities_by_label.values(), relations),
+        "gap_records": gap_records,
+        "rejected_extractions": rejected_extractions,
+        "needs_review_entity_labels": needs_review,
+        "needs_review_relation_ids": [
+            str(relation.get("id") or relation.get("edge_id"))
+            for relation in relations
+            if relation.get("status") == "needs_review"
+        ],
+        "relation_vocabulary": list(ONTOLOGY_RELATION_VOCABULARY),
+        "consumability": consumability,
+        "downstream_consumability": downstream_consumability,
+        "consumable": consumable,
+    }
+
+
+def ontology_extraction_stage_artifact_contract_report() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "contract": ONTOLOGY_EXTRACTION_ARTIFACT_CONTRACT,
+        "stage_id": ONTOLOGY_EXTRACTION_STAGE_ID,
+        "builder": "build_ontology_extraction_stage_artifact",
+        "required_inputs": ["topic", "interview_turns", "source_fragments"],
+        "relation_vocabulary": list(ONTOLOGY_RELATION_VOCABULARY),
+        "required_outputs": [
+            "ontology_id",
+            "domain_boundary",
+            "source_grounded_entities",
+            "source_grounded_relations",
+            "normalized_identifiers",
+            "relations",
+            "aliases",
+            "alias_resolutions",
+            "uncertainty",
+            "uncertainty_summary",
+            "rejected_extractions",
+            "gap_records",
+            "unsupported_entity_needs_review_state",
+            "consumability_check",
+            "downstream_consumability",
+        ],
+        "required_entity_fields": [
+            "node_id",
+            "normalized_id",
+            "label",
+            "kind",
+            "aliases",
+            "source_refs",
+            "evidence_refs",
+            "support_status",
+            "status",
+            "uncertainty",
+        ],
+        "required_relation_fields": [
+            "edge_id",
+            "source_id",
+            "target_id",
+            "relation",
+            "predicate",
+            "domain_predicate",
+            "source_refs",
+            "evidence_refs",
+            "support_status",
+            "status",
+            "polarity",
+            "uncertainty",
+        ],
+        "downstream_consumers": list(ONTOLOGY_DOWNSTREAM_CONSUMERS),
+        "failure_modes": list(ONTOLOGY_FAILURE_MODES),
+        "blocker_states": [
+            "unsupported_entities_need_review",
+            "blocked_ontology_too_sparse",
+            "blocked_identifier_conflict",
+            "blocked_sensitive_entity",
+        ],
+        "downstream_rules": {
+            "persona_generation": (
+                "Requires supported ontology nodes, role candidates, no blocking gaps, "
+                "and direct consumption of the ontology_extraction payload."
+            ),
+            "llm_council": (
+                "Requires at least one supported source-grounded edge with "
+                "supports/contradicts polarity and represented central claims."
+            ),
+        },
+        "compatibility": (
+            "Downstream stages consume ontology_extraction output directly; topic strings are fallback display labels, not hidden ontology sources."
+        ),
+    }
+
+
 def question_quality_gate(
     *,
     question: str,
@@ -157,6 +504,615 @@ def question_quality_gate(
         "targets_unknown_ids": list(target_set),
         "target_unknown_labels": [unknown.label for unknown in target_unknowns],
     }
+
+
+def _source_text_records(artifact_input: OntologyExtractionArtifactInput) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    if str(artifact_input.topic).strip():
+        records.append({"source_ref": ONTOLOGY_TOPIC_ANCHOR_REF, "turn_id": "", "text": str(artifact_input.topic).strip()})
+    for idx, turn in enumerate(artifact_input.interview_turns, start=1):
+        if not isinstance(turn, Mapping):
+            continue
+        source_ref = str(turn.get("source_ref") or turn.get("turn_id") or f"interview:turn-{idx}")
+        turn_id = str(turn.get("turn_id") or source_ref)
+        text = " ".join(
+            str(turn.get(key) or "") for key in ("question", "answer", "text")
+        ).strip()
+        if text:
+            records.append({"source_ref": source_ref, "turn_id": turn_id, "text": text})
+    for idx, fragment in enumerate(artifact_input.source_fragments, start=1):
+        if not isinstance(fragment, Mapping):
+            continue
+        source_ref = str(fragment.get("source_ref") or fragment.get("id") or f"source:fragment-{idx}")
+        text = str(fragment.get("text") or fragment.get("quote") or fragment.get("claim") or "").strip()
+        if text:
+            records.append({"source_ref": source_ref, "turn_id": "", "text": text})
+    return records
+
+
+def _candidate_entity_labels(topic: str, corpus: str) -> list[str]:
+    labels: list[str] = []
+    topic = str(topic or "").strip()
+    if topic:
+        labels.append(topic)
+    actor_patterns = (
+        r"([0-9가-힣A-Za-z\s]{2,40}(?:사용자|고객|보호자|담당자|의사결정자|구매자|승인자))",
+        r"([0-9가-힣A-Za-z\s]{2,40}(?:신호|workflow|워크플로우|시스템|플랫폼|SaaS))",
+    )
+    for pattern in actor_patterns:
+        for match in re.findall(pattern, corpus or ""):
+            cleaned = " ".join(str(match).split())
+            cleaned = re.sub(r"^(?:에서|그리고|또는|사용자가|고객이)\s+", "", cleaned).strip()
+            if 2 <= len(cleaned) <= 60:
+                labels.append(cleaned)
+    for token in _tokens(corpus):
+        if len(token) >= 2:
+            labels.append(token)
+    return list(dict.fromkeys(labels))[:24]
+
+
+def _refs_for_label(label: str, source_texts: Sequence[Mapping[str, str]]) -> list[str]:
+    label_text = str(label or "").strip()
+    label_tokens = [token for token in _tokens(label_text) if len(token) >= 2]
+    refs: list[str] = []
+    for record in source_texts:
+        text = str(record.get("text") or "")
+        if label_text and label_text in text:
+            refs.append(str(record.get("source_ref") or ""))
+            continue
+        if label_tokens and all(token in text for token in label_tokens[:3]):
+            refs.append(str(record.get("source_ref") or ""))
+    return [ref for ref in dict.fromkeys(refs) if ref]
+
+
+def _artifact_entity(
+    *,
+    label: str,
+    kind: str,
+    aliases: Sequence[str],
+    source_refs: Sequence[str],
+    confidence: float,
+) -> dict[str, Any]:
+    normalized_id = f"entity:{_slug(label)}"
+    refs = [str(ref) for ref in dict.fromkeys(source_refs) if str(ref)]
+    score = max(0.0, min(1.0, float(confidence)))
+    evidence_refs = _non_topic_refs(refs)
+    support_status = _support_status_for_refs(refs)
+    status = {
+        "supported": "supported",
+        "topic_anchor_only": "rejected",
+    }.get(support_status, "needs_review")
+    return {
+        "id": normalized_id,
+        "node_id": normalized_id,
+        "normalized_id": normalized_id,
+        "label": str(label),
+        "kind": str(kind or "object"),
+        "aliases": list(dict.fromkeys(str(item) for item in aliases if str(item))),
+        "attributes": {},
+        "source_refs": refs,
+        "evidence_refs": evidence_refs,
+        "confidence": round(score, 3),
+        "uncertainty": round(1.0 - score, 3),
+        "support_status": support_status,
+        "status": status,
+        "provenance": {
+            "extraction_method": "deterministic_source_grounded_ontology",
+            "source_refs": refs,
+            "evidence_refs": evidence_refs,
+        },
+    }
+
+
+def _artifact_relations(
+    raw_relations: Sequence[Mapping[str, Any]],
+    entities_by_label: dict[str, dict[str, Any]],
+    source_texts: Sequence[Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    relations: list[dict[str, Any]] = []
+    for raw in raw_relations:
+        if not isinstance(raw, Mapping):
+            continue
+        source_label = str(raw.get("source") or "").strip()
+        target_label = str(raw.get("target") or "").strip()
+        predicate = str(raw.get("predicate") or "related_to").strip()
+        if not source_label or not target_label:
+            continue
+        for label in (source_label, target_label):
+            if label not in entities_by_label:
+                refs = _string_list(raw.get("source_refs") or raw.get("source_ref")) or _refs_for_label(label, source_texts)
+                entities_by_label[label] = _artifact_entity(
+                    label=label,
+                    kind=_entity_kind(label),
+                    aliases=[],
+                    source_refs=refs,
+                        confidence=float(raw.get("confidence") or (0.62 if refs else 0.35)),
+                )
+        refs = _string_list(raw.get("source_refs") or raw.get("source_ref"))
+        if not refs:
+            refs = _relation_refs_for_labels(source_label, target_label, source_texts)
+        source_id = entities_by_label[source_label]["normalized_id"]
+        target_id = entities_by_label[target_label]["normalized_id"]
+        confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.55)))
+        support_status = _support_status_for_refs(refs)
+        status = "supported" if support_status == "supported" else "needs_review"
+        canonical_relation = _canonical_relation(predicate)
+        polarity = _relation_polarity(raw, canonical_relation)
+        relation_id = f"relation:{_slug(source_id + ':' + canonical_relation + ':' + target_id)}"
+        evidence_refs = _non_topic_refs(refs)
+        relations.append(
+            {
+                "id": relation_id,
+                "edge_id": relation_id,
+                "from_node_id": source_id,
+                "to_node_id": target_id,
+                "source_id": source_id,
+                "predicate": canonical_relation,
+                "relation": canonical_relation,
+                "domain_predicate": predicate,
+                "target_id": target_id,
+                "source_refs": refs,
+                "evidence_refs": evidence_refs,
+                "confidence": round(confidence, 3),
+                "uncertainty": round(1.0 - confidence, 3),
+                "support_status": support_status,
+                "status": status,
+                "polarity": polarity,
+                "provenance": {
+                    "extraction_method": "deterministic_source_grounded_ontology",
+                    "source_refs": refs,
+                    "evidence_refs": evidence_refs,
+                },
+            }
+        )
+    return relations
+
+
+def _ontology_consumability(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+    *,
+    needs_review: Sequence[str],
+    source_ref_index: set[str],
+    downstream_consumability: Mapping[str, Any],
+) -> dict[str, bool]:
+    supported_entities = [entity for entity in entities if entity.get("status") == "supported"]
+    supported_relations = [relation for relation in relations if relation.get("status") == "supported"]
+    non_topic_refs = {
+        ref
+        for item in [*entities, *relations]
+        for ref in _non_topic_refs(_string_list(item.get("source_refs")))
+    }
+    known_non_topic_refs = {
+        ref for ref in non_topic_refs if not source_ref_index or ref in source_ref_index
+    }
+    has_normalized_identifiers = bool(entities) and all(
+        bool(entity.get("normalized_id")) and bool(entity.get("node_id")) for entity in entities
+    )
+    return {
+        "has_source_grounded_entities": bool(supported_entities),
+        "has_non_topic_source_grounding": bool(known_non_topic_refs),
+        "has_normalized_identifiers": has_normalized_identifiers,
+        "has_source_grounded_relations": bool(supported_relations),
+        "has_relations": bool(relations),
+        "has_aliases_field": all("aliases" in entity for entity in entities),
+        "has_uncertainty": all("uncertainty" in item for item in [*entities, *relations]),
+        "unsupported_entities_resolved": not needs_review,
+        "downstream_must_use_artifact": _downstream_artifact_consumption_required(
+            entities,
+            relations,
+            downstream_consumability,
+        ),
+        "persona_generation_ready": bool(downstream_consumability.get("persona_generation_ready")),
+        "llm_council_ready": bool(downstream_consumability.get("llm_council_ready")),
+    }
+
+
+def _downstream_artifact_consumption_required(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+    downstream_consumability: Mapping[str, Any],
+) -> bool:
+    """Derive the no-hidden-rebuild contract from consumable artifact content.
+
+    Downstream stages must not silently rebuild ontology from the topic string, but the
+    direct-consumption contract is only available when canonical, source-supported
+    nodes and edges are present and downstream gates are ready. Sparse or
+    topic-anchor-only artifacts fail closed instead of advertising a usable contract.
+    """
+
+    supported_entities = [entity for entity in entities if entity.get("status") == "supported"]
+    supported_relations = [relation for relation in relations if relation.get("status") == "supported"]
+    has_canonical_supported_nodes = bool(supported_entities) and all(
+        bool(entity.get("normalized_id")) and bool(entity.get("node_id"))
+        for entity in supported_entities
+    )
+    has_canonical_supported_edges = bool(supported_relations) and all(
+        bool(relation.get("edge_id") or relation.get("id"))
+        and bool(relation.get("source_id"))
+        and bool(relation.get("target_id"))
+        for relation in supported_relations
+    )
+    has_downstream_readiness_contract = all(
+        bool(downstream_consumability.get(key))
+        for key in ("persona_generation_ready", "llm_council_ready", "final_report_html_yaml_ready")
+    )
+    return bool(
+        has_canonical_supported_nodes
+        and has_canonical_supported_edges
+        and has_downstream_readiness_contract
+    )
+
+
+def _downstream_consumability(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+    gap_records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    supported_entities = [entity for entity in entities if entity.get("status") == "supported"]
+    supported_relations = [relation for relation in relations if relation.get("status") == "supported"]
+    role_candidates = [
+        entity
+        for entity in supported_entities
+        if str(entity.get("kind") or "") in {"actor", "organization", "stakeholder", "research_topic", "research"}
+    ]
+    blocking_gaps = [gap for gap in gap_records if gap.get("severity") == "blocker"]
+    council_edges = [
+        relation
+        for relation in supported_relations
+        if str(relation.get("polarity") or "") in {"supports", "contradicts"}
+    ]
+    persona_ready = bool(supported_entities and role_candidates and not blocking_gaps)
+    council_ready = bool(council_edges and not blocking_gaps)
+    return {
+        "persona_generation_ready": persona_ready,
+        "llm_council_ready": council_ready,
+        "final_report_html_yaml_ready": bool(supported_entities and not blocking_gaps),
+        "role_candidate_node_ids": [
+            str(entity.get("normalized_id") or entity.get("node_id"))
+            for entity in role_candidates
+        ],
+        "council_edge_ids": [
+            str(relation.get("edge_id") or relation.get("id"))
+            for relation in council_edges
+        ],
+        "refusal_reasons": _downstream_refusal_reasons(
+            supported_entities=supported_entities,
+            role_candidates=role_candidates,
+            council_edges=council_edges,
+            blocking_gaps=blocking_gaps,
+        ),
+    }
+
+
+def _downstream_refusal_reasons(
+    *,
+    supported_entities: Sequence[Mapping[str, Any]],
+    role_candidates: Sequence[Mapping[str, Any]],
+    council_edges: Sequence[Mapping[str, Any]],
+    blocking_gaps: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+    if not supported_entities:
+        reasons.append("no_supported_source_grounded_entities")
+    if not role_candidates:
+        reasons.append("no_role_candidate_nodes")
+    if not council_edges:
+        reasons.append("no_supported_support_or_contradiction_edges")
+    reasons.extend(str(gap.get("gap_type") or gap.get("blocker_code") or "") for gap in blocking_gaps)
+    return [reason for reason in dict.fromkeys(reasons) if reason]
+
+
+def _ontology_gap_records(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    supported_entity_count = sum(1 for entity in entities if entity.get("status") == "supported")
+    for entity in entities:
+        support_status = str(entity.get("support_status") or "")
+        if support_status == "supported":
+            continue
+        blocker_code = (
+            "blocked_ontology_too_sparse"
+            if support_status == "topic_anchor_only"
+            else "unsupported_entities_need_review"
+        )
+        gaps.append(
+            {
+                "gap_type": support_status or "unsupported_entity",
+                "blocker_code": blocker_code,
+                "support_status": support_status or "unsupported",
+                "severity": "warning" if support_status == "topic_anchor_only" else "blocker",
+                "entity_id": str(entity.get("normalized_id") or entity.get("id") or ""),
+                "label": str(entity.get("label") or ""),
+                "source_refs": list(entity.get("source_refs") or []),
+            }
+        )
+    if supported_entity_count == 0:
+        gaps.append(
+            {
+                "gap_type": "missing_source_grounded_entity",
+                "blocker_code": "blocked_ontology_too_sparse",
+                "severity": "blocker",
+                "source_refs": [],
+            }
+        )
+    if not any(relation.get("status") == "supported" for relation in relations):
+        gaps.append(
+            {
+                "gap_type": "missing_source_grounded_relation",
+                "blocker_code": "blocked_ontology_too_sparse",
+                "severity": "blocker",
+                "source_refs": [],
+            }
+        )
+    return gaps
+
+
+def _ontology_blockers(ontology: Mapping[str, Any]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if ontology.get("consumable"):
+        return blockers
+    for gap in ontology.get("gap_records", []) or []:
+        if not isinstance(gap, Mapping):
+            continue
+        if gap.get("severity") != "blocker":
+            continue
+        code = str(gap.get("blocker_code") or "blocked_ontology_too_sparse")
+        if code in seen:
+            continue
+        seen.add(code)
+        blockers.append(
+            {
+                "code": code,
+                "message": _ontology_blocker_message(code),
+                "severity": "blocker",
+                "recoverable": True,
+                "required_action": _ontology_required_action(code),
+                "source_ref": ",".join(_string_list(gap.get("source_refs"))),
+                "human_decision_required": True,
+            }
+        )
+    if not blockers:
+        blockers.append(
+            {
+                "code": "blocked_ontology_too_sparse",
+                "message": _ontology_blocker_message("blocked_ontology_too_sparse"),
+                "severity": "blocker",
+                "recoverable": True,
+                "required_action": _ontology_required_action("blocked_ontology_too_sparse"),
+                "source_ref": "",
+                "human_decision_required": True,
+            }
+        )
+    return blockers
+
+
+def _ontology_blocker_message(code: str) -> str:
+    messages = {
+        "unsupported_entities_need_review": (
+            "Unsupported ontology entities require human review before persona/council consumption."
+        ),
+        "blocked_ontology_too_sparse": (
+            "Ontology is too sparse or topic-anchor-only for downstream persona/council consumption."
+        ),
+        "blocked_identifier_conflict": "Ontology contains conflicting normalized identifiers.",
+        "blocked_sensitive_entity": "Ontology contains a sensitive entity requiring review.",
+    }
+    return messages.get(code, "Ontology extraction is blocked.")
+
+
+def _ontology_required_action(code: str) -> str:
+    actions = {
+        "unsupported_entities_need_review": "attach_source_evidence_reject_or_explicitly_approve_entities",
+        "blocked_ontology_too_sparse": "add_non_topic_source_grounding_and_supported_relations",
+        "blocked_identifier_conflict": "resolve_normalized_identifier_conflict",
+        "blocked_sensitive_entity": "review_sensitive_entity_policy",
+    }
+    return actions.get(code, "resolve_ontology_consumability_blocker")
+
+
+def _alias_resolutions(entities: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    resolutions: list[dict[str, Any]] = []
+    for entity in entities:
+        for alias in entity.get("aliases", []) or []:
+            resolutions.append(
+                {
+                    "alias": str(alias),
+                    "normalized_id": str(entity.get("normalized_id") or ""),
+                    "label": str(entity.get("label") or ""),
+                    "status": str(entity.get("status") or ""),
+                    "source_refs": list(entity.get("source_refs") or []),
+                }
+            )
+    return resolutions
+
+
+def _uncertainty_summary(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    values = [
+        float(item.get("uncertainty") or 0.0)
+        for item in [*entities, *relations]
+        if isinstance(item, Mapping)
+    ]
+    needs_review = [
+        str(item.get("label") or item.get("id") or item.get("edge_id"))
+        for item in [*entities, *relations]
+        if isinstance(item, Mapping) and item.get("status") == "needs_review"
+    ]
+    return {
+        "mean_uncertainty": round(sum(values) / len(values), 3) if values else 1.0,
+        "max_uncertainty": round(max(values), 3) if values else 1.0,
+        "needs_review_count": len(needs_review),
+        "needs_review_items": needs_review,
+    }
+
+
+def _auto_rejected_extractions(
+    entities: Sequence[Mapping[str, Any]],
+    relations: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    rejected: list[dict[str, str]] = []
+    ontology_sparse = not any(entity.get("status") == "supported" for entity in entities) or not any(
+        relation.get("status") == "supported" for relation in relations
+    )
+    for entity in entities:
+        support_status = str(entity.get("support_status") or "")
+        if support_status == "supported":
+            continue
+        if support_status == "topic_anchor_only" and not ontology_sparse:
+            continue
+        rejected.append(
+            {
+                "raw": str(entity.get("label") or ""),
+                "reason": (
+                    "topic_anchor_only_not_source_grounded"
+                    if support_status == "topic_anchor_only"
+                    else "unsupported_by_source_refs"
+                ),
+                "source_ref": ",".join(_string_list(entity.get("source_refs"))),
+            }
+        )
+    for relation in relations:
+        if relation.get("support_status") == "supported":
+            continue
+        rejected.append(
+            {
+                "raw": str(relation.get("domain_predicate") or relation.get("predicate") or ""),
+                "reason": "relation_not_source_grounded",
+                "source_ref": ",".join(_string_list(relation.get("source_refs"))),
+            }
+        )
+    return rejected
+
+
+def _rejected_extraction(raw: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "raw": str(raw.get("raw") or raw.get("label") or ""),
+        "reason": str(raw.get("reason") or "unsupported"),
+        "source_ref": str(raw.get("source_ref") or ""),
+    }
+
+
+def _relation_refs_for_labels(
+    source_label: str,
+    target_label: str,
+    source_texts: Sequence[Mapping[str, str]],
+) -> list[str]:
+    source_tokens = [token for token in _tokens(source_label) if len(token) >= 2]
+    target_tokens = [token for token in _tokens(target_label) if len(token) >= 2]
+    refs: list[str] = []
+    for record in source_texts:
+        text = str(record.get("text") or "")
+        source_hit = source_label in text or (
+            bool(source_tokens) and any(token in text for token in source_tokens[:3])
+        )
+        target_hit = target_label in text or (
+            bool(target_tokens) and any(token in text for token in target_tokens[:3])
+        )
+        if source_hit and target_hit:
+            refs.append(str(record.get("source_ref") or ""))
+    return [ref for ref in dict.fromkeys(refs) if ref]
+
+
+def _support_status_for_refs(source_refs: Sequence[str]) -> str:
+    refs = [str(ref) for ref in source_refs if str(ref)]
+    if _non_topic_refs(refs):
+        return "supported"
+    if refs:
+        return "topic_anchor_only"
+    return "unsupported"
+
+
+def _non_topic_refs(source_refs: Sequence[str]) -> list[str]:
+    return [
+        str(ref)
+        for ref in dict.fromkeys(source_refs)
+        if str(ref) and str(ref) != ONTOLOGY_TOPIC_ANCHOR_REF
+    ]
+
+
+def _canonical_relation(predicate: str) -> str:
+    raw = str(predicate or "").strip().lower()
+    aliases = {
+        "scope": "defines",
+        "scopes": "defines",
+        "defines": "defines",
+        "contain": "contains",
+        "contains": "contains",
+        "part_of": "part_of",
+        "requires": "requires",
+        "needs": "requires",
+        "enables": "enables",
+        "supports": "supports",
+        "support": "supports",
+        "contradicts": "contradicts",
+        "contradict": "contradicts",
+        "prevents": "prevents",
+        "causes": "causes",
+        "affects": "affects",
+        "observes": "affects",
+        "triggers": "causes",
+        "evaluates": "evaluated_by",
+        "evaluated_by": "evaluated_by",
+        "validates": "validated_by",
+        "validated_by": "validated_by",
+        "authored_by": "authored_by",
+        "derived_from": "derived_from",
+        "stakeholder_of": "stakeholder_of",
+        "measures": "measures",
+        "correlates_with": "correlates_with",
+        "precedes": "precedes",
+        "follows": "follows",
+        "instantiates": "instantiates",
+    }
+    return aliases.get(raw, "affects")
+
+
+def _relation_polarity(raw: Mapping[str, Any], relation: str) -> str:
+    explicit = str(raw.get("polarity") or "").strip().lower()
+    if explicit in {"supports", "contradicts", "neutral"}:
+        return explicit
+    if relation in {"contradicts", "prevents"}:
+        return "contradicts"
+    return "supports"
+
+
+def _artifact_evidence_refs(ontology: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for relation in ontology.get("relations", []) or []:
+        if isinstance(relation, Mapping):
+            refs.extend(_string_list(relation.get("evidence_refs") or relation.get("source_refs")))
+    return list(dict.fromkeys(refs))
+
+
+def _artifact_source_refs(ontology: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for entity in ontology.get("entities", []) or []:
+        if isinstance(entity, Mapping):
+            refs.extend(_string_list(entity.get("source_refs")))
+    return list(dict.fromkeys(refs))
+
+
+def _average_confidence(entities: Sequence[Mapping[str, Any]]) -> float:
+    values = [float(entity.get("confidence") or 0.0) for entity in entities if isinstance(entity, Mapping)]
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 3)
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
 
 
 GENERIC_FORM_PATTERNS = (

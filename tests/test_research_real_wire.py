@@ -298,6 +298,15 @@ def test_karpathy_autoresearch_runner_keeps_metric_improvement(tmp_path):
     assert loop is not None
     assert loop.best_iteration == 2
     assert [item.status for item in loop.experiments] == ["keep", "keep"]
+    for experiment in loop.experiments:
+        payload = experiment.to_dict()
+        assert payload["hypothesis"]
+        assert payload["code_test_change"] == "research_plan_query_mutation"
+        assert payload["query_plan_mutation"]["surface"] == "research_plan.queries"
+        assert "best_metric" in payload["metrics_before"]
+        assert payload["metrics_after"]["metric_name"] == "source_grounding_gap_score"
+        assert payload["decision"] == payload["status"]
+        assert payload["next_slice"]
     assert findings[0].support[0].source_grade == "A"
     assert findings[0].support[0].provenance["metadata"]["karpathy_autoresearch"]["iteration"] == 2
     assert Path(loop.program_path).exists()
@@ -349,6 +358,11 @@ def test_karpathy_autoresearch_runner_discards_non_improvement(tmp_path):
     assert loop is not None
     assert loop.best_iteration == 1
     assert [item.status for item in loop.experiments] == ["keep", "discard"]
+    discard_payload = loop.experiments[1].to_dict()
+    assert discard_payload["decision"] == "discard"
+    assert discard_payload["metrics_before"]["best_metric"] == loop.experiments[0].metric
+    assert discard_payload["metrics_after"]["metric"] == loop.experiments[1].metric
+    assert discard_payload["next_slice"] == "retain_previous_best_and_try_next_bounded_query_plan_mutation"
     assert findings[0].support[0].provenance["metadata"]["karpathy_autoresearch"]["iteration"] == 1
 
 
@@ -773,6 +787,45 @@ def test_build_runner_factory_swaps_mock_and_real_with_same_interface():
         assert out and all(isinstance(f, Finding) for f in out)
 
 
+def test_research_quality_gate_rejects_generated_source_even_when_text_looks_relevant():
+    """Generated/synthetic fallback evidence must never become live evidence.
+
+    A generated source can contain market/scientific keywords and otherwise look
+    relevant. The source-kind classifier and strict gate must still reject it
+    before council/report amplification.
+    """
+
+    from src.research.karpathy_autoresearch import (
+        SourceAuditViolation,
+        build_research_quality_audit,
+        enforce_source_audit_gate,
+    )
+
+    plan = _plan("strawberry molecular diagnostic kit market adoption pricing field validation")
+    ref = EvidenceRef(
+        id="provider-generated-1",
+        source_url="https://example.test/generated-strawberry-diagnostic-market",
+        source_title="Generated strawberry diagnostic kit market statistics and field validation",
+        quote="Synthetic generated summary: strawberry molecular diagnostic kit market pricing, adoption, field validation, sensitivity and specificity.",
+        source_grade="A",
+        provenance={
+            "kind": "generated",
+            "source_role": "primary",
+            "metadata": {"source_text": "generated synthetic source", "query": plan.queries[0]},
+        },
+    )
+    findings = [Finding(claim="Strawberry diagnostic kit market has field validation evidence.", support=[ref], confidence=0.9)]
+
+    audit = build_research_quality_audit(findings, plan)
+    evaluation = audit.source_evaluations[0]
+
+    assert evaluation.source_kind == "generated"
+    assert evaluation.accepted is False
+    assert "generated/mock/empty source" in evaluation.reason
+    with pytest.raises(SourceAuditViolation, match="generated/mock sources cannot be accepted|accepted_source_count"):
+        enforce_source_audit_gate(audit, depth="max")
+
+
 def test_build_runner_disables_empty_fallback_when_live_is_required(monkeypatch):
     import src.research.runner as runner_mod
 
@@ -802,6 +855,24 @@ def test_build_runner_disables_empty_fallback_for_source_research(monkeypatch):
         exa_search=None,
         academic_search=lambda q: [],
         insight_forge_search=lambda q: [],
+    )
+
+    assert real.emit_empty_fallback is False
+
+
+def test_build_runner_forces_empty_fallback_off_for_source_research_even_if_overridden(monkeypatch):
+    import src.research.runner as runner_mod
+
+    monkeypatch.setenv("MUCHANIPO_SOURCE_RESEARCH", "1")
+
+    real = runner_mod.build_runner(
+        use_real=True,
+        web_search=None,
+        vault_search=lambda q: [],
+        exa_search=None,
+        academic_search=lambda q: [],
+        insight_forge_search=lambda q: [],
+        emit_empty_fallback=True,
     )
 
     assert real.emit_empty_fallback is False

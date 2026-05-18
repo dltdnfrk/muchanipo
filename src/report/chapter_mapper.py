@@ -35,6 +35,8 @@ class RoundDigest:
     key_claim: str  # 라운드의 핵심 결론 (1-2문장)
     body_claims: List[str] = field(default_factory=list)  # 근거 목록
     evidence_ref_ids: List[str] = field(default_factory=list)
+    evidence_association: str = "direct"  # direct | synthetic_aggregate | missing
+    synthetic_fallback: bool = False
     confidence: float = 0.0
     framework: Optional[str] = None  # "Porter", "JTBD", ...
 

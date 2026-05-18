@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.research.event_contract import (
+    RESEARCH_BACKEND_CONTRACT_VERSION,
     assert_research_event_contract,
     validate_research_event_contract,
 )
@@ -12,6 +13,7 @@ BASE = {
     "event": "research_progress",
     "stage": "research",
     "status": "research_plan_ready",
+    "research_backend_contract_version": RESEARCH_BACKEND_CONTRACT_VERSION,
     "research_session_id": "research-session-a",
     "app_run_id": "run-a",
     "memory_policy": "no_implicit_cross_session_memory",
@@ -74,6 +76,22 @@ def test_missing_session_fields_fail_with_stable_codes() -> None:
         assert_research_event_contract(event)
 
 
+def test_assert_adds_contract_version_for_research_events() -> None:
+    event = {
+        key: value
+        for key, value in BASE.items()
+        if key != "research_backend_contract_version"
+    }
+    event.update({"queries": ["q1"], "query_count": 1})
+
+    payload = assert_research_event_contract(event)
+
+    assert payload["research_backend_contract_version"] == RESEARCH_BACKEND_CONTRACT_VERSION
+    decision = validate_research_event_contract(event)
+    assert decision.valid is False
+    assert "research_backend_contract_version" in decision.missing_fields
+
+
 def test_status_specific_missing_fields_fail_deterministically() -> None:
     source_event = {**BASE, "status": "source_decision", "source_id": "src-1", "route_id": "r1"}
 
@@ -88,6 +106,25 @@ def test_status_specific_missing_fields_fail_deterministically() -> None:
         "missing:reason",
         "missing:canonical_id_or_resolver_status",
     )
+
+
+def test_route_metadata_gap_event_requires_origin_reason_and_route_id() -> None:
+    event = {
+        **BASE,
+        "status": "route_metadata_gap",
+        "origin_status": "source_found",
+        "reason": "planned_route_not_found",
+        "route_id": "unrouted",
+    }
+
+    decision = validate_research_event_contract(event)
+
+    assert decision.valid is True
+    invalid = {key: value for key, value in event.items() if key != "origin_status"}
+    invalid_decision = validate_research_event_contract(invalid)
+    assert invalid_decision.valid is False
+    assert "origin_status" in invalid_decision.missing_fields
+    assert "missing:origin_status" in invalid_decision.error_codes
 
 
 def test_smart_research_progress_events_require_ui_decision_fields() -> None:
@@ -125,6 +162,26 @@ def test_smart_research_progress_events_require_ui_decision_fields() -> None:
     assert decision.valid is False
     assert "facet_gap_scheduler_report" in decision.missing_fields
     assert "missing:facet_gap_scheduler_report" in decision.error_codes
+
+
+def test_source_family_contract_report_event_requires_runtime_fan_in_payload() -> None:
+    event = {
+        **BASE,
+        "stage": "quality_gate",
+        "status": "source_family_contract_report",
+        "contract_version": "source-family-contracts.v1",
+        "contracts": {"research_lifecycle_contract": {"status": "pass"}},
+        "summary": {"pass": 1, "pending": 0, "fail": 0},
+    }
+
+    decision = validate_research_event_contract(event)
+    assert decision.valid is True, decision.to_dict()
+
+    invalid = {key: value for key, value in event.items() if key != "contracts"}
+    invalid_decision = validate_research_event_contract(invalid)
+    assert invalid_decision.valid is False
+    assert "contracts" in invalid_decision.missing_fields
+    assert "missing:contracts" in invalid_decision.error_codes
 
 
 def test_unknown_non_research_app_events_are_out_of_scope() -> None:

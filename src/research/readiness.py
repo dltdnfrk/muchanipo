@@ -97,6 +97,17 @@ def decide_research_readiness(readiness_input: ResearchReadinessInput) -> Resear
         reasons.append(f"evidence_ledger_readiness={ledger_readiness}")
         if ledger_readiness == BLOCKED:
             blocking = True
+    evidence_metrics = readiness_input.evidence_ledger_metrics or {}
+    expected_claim_gap_count = _number(evidence_metrics.get("expected_claim_gap_count"))
+    expected_claim_count = _number(evidence_metrics.get("expected_claim_count"))
+    expected_claim_traceability_score = _number(evidence_metrics.get("expected_claim_traceability_score"))
+    if expected_claim_gap_count > 0:
+        reasons.append(f"evidence_ledger.expected_claim_gap_count={_compact_number(expected_claim_gap_count)}")
+    elif expected_claim_count > 0 and expected_claim_traceability_score < 1.0:
+        reasons.append(
+            "evidence_ledger.expected_claim_traceability_score="
+            f"{_compact_number(expected_claim_traceability_score)}"
+        )
 
     refutation_readiness = _normalized(readiness_input.refutation_loop_readiness)
     if refutation_readiness and refutation_readiness not in {"completed", "skipped", READY, "pass", "passed"}:

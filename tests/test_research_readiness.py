@@ -73,6 +73,23 @@ def test_ready_requires_all_configured_sub_decisions_ready():
     assert decision.to_dict()["metrics"]["evidence_ledger_readiness"] == "ready"
 
 
+def test_expected_claim_traceability_gap_prevents_ready_even_when_ledger_says_ready():
+    decision = decide_research_readiness(
+        _ready_input(
+            evidence_ledger_readiness="ready",
+            evidence_ledger_metrics={
+                "expected_claim_traceability_score": 0.0,
+                "expected_claim_gap_count": 2,
+            },
+        )
+    )
+
+    assert decision.readiness == "needs_review"
+    assert decision.stop_state == "needs_review_before_council"
+    assert "evidence_ledger.expected_claim_gap_count=2" in decision.reasons
+    assert decision.to_dict()["metrics"]["evidence_ledger.expected_claim_gap_count"] == 2
+
+
 def test_supported_claims_cannot_make_ready_when_no_sources_are_accepted():
     decision = decide_research_readiness(
         _ready_input(

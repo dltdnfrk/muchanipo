@@ -318,7 +318,7 @@ def test_step2_targeting_records_plan_review_and_academic_outputs(reference_pipe
     assert result.targeting_map.seed_papers == ["doi:10.1234/strawberry-kit"]
     assert event["artifacts"]["targeting_academic_sources"] == "openalex"
     assert event["artifacts"]["plan_gate_mode"] == "auto_approve"
-    assert event["artifacts"]["plan_gate_synthetic"] == "false"
+    assert event["artifacts"]["plan_gate_synthetic"] == "true"
 
 
 def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_run):
@@ -326,7 +326,13 @@ def test_step3_research_records_autoresearch_memory_policy(reference_pipeline_ru
     event = _event(events, "research")
 
     assert event["reference_step"] == 3
-    assert event["reference_projects"] == ["Karpathy Autoresearch", "InsightForge", "MemPalace", "학술 자료 검색 API"]
+    assert event["reference_projects"] == [
+        "Karpathy Autoresearch",
+        "Google Gemini Deep Research Max",
+        "InsightForge",
+        "MemPalace",
+        "학술 자료 검색 API",
+    ]
     assert event["artifacts"]["research_query_count"] == str(len(runner.last_plan.queries))
     assert "research_query_routes" in event["artifacts"]
     persisted_routes = json.loads(event["artifacts"]["research_query_routes"])
@@ -397,7 +403,7 @@ def test_step4_evidence_records_grounding_and_plannotator_result(reference_pipel
     assert result.evidence_summary["trusted"] == 4
     assert result.evidence_summary["verified_claim_ratio"] == 1.0
     assert event["artifacts"]["evidence_gate_status"] == result.hitl_results["evidence"].status == "approved"
-    assert event["artifacts"]["evidence_gate_synthetic"] == "false"
+    assert event["artifacts"]["evidence_gate_synthetic"] == "true"
 
 
 def test_step4_evidence_records_refutation_loop_before_quality_readiness(reference_pipeline_run):

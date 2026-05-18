@@ -794,6 +794,8 @@ def build_runner(use_real: bool = False, **kwargs: Any) -> MockResearchRunner | 
         kwargs["academic_search"] = academic_sync_search.search
     if "insight_forge_search" not in kwargs and "enable_default_insight_forge" not in kwargs:
         kwargs["enable_default_insight_forge"] = True
-    if "emit_empty_fallback" not in kwargs:
-        kwargs["emit_empty_fallback"] = not (live_requested_from_env() or source_research_requested_from_env())
+    if live_requested_from_env() or source_research_requested_from_env():
+        kwargs["emit_empty_fallback"] = False
+    elif "emit_empty_fallback" not in kwargs:
+        kwargs["emit_empty_fallback"] = True
     return WebResearchRunner(**kwargs)

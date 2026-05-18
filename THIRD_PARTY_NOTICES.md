@@ -4,6 +4,12 @@ This file records third-party material that is bundled, sampled, adapted, or
 license-sensitive in Muchanipo. Pure reference inspiration is tracked in
 `docs/reference-implementation-inventory.md`.
 
+Current S0 audit status: the GOALS reference stack has no unexplained
+stage-level overclaim in `python -m muchanipo references --json`. This notice
+file covers the bundled, sampled, adapted, or license-sensitive entries below;
+clean-room/non-bundled entries are explicitly called out so they are not treated
+as hidden vendored dependencies.
+
 ## Nemotron-Personas-Korea
 
 - Source: https://huggingface.co/datasets/nvidia/Nemotron-Personas-Korea
@@ -106,10 +112,28 @@ license-sensitive in Muchanipo. Pure reference inspiration is tracked in
   `third_party/karpathy-autoresearch/UPSTREAM.md` with copied material and run
   release packaging review before external redistribution.
 
+## Clean-room / non-bundled reference statuses
+
+These entries are part of the S0 reference inventory but do not currently add
+bundled upstream source or sampled external data to the product artifact:
+
+- Google Gemini Deep Research Max: clean-room runtime contract only. Muchanipo
+  records observed async/cost/token/HITL behavior and does not call or copy
+  Google's private runtime.
+- HACHIMI: clean-room persona-generation controls in local Python. No upstream
+  HACHIMI corpus, provider pool, Streamlit UI, prompts, schemas, or code are
+  bundled.
+- MAP-Elites / EvoAgentX: clean-room algorithmic diversity-map adaptation. No
+  EvoAgentX source is bundled.
+- OASIS / CAMEL-AI: clean-room local council protocol. The inventory records the
+  upstream component as `Apache-2.0 or project-specific; verify upstream
+  component before copying code`; no upstream runtime is bundled.
+- MemPalace: clean-room local stdlib memory-room/wing index and persistence
+  behavior. No upstream MemPalace source is bundled.
+
 ## License Verification Required
 
-MemPalace and OASIS/CAMEL-AI are not cleared under this permissive bucket. The
-runtime inventory currently treats MemPalace as `unknown` and OASIS/CAMEL-AI as
-`Apache-2.0 or project-specific; verify upstream component before copying code`.
-Do not copy additional source code, prompts, schemas, or assets from those
-projects until the exact upstream source URL, revision, and license are recorded.
+OASIS/CAMEL-AI remains outside the permissive-copy bucket until the exact
+upstream component URL, revision, and license are recorded for any future copied
+code, prompts, schemas, or assets. MemPalace is currently treated as a clean-room
+local implementation; add a dedicated notice before copying upstream source.

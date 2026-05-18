@@ -98,6 +98,11 @@ def test_client_polls_pending_to_approved_and_fetches_annotations(monkeypatch):
         ],
         comments=["Tighten summary."],
         synthetic=False,
+        decision_provenance={
+            "mode": "plannotator_http",
+            "source": "plannotator_client",
+            "synthetic": False,
+        },
     )
 
 
@@ -156,6 +161,7 @@ def test_offline_mode_returns_approved_without_annotations(monkeypatch):
     assert result.annotations == []
     assert result.comments == ["plannotator offline mock - no API key configured"]
     assert result.synthetic is True
+    assert result.decision_provenance["mode"] == "plannotator_offline"
 
 
 def test_missing_api_key_fails_closed_without_offline(monkeypatch):

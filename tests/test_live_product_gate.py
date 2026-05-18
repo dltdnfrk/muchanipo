@@ -11,7 +11,11 @@ from src.execution.gateway_v2 import GatewayV2
 from src.execution.models import ModelGateway, ModelResult
 from src.execution.providers.mock import MockProvider
 from src.hitl.plannotator_adapter import HITLAdapter, HITLResult
-from src.pipeline.idea_to_council import IdeaToCouncilPipeline, _round_digests
+from src.pipeline.idea_to_council import (
+    IdeaToCouncilPipeline,
+    _CouncilProviderProgressGateway,
+    _round_digests,
+)
 from src.runtime.live_mode import LiveModeViolation, assert_live_model_result, assert_live_report
 
 
@@ -41,6 +45,36 @@ class _SuccessProvider:
 
     def call(self, stage: str, prompt: str, **kwargs):
         return ModelResult(text="source-backed answer", provider=self.name, model="gemini-live")
+
+
+class _MimoEmptyThenCompactProvider:
+    name = "mimo"
+    model = "mimo-v2.5-pro"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def call(self, stage: str, prompt: str, **kwargs):
+        self.calls.append({"stage": stage, "prompt": prompt, "kwargs": dict(kwargs)})
+        if "Return only valid JSON. No markdown." not in prompt:
+            return ModelResult(text="", provider=self.name, model=self.model)
+        return ModelResult(
+            text='{"status":"needs_review","rationale":"compact retry recovered empty MiMo council output"}',
+            provider=self.name,
+            model=self.model,
+        )
+
+
+class _MimoAuthFailureProvider:
+    name = "mimo"
+    model = "mimo-v2.5-pro"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def call(self, stage: str, prompt: str, **kwargs):
+        self.calls.append({"stage": stage, "prompt": prompt, "kwargs": dict(kwargs)})
+        raise RuntimeError("401 unauthorized")
 
 
 class _EmptyEvidenceRunner:
@@ -119,6 +153,71 @@ def test_gateway_live_mode_rejects_mock_provider_result():
 
     with pytest.raises(LiveModeViolation, match="no live provider candidates"):
         gw.call("research", "ping", require_live=True)
+
+
+def test_council_progress_gateway_compact_retries_empty_mimo_output(monkeypatch):
+    monkeypatch.setenv("MUCHANIPO_COUNCIL_COMPACT_RETRY", "1")
+    provider = _MimoEmptyThenCompactProvider()
+    gateway = GatewayV2(
+        providers={"mimo": provider},
+        stage_routes={"council": "mimo"},
+        fallback_chain={"council": ["mimo"]},
+        require_live_default=True,
+    )
+    events: list[dict[str, object]] = []
+    progress_gateway = _CouncilProviderProgressGateway(gateway, events.append)
+    long_prompt = (
+        "Validate the generated personas and return the same JSON schema requested here. "
+        + ("source-evidence contract " * 500)
+        + 'Final schema: {"status":"ok|needs_review","rationale":"..."}'
+    )
+
+    result = progress_gateway.call(
+        "council",
+        long_prompt,
+        council_stage="persona_deep_validate",
+        layer_id="persona_generation",
+        persona="persona_deep_validator",
+    )
+
+    assert result.provider == "mimo"
+    assert len(provider.calls) == 2
+    assert "Return only valid JSON. No markdown." in str(provider.calls[1]["prompt"])
+    assert len(str(provider.calls[1]["prompt"])) < len(str(provider.calls[0]["prompt"]))
+    failure = next(event for event in events if event["event"] == "council_provider_call_error")
+    assert failure["provider_route"] == "mimo"
+    assert failure["failure_kind"] == "empty_live_output"
+    assert failure["retry"] == "compact_council_prompt"
+    assert failure["blocks_product_pass"] is True
+    retry_start = [event for event in events if event["event"] == "council_provider_call_start"][1]
+    assert retry_start["retry"] == "compact_council_prompt"
+    assert retry_start["prompt_chars"] < events[0]["prompt_chars"]
+    assert retry_start["retry_max_tokens"] <= 2048
+    done = events[-1]
+    assert done["event"] == "council_provider_call_done"
+    assert done["retry"] == "compact_council_prompt"
+    assert done["response_chars"] >= 8
+
+
+def test_council_progress_gateway_does_not_retry_mimo_auth_failure():
+    provider = _MimoAuthFailureProvider()
+    gateway = GatewayV2(
+        providers={"mimo": provider},
+        stage_routes={"council": "mimo"},
+        fallback_chain={"council": ["mimo"]},
+        require_live_default=True,
+    )
+    events: list[dict[str, object]] = []
+    progress_gateway = _CouncilProviderProgressGateway(gateway, events.append)
+
+    with pytest.raises(RuntimeError, match="401 unauthorized"):
+        progress_gateway.call("council", "Return JSON", council_stage="persona_deep_validate")
+
+    assert len(provider.calls) == 1
+    failure = next(event for event in events if event["event"] == "council_provider_call_error")
+    assert failure["failure_kind"] == "auth_or_policy_failure"
+    assert failure["retry"] == "none"
+    assert failure["blocks_product_pass"] is True
 
 
 def test_live_mode_rejects_provider_fallback_marker():
@@ -225,13 +324,18 @@ def test_pipeline_live_mode_blocks_pending_hitl(tmp_path: Path):
         pipeline.run("딸기 농가용 진단키트 시장성")
 
 
-def test_pipeline_live_mode_allows_auto_approve_hitl(tmp_path: Path):
-    """auto_approve is a legitimate headless mode (not synthetic)."""
+def test_pipeline_live_mode_rejects_auto_approve_hitl_as_synthetic(tmp_path: Path):
+    """auto_approve is useful for local/headless tests but is synthetic in live mode."""
     from src.hitl.plannotator_adapter import HITLAdapter
+    from src.runtime.live_mode import assert_live_hitl
+
     adapter = HITLAdapter(mode="auto_approve")
     result = adapter.gate("plan", {})
+
     assert result.status == "approved"
-    assert result.synthetic is False
+    assert result.synthetic is True
+    with pytest.raises(LiveModeViolation, match="rejects synthetic HITL gate 'plan'"):
+        assert_live_hitl("plan", result)
 
 
 def test_pipeline_live_mode_blocks_empty_research_evidence(tmp_path: Path):
@@ -383,6 +487,22 @@ def test_live_evidence_rejects_missing_source_url_or_source():
     )
 
     with pytest.raises(LiveModeViolation, match="source_url"):
+        assert_live_evidence({"trusted": 1}, [ref])
+
+
+def test_live_evidence_rejects_generated_or_synthetic_source_kind():
+    from src.runtime.live_mode import assert_live_evidence
+
+    ref = EvidenceRef(
+        id="generated:looks-live",
+        source_url="https://example.test/generated-live-looking-source",
+        source_title="Generated market evidence with source-like URL",
+        quote="Generated synthetic evidence that should not pass live mode.",
+        source_grade="A",
+        provenance={"kind": "generated", "source_text": "generated synthetic evidence"},
+    )
+
+    with pytest.raises(LiveModeViolation, match="non-live evidence"):
         assert_live_evidence({"trusted": 1}, [ref])
 
 

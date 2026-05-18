@@ -434,6 +434,7 @@ class Session:
                         **base_event,
                         "elapsed_sec": elapsed_sec,
                         "error_class": exc.__class__.__name__,
+                        "http_status_class": _http_status_class_from_exception(exc),
                         "error": _redact_text(exc),
                         "failure_kind": failure_kind,
                         "blocks_product_pass": True,
@@ -482,6 +483,8 @@ class Session:
                 "provider": str(getattr(result, "provider", "")),
                 "model": str(getattr(result, "model", "")),
                 "response_chars": len(response_text),
+                "http_status_class": "2xx",
+                **_usage_token_fields_from_result(result),
             }
         )
         return result
@@ -525,6 +528,7 @@ class Session:
                 **base_event,
                 "elapsed_sec": elapsed_sec,
                 "error_class": exc.__class__.__name__,
+                "http_status_class": _http_status_class_from_exception(exc),
                 "error": _redact_text(exc),
                 "failure_kind": _council_call_failure_kind(exc),
                 "blocks_product_pass": True,
@@ -857,6 +861,20 @@ def _provider_model(gateway: Any, provider_name: str) -> str:
     return str(getattr(provider, "model", "") or "")
 
 
+def _truncate_for_compact_retry(text: str, max_chars: int) -> str:
+    """Keep compact retry prompts genuinely compact even when layer questions embed huge briefs."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max_chars - head - 80
+    return (
+        text[:head]
+        + f" ... [truncated {len(text) - head - tail} chars for compact council retry] ... "
+        + text[-tail:]
+    )
+
+
 def _compact_council_retry_prompt(
     *,
     council_stage: str,
@@ -864,12 +882,14 @@ def _compact_council_retry_prompt(
     layer: RoundLayer,
     evidence_refs: list[Any],
 ) -> str:
+    focus_question = _truncate_for_compact_retry(str(getattr(layer, "focus_question", "") or ""), 2_500)
     lines = [
         "Return only valid JSON. No markdown.",
+        "This is a compact retry after a live provider timeout/empty output; be concise and source-grounded.",
         f"Council stage: {council_stage}",
         f"Persona: {persona_id}",
         f"Layer: {layer.layer_id} / {getattr(layer, 'chapter_title', getattr(layer, 'title', ''))}",
-        f"Question: {layer.focus_question}",
+        f"Question: {focus_question}",
         "Use the evidence IDs below; do not invent IDs.",
     ]
     for ref in evidence_refs[:3]:
@@ -915,6 +935,42 @@ def _call_with_watchdog(
 
 def _redact_text(value: Any) -> str:
     return _SECRETS_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", str(value))
+
+
+def _http_status_class_from_exception(exc: Exception) -> str:
+    code = getattr(exc, "code", None) or getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if code is None:
+        match = re.search(r"\b([1-5]\d{2})\b", str(exc))
+        code = match.group(1) if match else None
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        return "unknown"
+    return f"{status // 100}xx"
+
+
+def _usage_token_fields_from_result(result: Any) -> dict[str, int]:
+    raw = getattr(result, "raw", None)
+    if not isinstance(raw, dict):
+        return {}
+    usage = raw.get("usage") or raw.get("usageMetadata") or {}
+    if not isinstance(usage, dict):
+        return {}
+    aliases = {
+        "usage_prompt_tokens": ("prompt_tokens", "input_tokens", "promptTokenCount"),
+        "usage_completion_tokens": ("completion_tokens", "output_tokens", "candidatesTokenCount"),
+        "usage_total_tokens": ("total_tokens", "totalTokenCount"),
+    }
+    fields: dict[str, int] = {}
+    for output_key, input_keys in aliases.items():
+        for input_key in input_keys:
+            if input_key in usage:
+                try:
+                    fields[output_key] = max(0, int(usage.get(input_key) or 0))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return fields
 
 
 def _model_result_to_round_record(

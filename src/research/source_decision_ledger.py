@@ -6,7 +6,9 @@ runtime branches.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from src.evidence.artifact import EvidenceRef, Finding
@@ -49,6 +51,11 @@ class SourceDecision:
     route_acceptance_rules: tuple[str, ...] = field(default_factory=tuple)
     route_purpose: str | None = None
     route_backend: str | None = None
+    relevance_basis: Mapping[str, Any] = field(default_factory=dict)
+    source_confidence_axis: Mapping[str, Any] = field(default_factory=dict)
+    source_freshness: Mapping[str, Any] = field(default_factory=dict)
+    source_freshness_stale: bool = False
+    source_freshness_followup_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +86,11 @@ class SourceDecision:
             "route_acceptance_rules": list(self.route_acceptance_rules),
             "route_purpose": self.route_purpose,
             "route_backend": self.route_backend,
+            "relevance_basis": dict(self.relevance_basis),
+            "source_confidence_axis": dict(self.source_confidence_axis),
+            "source_freshness": dict(self.source_freshness),
+            "source_freshness_stale": self.source_freshness_stale,
+            "source_freshness_followup_reason": self.source_freshness_followup_reason,
         }
 
 
@@ -113,9 +125,12 @@ class SourceDecisionLedger:
         by_route_facet_id: dict[str, dict[str, Any]] = {}
         by_route_intent: dict[str, int] = {}
         by_route_source_class: dict[str, int] = {}
+        rejection_code_counts: dict[str, int] = {}
         for item in self.decisions:
             by_role[item.source_role] = by_role.get(item.source_role, 0) + 1
             by_identifier_kind[item.identifier_kind] = by_identifier_kind.get(item.identifier_kind, 0) + 1
+            for code in item.rejection_codes:
+                rejection_code_counts[code] = rejection_code_counts.get(code, 0) + 1
             if item.route_facet_id:
                 by_route_facet[item.route_facet_id] = by_route_facet.get(item.route_facet_id, 0) + 1
                 bucket = by_route_facet_id.setdefault(item.route_facet_id, _empty_route_facet_summary())
@@ -129,6 +144,10 @@ class SourceDecisionLedger:
                 if item.decision == "needs_review":
                     bucket["needs_review_count"] += 1
                     bucket["needs_review_source_ids"].append(item.source_id)
+                if item.source_freshness_followup_reason:
+                    bucket["source_freshness_followup_count"] += 1
+                    if item.source_freshness_followup_reason not in bucket["followup_reason_codes"]:
+                        bucket["followup_reason_codes"].append(item.source_freshness_followup_reason)
                 if "canonical_identity_unresolved" in item.rejection_codes:
                     bucket["blocking_unresolved_canonical_count"] += 1
                 if item.route_id and item.route_id not in bucket["route_ids"]:
@@ -156,6 +175,8 @@ class SourceDecisionLedger:
             "route_facet_statuses": route_facet_statuses,
             "route_intent_counts": by_route_intent,
             "route_source_class_counts": by_route_source_class,
+            "rejection_code_counts": rejection_code_counts,
+            "low_relevance_count": rejection_code_counts.get("source_relevance_below_threshold", 0),
         }
 
     def quality_gate_events(self) -> tuple[dict[str, Any], ...]:
@@ -182,6 +203,8 @@ def _empty_route_facet_summary() -> dict[str, Any]:
         "rejected_count": 0,
         "needs_review_count": 0,
         "blocking_unresolved_canonical_count": 0,
+        "source_freshness_followup_count": 0,
+        "followup_reason_codes": [],
         "accepted_source_ids": [],
         "rejected_source_ids": [],
         "needs_review_source_ids": [],
@@ -233,6 +256,12 @@ def facet_gap_scheduler_report(
         if status == "satisfied":
             continue
         reason_codes = [_reason_code_for_route_facet_status(status)]
+        if isinstance(facet_summary, Mapping):
+            reason_codes.extend(
+                str(reason)
+                for reason in (facet_summary.get("followup_reason_codes") or ())
+                if str(reason or "").strip() and str(reason) not in reason_codes
+            )
         if coverage_gap:
             reason_codes.append("claim_coverage_gap")
         intent = str(route.get("intent") or "").strip()
@@ -354,10 +383,32 @@ def _decision_for_ref(
     locator = str(ref.source_url or metadata.get("locator") or metadata.get("source") or metadata.get("url") or "").strip()
     locator_present = bool(locator)
     audit_accepted = bool(evaluation.accepted) if evaluation is not None else False
+    relevance_score = round(float(getattr(evaluation, "relevance_score", 0.0) or 0.0), 3)
+    relevance_floor = _minimum_accepted_relevance_score()
+    raw_relevance_basis = getattr(evaluation, "relevance_basis", {}) if evaluation is not None else {}
+    relevance_basis = dict(raw_relevance_basis) if isinstance(raw_relevance_basis, Mapping) else {}
+    if not relevance_basis:
+        relevance_basis = {
+            "basis": "source_evaluation",
+            "relevance_score": relevance_score,
+            "query_terms_used": None,
+            "fallback_query_used": None,
+        }
+    route_topic_overlap = _has_route_topic_overlap(ref, route=route, metadata=metadata)
+    freshness = _source_freshness(metadata, route_acceptance_rules=route_acceptance_rules)
+    freshness_followup_reason = (
+        "source_freshness_stale"
+        if freshness.get("status") == "stale"
+        else "source_freshness_missing"
+        if freshness.get("status") == "unknown" and freshness.get("freshness_required")
+        else None
+    )
     rejection_codes: list[str] = []
 
     if not audit_accepted:
         rejection_codes.append("source_audit_rejected")
+    if audit_accepted and relevance_score < relevance_floor:
+        rejection_codes.append("source_relevance_below_threshold")
     if _requires_stable_identity(source_kind, route, resolution) and resolution.resolver_status != "resolved":
         rejection_codes.append("canonical_identity_unresolved")
     if source_role not in MATERIAL_SOURCE_ROLES:
@@ -366,21 +417,35 @@ def _decision_for_ref(
         rejection_codes.append("missing_quote")
     if not locator_present:
         rejection_codes.append("missing_locator")
+    if freshness_followup_reason:
+        rejection_codes.append(freshness_followup_reason)
 
     accepted = not rejection_codes
     if accepted:
         decision = "accepted"
         reason = _join_reasons(evaluation.reason if evaluation is not None else "source accepted", "canonical identity resolved")
-    elif "canonical_identity_unresolved" in rejection_codes:
+    elif "canonical_identity_unresolved" in rejection_codes or freshness_followup_reason:
         decision = "needs_review"
         reason = _join_reasons(
             evaluation.reason if evaluation is not None else "source audit unavailable",
-            resolution.needs_review_reason or f"resolver_status={resolution.resolver_status}",
+            resolution.needs_review_reason or freshness_followup_reason or f"resolver_status={resolution.resolver_status}",
         )
     else:
         decision = "rejected"
-        reason = _join_reasons(evaluation.reason if evaluation is not None else "source audit unavailable", ", ".join(rejection_codes))
+        reason = _join_reasons(
+            evaluation.reason if evaluation is not None else "source audit unavailable",
+            _rejection_code_reason(rejection_codes, relevance_score=relevance_score, relevance_floor=relevance_floor),
+        )
 
+    confidence_axis = {
+        "authority_level": authority_level,
+        "relevance_score": relevance_score,
+        "source_grade": str(ref.source_grade or ""),
+        "source_role": source_role,
+        "source_kind": source_kind,
+        "route_topic_overlap": route_topic_overlap,
+        "relevance_basis": relevance_basis,
+    }
     return SourceDecision(
         source_id=ref.id,
         route_id=route_id,
@@ -394,7 +459,7 @@ def _decision_for_ref(
         authority_level=authority_level,
         accepted=accepted,
         decision=decision,
-        relevance_score=round(float(getattr(evaluation, "relevance_score", 0.0) or 0.0), 3),
+        relevance_score=relevance_score,
         reason=reason,
         rejection_codes=tuple(rejection_codes),
         quote_present=quote_present,
@@ -409,6 +474,98 @@ def _decision_for_ref(
         route_acceptance_rules=route_acceptance_rules,
         route_purpose=route_purpose,
         route_backend=route_backend,
+        relevance_basis=relevance_basis,
+        source_confidence_axis=confidence_axis,
+        source_freshness=freshness,
+        source_freshness_stale=freshness.get("status") == "stale",
+        source_freshness_followup_reason=freshness_followup_reason,
+    )
+
+
+def _minimum_accepted_relevance_score() -> float:
+    return 0.35
+
+
+def _has_route_topic_overlap(ref: EvidenceRef, *, route: Mapping[str, Any], metadata: Mapping[str, Any]) -> bool:
+    # Do not use raw route/search query text here: query expansion can contain
+    # copied source titles or polluted terms, so allowing it to satisfy overlap
+    # would recreate the exact route-query rescue path that topic-anchor
+    # relevance is meant to prevent. Keep this as a weak route-intent/source
+    # alignment signal only; acceptance is gated by the upstream relevance_basis.
+    route_text = " ".join(
+        str(value or "")
+        for value in (
+            route.get("purpose"),
+            route.get("intent"),
+            metadata.get("route_purpose"),
+        )
+    )
+    source_text = " ".join(
+        str(value or "")
+        for value in (
+            ref.source_title,
+            ref.source_url,
+            ref.quote,
+            metadata.get("source_text"),
+            metadata.get("title"),
+            metadata.get("abstract"),
+            metadata.get("snippet"),
+            metadata.get("description"),
+        )
+    )
+    route_terms = _meaningful_overlap_terms(route_text)
+    source_terms = _meaningful_overlap_terms(source_text)
+    return bool(route_terms and source_terms and route_terms & source_terms)
+
+
+def _meaningful_overlap_terms(text: str) -> set[str]:
+    raw = re.findall(r"[A-Za-z0-9]+|[가-힣]{2,}", str(text or "").casefold())
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "api",
+        "canonical",
+        "class",
+        "confirmation",
+        "confirm",
+        "doi",
+        "evidence",
+        "for",
+        "general",
+        "high",
+        "identity",
+        "intent",
+        "org",
+        "peer",
+        "purpose",
+        "query",
+        "relevance",
+        "research",
+        "reviewed",
+        "route",
+        "source",
+        "stable",
+        "the",
+        "to",
+        "topical",
+        "topic",
+        "with",
+    }
+    return {term for term in raw if len(term) > 1 and term not in stopwords}
+
+
+def _rejection_code_reason(
+    rejection_codes: Sequence[str],
+    *,
+    relevance_score: float,
+    relevance_floor: float,
+) -> str:
+    if "source_relevance_below_threshold" not in rejection_codes:
+        return ", ".join(rejection_codes)
+    return _join_reasons(
+        ", ".join(rejection_codes),
+        f"relevance_score={relevance_score} < minimum_relevance_score={relevance_floor}",
     )
 
 
@@ -450,6 +607,52 @@ def _authority_level(ref: EvidenceRef, *, source_kind: str) -> str:
     if str(ref.source_grade or "").upper() in {"B", "C"}:
         return "medium"
     return "unknown"
+
+
+def _source_freshness(metadata: Mapping[str, Any], *, route_acceptance_rules: tuple[str, ...]) -> dict[str, Any]:
+    published_at = _first_text(metadata.get("published_at"), metadata.get("published_date"), metadata.get("date"))
+    retrieved_at = _first_text(metadata.get("retrieved_at"), metadata.get("accessed_at"), metadata.get("fetched_at"))
+    freshness_required_after = _first_text(
+        metadata.get("freshness_required_after"),
+        metadata.get("min_published_at"),
+        metadata.get("fresh_after"),
+    )
+    freshness_required = bool(
+        freshness_required_after
+        or any("fresh" in rule.casefold() or "recent" in rule.casefold() for rule in route_acceptance_rules)
+    )
+    status = "unknown"
+    if published_at and freshness_required_after:
+        status = "fresh" if _date_key(published_at) >= _date_key(freshness_required_after) else "stale"
+    elif published_at:
+        status = "dated"
+    elif freshness_required:
+        status = "unknown"
+    return {
+        "published_at": published_at,
+        "retrieved_at": retrieved_at,
+        "freshness_required_after": freshness_required_after,
+        "freshness_required": freshness_required,
+        "status": status,
+    }
+
+
+def _date_key(value: str | None) -> tuple[int, int, int]:
+    text = str(value or "").strip()
+    if not text:
+        return (0, 0, 0)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (parsed.year, parsed.month, parsed.day)
+    except ValueError:
+        parts = text[:10].split("-")
+        try:
+            year = int(parts[0]) if len(parts) > 0 else 0
+            month = int(parts[1]) if len(parts) > 1 else 1
+            day = int(parts[2]) if len(parts) > 2 else 1
+            return (year, month, day)
+        except (TypeError, ValueError):
+            return (0, 0, 0)
 
 
 def _route_id_for_ref(ref: EvidenceRef, routes_by_query: Mapping[str, Mapping[str, Any]]) -> str | None:

@@ -112,7 +112,7 @@ function readResearchDepth(): ResearchDepth {
   return value === "shallow" || value === "deep" || value === "max" || value === "superdeep" ? value : "deep";
 }
 
-type Stage =
+export type Stage =
   | "intake"
   | "interview"
   | "targeting"
@@ -124,8 +124,10 @@ type Stage =
   | "agents"
   | "finalize";
 
+export type StageStatus = "pending" | "active" | "completed" | "blocked" | "error";
+
 interface StageState {
-  status: "pending" | "active" | "completed" | "error";
+  status: StageStatus;
   message: string;
   startedAt?: number;
   completedAt?: number;
@@ -134,6 +136,8 @@ interface StageState {
   lastSignal?: string;
   referenceProjects?: string[];
   artifactKeys?: string[];
+  blockerCodes?: string[];
+  readinessNote?: string;
 }
 
 interface TokenCard {
@@ -417,6 +421,30 @@ function isStage(value: unknown): value is Stage {
   return typeof value === "string" && STAGES.includes(value as Stage);
 }
 
+const CANONICAL_STAGE_TO_DISPLAY_STAGE: Record<string, Stage> = {
+  idea_dump: "intake",
+  interview: "interview",
+  target_mapping: "targeting",
+  plannotator_review: "targeting",
+  deep_research_max: "research",
+  ontology_extraction: "evidence",
+  persona_generation: "council",
+  llm_council: "council",
+  final_report_html_yaml: "report",
+  council: "council",
+  report: "report",
+  agents: "agents",
+  finalize: "finalize",
+};
+
+const STAGE_LIFECYCLE_EVENTS = new Set([
+  "stage_started",
+  "stage_progress",
+  "stage_blocked",
+  "stage_completed",
+  "stage_failed",
+]);
+
 export function parseEventBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
@@ -472,6 +500,193 @@ export function eventFeedsCurrentSessionEvidenceLedger(event: BackendEvent): boo
 function artifactKeyList(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   return Object.keys(value as Record<string, unknown>).sort();
+}
+
+export interface StageLifecycleView {
+  displayStage: Stage;
+  canonicalStage: string;
+  status: StageStatus;
+  message: string;
+  lastSignal: string;
+  referenceProjects: string[];
+  artifactKeys: string[];
+  blockerCodes: string[];
+  readinessNote?: string;
+  finalReportReady?: boolean;
+}
+
+export function normalizeStageLifecycleEvent(event: BackendEvent): StageLifecycleView | null {
+  const eventName = String(event.event ?? "");
+  if (!STAGE_LIFECYCLE_EVENTS.has(eventName)) return null;
+  const canonicalStage = String(event.stage ?? "").trim();
+  const displayStage = displayStageForBackendStage(canonicalStage);
+  if (!canonicalStage || !displayStage) return null;
+
+  const blockerCodes = blockerCodesFromEvent(event);
+  const artifacts = event.artifacts && typeof event.artifacts === "object" && !Array.isArray(event.artifacts)
+    ? (event.artifacts as Record<string, unknown>)
+    : {};
+  const artifactKeys = artifactKeyList(artifacts);
+  const referenceProjects = stringList(event.reference_projects);
+  const backendStatus = String(event.status ?? "").trim().toLowerCase();
+  const blocksProductPass = parseEventBoolean(event.blocks_product_pass);
+  const finalReportReady = readFinalReportReady(event);
+  const personaCouncilReady = readPersonaCouncilReady(event);
+
+  let status: StageStatus =
+    eventName === "stage_started" || eventName === "stage_progress"
+      ? "active"
+      : eventName === "stage_completed"
+        ? "completed"
+        : eventName === "stage_failed"
+          ? "error"
+          : "blocked";
+
+  if (backendStatus === "blocked" || blocksProductPass) status = "blocked";
+  if (backendStatus === "failed" || backendStatus === "error") status = "error";
+
+  let readinessNote: string | undefined;
+  if (canonicalStage === "persona_generation") {
+    if (eventName === "stage_completed" && personaCouncilReady !== true) {
+      status = "blocked";
+      readinessNote = "llm_council_ready not confirmed";
+    } else if (personaCouncilReady === true) {
+      readinessNote = "llm_council_ready true";
+    } else if (personaCouncilReady === false) {
+      readinessNote = "llm_council_ready false";
+    }
+  }
+
+  if (canonicalStage === "llm_council") {
+    if (eventName === "stage_completed" && finalReportReady !== true) {
+      status = "blocked";
+      readinessNote = "final_report_ready not confirmed";
+    } else if (finalReportReady === true) {
+      readinessNote = "final_report_ready true";
+    } else if (finalReportReady === false) {
+      readinessNote = "final_report_ready false";
+    }
+  }
+
+  return {
+    displayStage,
+    canonicalStage,
+    status,
+    message: stageLifecycleMessage({
+      eventName,
+      canonicalStage,
+      status,
+      blockerCodes,
+      readinessNote,
+      event,
+    }),
+    lastSignal: `${canonicalStage} · ${eventName}`,
+    referenceProjects,
+    artifactKeys,
+    blockerCodes,
+    readinessNote,
+    finalReportReady,
+  };
+}
+
+function displayStageForBackendStage(stage: string): Stage | null {
+  if (isStage(stage)) return stage;
+  return CANONICAL_STAGE_TO_DISPLAY_STAGE[stage] ?? null;
+}
+
+function readFinalReportReady(event: BackendEvent): boolean | undefined {
+  return readBooleanField(event, [
+    "final_report_ready",
+    "llm_council_final_report_ready",
+  ]);
+}
+
+function readPersonaCouncilReady(event: BackendEvent): boolean | undefined {
+  return readBooleanField(event, [
+    "llm_council_ready",
+    "persona_generation_llm_council_ready",
+  ]);
+}
+
+function readBooleanField(event: BackendEvent, keys: string[]): boolean | undefined {
+  const artifacts = event.artifacts && typeof event.artifacts === "object" && !Array.isArray(event.artifacts)
+    ? (event.artifacts as Record<string, unknown>)
+    : {};
+  const downstream =
+    event.downstream_consumability && typeof event.downstream_consumability === "object"
+      ? (event.downstream_consumability as Record<string, unknown>)
+      : {};
+  for (const key of keys) {
+    if (event[key] !== undefined) return parseEventBoolean(event[key]);
+    if (artifacts[key] !== undefined) return parseEventBoolean(artifacts[key]);
+    if (downstream[key] !== undefined) return parseEventBoolean(downstream[key]);
+  }
+  if (keys.includes("final_report_ready") && downstream.final_report_ready !== undefined) {
+    return parseEventBoolean(downstream.final_report_ready);
+  }
+  return undefined;
+}
+
+function blockerCodesFromEvent(event: BackendEvent): string[] {
+  const raw = event.blockers;
+  const out: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === "string") out.push(item);
+      else if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        if (record.code) out.push(String(record.code));
+      }
+    }
+  }
+  const artifacts = event.artifacts && typeof event.artifacts === "object" && !Array.isArray(event.artifacts)
+    ? (event.artifacts as Record<string, unknown>)
+    : {};
+  for (const key of ["llm_council_blockers", "persona_generation_blockers"]) {
+    const value = event[key] ?? artifacts[key];
+    if (typeof value === "string") {
+      out.push(...value.split(",").map((item) => item.trim()).filter(Boolean));
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function stageLifecycleMessage({
+  eventName,
+  canonicalStage,
+  status,
+  blockerCodes,
+  readinessNote,
+  event,
+}: {
+  eventName: string;
+  canonicalStage: string;
+  status: StageStatus;
+  blockerCodes: string[];
+  readinessNote?: string;
+  event: BackendEvent;
+}): string {
+  if (status === "blocked") {
+    const first = blockerCodes[0] ? ` · ${blockerCodes[0]}` : "";
+    if (canonicalStage === "persona_generation") return `Persona generation blocked${first}`;
+    if (canonicalStage === "llm_council") return `Council blocked${first}`;
+    return `Blocked by backend${first}`;
+  }
+  if (status === "error") return "Backend reported a stage failure";
+  if (canonicalStage === "persona_generation") {
+    if (status === "completed") return "Persona artifact ready for council";
+    return "Persona artifact being checked";
+  }
+  if (canonicalStage === "llm_council") {
+    if (status === "completed") return "Council ready for report";
+    const round = event.round !== undefined ? ` · round ${event.round}` : "";
+    const provider = event.provider || event.provider_route ? ` · ${String(event.provider ?? event.provider_route)}` : "";
+    return `Council progress from backend${round}${provider}`;
+  }
+  if (readinessNote) return readinessNote;
+  if (eventName === "stage_completed") return "Completed from backend event";
+  if (eventName === "stage_progress") return "Progress from backend event";
+  return "Started from backend event";
 }
 
 function signalAge(now: number, lastEventAt?: number): string {
@@ -1156,7 +1371,7 @@ function pushCouncilActivity(
   return [activity, ...withoutDuplicate].slice(0, 12);
 }
 
-export function deriveLiveE2eStatus({
+export function deriveBackendSignalStatus({
   runId,
   runtimeRunId,
   runtimeHeartbeatStage,
@@ -1170,7 +1385,7 @@ export function deriveLiveE2eStatus({
   if ((runtimeRunId === runId && runtimeHeartbeatStage) || hasVisibleBackendHeartbeat) {
     return "Backend run signals observed";
   }
-  return "Not proven in this UI session";
+  return "Waiting for live backend signal";
 }
 
 export default function RunProgress() {
@@ -1663,12 +1878,9 @@ export default function RunProgress() {
         return;
       }
 
-      if (
-        (event.event === "stage_started" || event.event === "stage_completed") &&
-        typeof event.stage === "string"
-      ) {
-        const stage = event.stage as Stage;
-        if (!STAGES.includes(stage)) return;
+      const stageLifecycle = normalizeStageLifecycleEvent(event);
+      if (stageLifecycle) {
+        const stage = stageLifecycle.displayStage;
         if (event.event === "stage_started" && stage !== "interview") {
           setInterviewPrompt(null);
           setInterviewSubmitting(false);
@@ -1680,24 +1892,28 @@ export default function RunProgress() {
         setStages((prev) => {
           const next = { ...prev };
           const current = { ...next[stage] };
-          const referenceProjects = stringList(event.reference_projects);
-          const artifactKeys = artifactKeyList(event.artifacts);
-          if (event.event === "stage_started") {
-            current.status = "active";
+          if (stageLifecycle.status === "active") {
+            current.status =
+              current.status === "completed" || current.status === "blocked" || current.status === "error"
+                ? current.status
+                : "active";
             current.startedAt = Date.now();
             current.lastEventAt = Date.now();
-            current.lastSignal = "stage_started";
-            current.message = "실행 시작 · backend event 수신";
-          } else {
+          } else if (stageLifecycle.status === "completed") {
             current.status = "completed";
             current.completedAt = Date.now();
             if (current.startedAt) current.durationMs = current.completedAt - current.startedAt;
             current.lastEventAt = Date.now();
-            current.lastSignal = "stage_completed";
-            current.message = "완료 · backend event 수신";
+          } else {
+            current.status = stageLifecycle.status;
+            current.lastEventAt = Date.now();
           }
-          if (referenceProjects.length > 0) current.referenceProjects = referenceProjects;
-          if (artifactKeys.length > 0) current.artifactKeys = artifactKeys;
+          current.lastSignal = stageLifecycle.lastSignal;
+          current.message = stageLifecycle.message;
+          if (stageLifecycle.referenceProjects.length > 0) current.referenceProjects = stageLifecycle.referenceProjects;
+          if (stageLifecycle.artifactKeys.length > 0) current.artifactKeys = stageLifecycle.artifactKeys;
+          current.blockerCodes = stageLifecycle.blockerCodes;
+          current.readinessNote = stageLifecycle.readinessNote;
           next[stage] = current;
           return next;
         });
@@ -1839,18 +2055,27 @@ export default function RunProgress() {
           ...prev,
           council: {
             ...prev.council,
-            status: prev.council.status === "completed" ? "completed" : "active",
+            status: blocksProductPass
+              ? "blocked"
+              : prev.council.status === "completed"
+                ? "completed"
+                : "active",
             startedAt: prev.council.startedAt ?? Date.now(),
             lastEventAt: Date.now(),
             lastSignal: `${event.event} · ${councilStage}`,
             message:
-              event.event === "council_provider_call_start"
+              blocksProductPass
+                ? "Council provider state blocks product pass"
+                : event.event === "council_provider_call_start"
                 ? "Council provider 호출 시작"
                 : event.event === "council_provider_call_done"
                   ? "Council provider 응답 수신"
                   : event.event === "council_provider_call_timeout"
                     ? "Council provider 타임아웃 감지"
                     : "Council provider 오류 감지",
+            blockerCodes: blocksProductPass
+              ? [String(event.failure_kind ?? event.event)]
+              : prev.council.blockerCodes,
           },
         }));
         setCouncilActivity((prev) =>
@@ -2177,7 +2402,7 @@ export default function RunProgress() {
   const runtimeHeartbeatStage = runtimeEvidence?.heartbeatStage;
   const hasVisibleBackendHeartbeat = hasReceivedHeartbeat;
   const desktopRuntimeStatus = runtimeEvidence ? "Observed" : "Not observed yet";
-  const liveE2eStatus = deriveLiveE2eStatus({
+  const backendSignalStatus = deriveBackendSignalStatus({
     runId,
     runtimeRunId,
     runtimeHeartbeatStage,
@@ -2414,22 +2639,22 @@ export default function RunProgress() {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-tertiary">
-                Desktop/live evidence
+                Run health
               </p>
-              <h2 className="mt-1 text-sm font-medium text-white">Evidence gap surface</h2>
+              <h2 className="mt-1 text-sm font-medium text-white">Backend heartbeat and source visibility</h2>
             </div>
             <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 font-mono text-[10px] text-tertiary">
-              run scoped
+              current run
             </span>
           </div>
           <div className="grid gap-2 md:grid-cols-3">
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Desktop runtime</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Runtime</p>
               <p className="mt-1 text-xs text-white">{desktopRuntimeStatus}</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Live e2e</p>
-              <p className="mt-1 text-xs text-white">{liveE2eStatus}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Backend signal</p>
+              <p className="mt-1 text-xs text-white">{backendSignalStatus}</p>
             </div>
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-tertiary">Source access</p>
@@ -2992,12 +3217,15 @@ export default function RunProgress() {
             const state = stages[stage];
             const isActive = state.status === "active";
             const isCompleted = state.status === "completed";
+            const isBlocked = state.status === "blocked";
             const isError = state.status === "error";
             const lastSignalAge = signalAge(now, state.lastEventAt);
             const proofTone = isActive
               ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
               : isCompleted
               ? "border-white/10 bg-black/20 text-tertiary"
+              : isBlocked
+              ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
               : isError
               ? "border-red-400/20 bg-red-400/10 text-red-200"
               : "border-white/5 bg-black/10 text-tertiary";
@@ -3013,6 +3241,10 @@ export default function RunProgress() {
                   {isCompleted ? (
                     <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : isBlocked ? (
+                    <svg className="h-4 w-4 text-amber-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01M5 20h14L12 4 5 20z" />
                     </svg>
                   ) : isError ? (
                     <svg className="h-4 w-4 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
@@ -3035,6 +3267,8 @@ export default function RunProgress() {
                         ? "text-white"
                         : isCompleted
                         ? "text-secondary"
+                        : isBlocked
+                        ? "text-amber-200"
                         : isError
                         ? "text-red-300"
                         : "text-tertiary"
@@ -3057,6 +3291,8 @@ export default function RunProgress() {
                           ? "실행 중"
                           : isCompleted
                           ? "완료"
+                          : isBlocked
+                          ? "막힘"
                           : isError
                           ? "오류"
                           : "대기"}
@@ -3095,6 +3331,17 @@ export default function RunProgress() {
                     <p className="mt-1 truncate font-mono text-[10px] text-tertiary">
                       artifacts: {state.artifactKeys.slice(0, 8).join(" · ")}
                       {state.artifactKeys.length > 8 ? ` · +${state.artifactKeys.length - 8}` : ""}
+                    </p>
+                  )}
+                  {state.readinessNote && (
+                    <p className="mt-1 truncate font-mono text-[10px] text-secondary">
+                      readiness: {state.readinessNote}
+                    </p>
+                  )}
+                  {state.blockerCodes && state.blockerCodes.length > 0 && (
+                    <p className="mt-1 truncate font-mono text-[10px] text-amber-200">
+                      blockers: {state.blockerCodes.slice(0, 4).join(" · ")}
+                      {state.blockerCodes.length > 4 ? ` · +${state.blockerCodes.length - 4}` : ""}
                     </p>
                   )}
                   {stage === "council" && councilActivity.length > 0 && (

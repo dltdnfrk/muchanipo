@@ -344,6 +344,33 @@ def test_session_can_synthesize_chairman_after_timeout_when_enabled(monkeypatch)
     assert "timed out" in result.raw_response
 
 
+def test_compact_retry_prompt_truncates_embedded_large_focus_question():
+    from src.council.round_layers import RoundLayer
+    from src.council.session import _compact_council_retry_prompt
+
+    huge_question = "B-1 deep research prompt " + ("x" * 160_000) + " exact anchor tail"
+    layer = RoundLayer(
+        layer_id="L1_market_sizing",
+        chapter_title="시장 규모 + 컨텍스트",
+        focus_question=huge_question,
+        emphasis_roles=["industry_analyst"],
+        evidence_kinds=["academic"],
+        success_signal="source-backed",
+    )
+
+    prompt = _compact_council_retry_prompt(
+        council_stage="individual",
+        persona_id="mirofish-entity-001",
+        layer=layer,
+        evidence_refs=[],
+    )
+
+    assert len(prompt) < 4_000
+    assert "truncated" in prompt
+    assert "B-1 deep research prompt" in prompt
+    assert "exact anchor tail" in prompt
+
+
 def test_session_compact_retries_empty_live_council_outputs(monkeypatch):
     monkeypatch.setenv("MUCHANIPO_REQUIRE_LIVE", "1")
     provider = EmptyThenCompactProvider()

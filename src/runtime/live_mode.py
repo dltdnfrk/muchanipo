@@ -121,10 +121,11 @@ def assert_live_evidence(evidence_summary: dict[str, Any], refs: list[Any]) -> N
     if not refs:
         raise LiveModeViolation("live mode requires at least one evidence record")
 
-    rejected_kinds = {"mock", "empty", "placeholder", "stub"}
+    rejected_kinds = {"mock", "empty", "placeholder", "stub", "generated", "synthetic", "fixture_source_backed"}
     for ref in refs:
         provenance = getattr(ref, "provenance", {}) or {}
-        kind = str(provenance.get("kind", "") or "").lower()
+        metadata = provenance.get("metadata") if isinstance(provenance.get("metadata"), dict) else {}
+        kind = str(provenance.get("kind") or metadata.get("kind") or "").lower()
         title = str(getattr(ref, "source_title", "") or "")
         grade = str(getattr(ref, "source_grade", "") or "").upper()
         source_url = str(getattr(ref, "source_url", "") or "").strip()

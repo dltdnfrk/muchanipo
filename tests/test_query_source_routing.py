@@ -6,6 +6,7 @@ from src.research.max_plus_benchmark import benchmark_metrics, build_b1_probe_fi
 from src.research.planner import (
     ResearchPlanner,
     adaptive_followup_query_plan,
+    adaptive_followup_execution_report,
     normalize_route_intent,
     query_route_ledger,
     with_source_discovery_queries,
@@ -117,6 +118,50 @@ def test_adaptive_followup_query_plan_turns_facet_gaps_into_generic_routed_queri
     assert payload["model_role_routing_plan"]["quality_gate"]["deterministic"] is True
     assert "erwinia" not in str(payload).casefold()
     assert "b-1" not in str(payload).casefold()
+
+
+def test_adaptive_followup_execution_report_marks_deferred_routes_pending_with_reason() -> None:
+    plan = ResearchPlanner().plan(
+        _brief("urban heat island schoolyard shade interventions evidence source-backed research"),
+        max_queries=5,
+    )
+    gap_report = {
+        "status": "facet_gaps_pending",
+        "candidate_count": 2,
+        "scheduled_count": 2,
+        "scheduled_followups": [
+            {
+                "facet_id": "counter_evidence",
+                "route_id": "route-counter",
+                "query": "urban heat island shade counter evidence",
+                "intent": "refutation",
+                "reason_codes": ["route_facet_needs_review", "refutation_gap"],
+                "priority": 0,
+            },
+            {
+                "facet_id": "background_scope",
+                "route_id": "route-background",
+                "query": "urban heat island shade scope",
+                "intent": "background_mapping",
+                "reason_codes": ["route_facet_gap"],
+                "priority": 1,
+            },
+        ],
+    }
+    adaptive_plan = adaptive_followup_query_plan(plan, gap_report, max_followups=2)
+
+    report = adaptive_followup_execution_report(adaptive_plan, facet_gap_report=gap_report)
+
+    assert report["iteration"] == 2
+    assert report["status"] == "adaptive_followups_pending"
+    assert report["planned_count"] == 2
+    assert report["pending_count"] == 2
+    assert report["executed_count"] == 0
+    assert all(row["pending_reason"] for row in report["pending_followups"])
+    assert report["facet_gap_scheduler_report_iteration_2"]["iteration"] == 2
+    assert report["facet_gap_scheduler_report_iteration_2"]["pending_count"] == 2
+    assert report["facet_gap_scheduler_report_iteration_2"]["gap_count_after_upper_bound"] <= gap_report["candidate_count"]
+    assert "b-1" not in str(report).casefold()
 
 
 def test_research_plan_routes_queries_by_source_class_and_intent() -> None:

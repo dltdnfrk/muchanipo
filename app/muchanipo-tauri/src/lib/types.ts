@@ -13,6 +13,11 @@ export type LayerName =
 export type BackendEventKind =
   | "pipeline_started"
   | "run_started"
+  | "stage_started"
+  | "stage_progress"
+  | "stage_blocked"
+  | "stage_completed"
+  | "stage_failed"
   | "deep_interview_progress"
   | "deep_interview_artifacts"
   | "interview_ontology_delta"
@@ -125,6 +130,19 @@ export interface ResearchProgressEvent extends BackendEventEnvelope {
   gap_count?: number;
 }
 
+export interface StageLifecycleEvent extends BackendEventEnvelope {
+  type?: "stage_started" | "stage_progress" | "stage_blocked" | "stage_completed" | "stage_failed";
+  event: "stage_started" | "stage_progress" | "stage_blocked" | "stage_completed" | "stage_failed";
+  stage: string;
+  status?: string;
+  message?: string;
+  artifact_ref?: string;
+  blockers?: unknown[];
+  final_report_ready?: boolean | string | number;
+  llm_council_ready?: boolean | string | number;
+  blocks_product_pass?: boolean | string | number;
+}
+
 export interface PipelineErrorEvent extends BackendEventEnvelope {
   type: "pipeline_error";
   event?: "pipeline_error" | "error";
@@ -142,6 +160,7 @@ export type BackendEvent =
   | PipelineStartedEvent
   | InterviewOntologyDeltaEvent
   | InterviewQuestionEvent
+  | StageLifecycleEvent
   | ResearchProgressEvent
   | CouncilRoundStartEvent
   | CouncilTokenEvent

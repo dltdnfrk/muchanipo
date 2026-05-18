@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  deriveLiveE2eStatus,
+  deriveBackendSignalStatus,
   eventFeedsCurrentSessionEvidenceLedger,
   normalizeImportedKnowledgeRefs,
+  normalizeStageLifecycleEvent,
   normalizeResearchQualityReadyActivity,
   normalizeResearchActivity,
   parseEventBoolean,
@@ -14,10 +15,10 @@ import {
   updateResearchContractFromEvent,
 } from "./RunProgress";
 
-describe("deriveLiveE2eStatus", () => {
-  it("proves live e2e when runtime status matches the current app run", () => {
+describe("deriveBackendSignalStatus", () => {
+  it("shows backend signal when runtime status matches the current app run", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: "run-current",
         runtimeHeartbeatStage: "interview",
@@ -26,9 +27,9 @@ describe("deriveLiveE2eStatus", () => {
     ).toBe("Backend run signals observed");
   });
 
-  it("proves live e2e from visible heartbeat when runtime polling has not refreshed app_run_id yet", () => {
+  it("shows backend signal from visible heartbeat when runtime polling has not refreshed app_run_id yet", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: undefined,
         runtimeHeartbeatStage: "interview",
@@ -37,15 +38,15 @@ describe("deriveLiveE2eStatus", () => {
     ).toBe("Backend run signals observed");
   });
 
-  it("does not prove live e2e for a stale runtime without visible heartbeat", () => {
+  it("waits for backend signal for a stale runtime without visible heartbeat", () => {
     expect(
-      deriveLiveE2eStatus({
+      deriveBackendSignalStatus({
         runId: "run-current",
         runtimeRunId: "run-old",
         runtimeHeartbeatStage: "interview",
         hasVisibleBackendHeartbeat: false,
       }),
-    ).toBe("Not proven in this UI session");
+    ).toBe("Waiting for live backend signal");
   });
 });
 
@@ -59,6 +60,120 @@ describe("parseEventBoolean", () => {
     expect(parseEventBoolean("true")).toBe(true);
     expect(parseEventBoolean("1")).toBe(true);
     expect(parseEventBoolean("yes")).toBe(true);
+  });
+});
+
+describe("canonical stage lifecycle events", () => {
+  it("accepts persona_generation completion only when council readiness is present", () => {
+    const ready = normalizeStageLifecycleEvent({
+      event: "stage_completed",
+      stage: "persona_generation",
+      status: "completed",
+      llm_council_ready: true,
+      artifacts: {
+        persona_generation_artifact: "{}",
+        persona_generation_llm_council_ready: "true",
+      },
+    });
+    const missingReadiness = normalizeStageLifecycleEvent({
+      event: "stage_completed",
+      stage: "persona_generation",
+      status: "completed",
+      artifacts: { persona_pool_size: "6" },
+    });
+
+    expect(ready).toEqual(expect.objectContaining({
+      displayStage: "council",
+      canonicalStage: "persona_generation",
+      status: "completed",
+      readinessNote: "llm_council_ready true",
+    }));
+    expect(ready?.message).toBe("Persona artifact ready for council");
+    expect(ready?.artifactKeys).toContain("persona_generation_artifact");
+    expect(missingReadiness).toEqual(expect.objectContaining({
+      displayStage: "council",
+      canonicalStage: "persona_generation",
+      status: "blocked",
+      readinessNote: "llm_council_ready not confirmed",
+    }));
+  });
+
+  it("surfaces persona_generation blockers from backend artifact payloads", () => {
+    const blocked = normalizeStageLifecycleEvent({
+      event: "stage_blocked",
+      stage: "persona_generation",
+      status: "blocked",
+      blockers: [{ code: "blocked_persona_pool_invalid" }],
+    });
+
+    expect(blocked).toEqual(expect.objectContaining({
+      displayStage: "council",
+      status: "blocked",
+      blockerCodes: ["blocked_persona_pool_invalid"],
+      lastSignal: "persona_generation · stage_blocked",
+    }));
+    expect(blocked?.message).toContain("blocked_persona_pool_invalid");
+  });
+
+  it("keeps llm_council progress tied to backend rounds and provider activity", () => {
+    const progress = normalizeStageLifecycleEvent({
+      event: "stage_progress",
+      stage: "llm_council",
+      round: 3,
+      provider_route: "mimo",
+    });
+
+    expect(progress).toEqual(expect.objectContaining({
+      displayStage: "council",
+      canonicalStage: "llm_council",
+      status: "active",
+      lastSignal: "llm_council · stage_progress",
+    }));
+    expect(progress?.message).toBe("Council progress from backend · round 3 · mimo");
+  });
+
+  it("does not mark llm_council complete until final report readiness is confirmed", () => {
+    const noReadySignal = normalizeStageLifecycleEvent({
+      event: "stage_completed",
+      stage: "llm_council",
+      status: "completed",
+    });
+    const ready = normalizeStageLifecycleEvent({
+      event: "stage_completed",
+      stage: "llm_council",
+      status: "completed",
+      final_report_ready: "true",
+    });
+
+    expect(noReadySignal).toEqual(expect.objectContaining({
+      displayStage: "council",
+      status: "blocked",
+      readinessNote: "final_report_ready not confirmed",
+    }));
+    expect(ready).toEqual(expect.objectContaining({
+      displayStage: "council",
+      status: "completed",
+      readinessNote: "final_report_ready true",
+    }));
+    expect(ready?.message).toBe("Council ready for report");
+  });
+
+  it("keeps llm_council blocked when backend says product pass is blocked", () => {
+    const blocked = normalizeStageLifecycleEvent({
+      event: "stage_completed",
+      stage: "llm_council",
+      status: "completed",
+      final_report_ready: true,
+      blocks_product_pass: "true",
+      blockers: ["blocked_council_timeout_fallback_used"],
+    });
+
+    expect(blocked).toEqual(expect.objectContaining({
+      displayStage: "council",
+      status: "blocked",
+      blockerCodes: ["blocked_council_timeout_fallback_used"],
+    }));
+    expect(blocked?.message).toContain("blocked_council_timeout_fallback_used");
   });
 });
 

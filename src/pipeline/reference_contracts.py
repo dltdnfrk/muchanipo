@@ -36,7 +36,13 @@ CONTRACTS: tuple[StageReferenceContract, ...] = (
         step=3,
         name="자료 수집 / 자동 연구",
         stages=(Stage.RESEARCH,),
-        references=("Karpathy Autoresearch", "InsightForge", "MemPalace", "학술 자료 검색 API"),
+        references=(
+            "Karpathy Autoresearch",
+            "Google Gemini Deep Research Max",
+            "InsightForge",
+            "MemPalace",
+            "학술 자료 검색 API",
+        ),
         notes=(
             "검색 질문, 근거 수집 기준, 재검색 조건을 명시해 두루뭉실한 자료 수집을 막는다.",
         ),
